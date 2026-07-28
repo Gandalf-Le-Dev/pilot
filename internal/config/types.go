@@ -1,0 +1,424 @@
+// Package config defines Pilot's on-disk configuration: the fleet inventory
+// (fleet.yaml) and one file per service (services/*.yaml).
+//
+// Parsing is deliberately permissive about *values* — enums and cross-references
+// are checked by Validate, which reports Diagnostics carrying a file, a field
+// path, and a hint. That way `pilot doctor` can render every problem in the
+// config at once, rather than aborting on the first bad field.
+package config
+
+import (
+	"fmt"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Runtime selects the adapter that knows how to stage and activate a service.
+type Runtime string
+
+const (
+	RuntimeCompose Runtime = "compose"
+	RuntimeSystemd Runtime = "systemd"
+	RuntimeStatic  Runtime = "static"
+)
+
+var AllRuntimes = []Runtime{RuntimeCompose, RuntimeSystemd, RuntimeStatic}
+
+// Manage controls whether Pilot may write to a service or only read from it.
+// Stateful services (databases) use ManageObserve so that a fleet-wide deploy
+// can never recreate them.
+type Manage string
+
+const (
+	ManageDeploy  Manage = "deploy"
+	ManageObserve Manage = "observe"
+)
+
+var AllManageModes = []Manage{ManageDeploy, ManageObserve}
+
+// Fleet is the parsed contents of fleet.yaml plus every service loaded from
+// the services/ directory alongside it.
+type Fleet struct {
+	Version   int                 `yaml:"version"`
+	Defaults  Defaults            `yaml:"defaults"`
+	Hosts     map[string]*Host    `yaml:"hosts"`
+	Caddy     Caddy               `yaml:"caddy"`
+	Notifiers map[string]Notifier `yaml:"notifiers"`
+
+	// Alerts are host-wide rules, evaluated by every agent. Per-service rules
+	// live on the service.
+	Alerts []Alert `yaml:"alerts"`
+
+	// Populated by Load, not by YAML.
+	Services map[string]*Service `yaml:"-"`
+	Root     string              `yaml:"-"`
+	File     string              `yaml:"-"`
+}
+
+type Defaults struct {
+	User         string   `yaml:"user"`
+	Port         int      `yaml:"port"`
+	KeepReleases int      `yaml:"keep_releases"`
+	Health       *Health  `yaml:"health"`
+	Rollout      *Rollout `yaml:"rollout"`
+}
+
+type Caddy struct {
+	Admin      string `yaml:"admin"`
+	SnippetDir string `yaml:"snippet_dir"`
+	Caddyfile  string `yaml:"caddyfile"`
+}
+
+// Notifier is one alert delivery target.
+//
+// Each is a single HTTP POST or a single exec — no retry queue, no templating.
+// Anything needing either should be a `command` pointing at a program that does
+// it properly, which is also how email is handled.
+type Notifier struct {
+	Type string `yaml:"type"`
+
+	URL     string `yaml:"url"`
+	Webhook string `yaml:"webhook"`
+
+	// Command is the argv for a `command` notifier. The notification arrives
+	// as JSON on its stdin.
+	Command []string `yaml:"command"`
+}
+
+// Endpoint returns the URL this notifier posts to, whichever field carried it.
+func (n Notifier) Endpoint() string {
+	if n.URL != "" {
+		return n.URL
+	}
+	return n.Webhook
+}
+
+// Host is one SSH-reachable machine.
+type Host struct {
+	Name    string   `yaml:"-"`
+	Address string   `yaml:"address"`
+	User    string   `yaml:"user"`
+	Port    int      `yaml:"port"`
+	Tags    []string `yaml:"tags"`
+	SSH     SSH      `yaml:"ssh"`
+
+	// Sudo runs every remote command through `sudo -n`.
+	//
+	// Pilot writes to /opt/pilot and /etc/caddy and drives systemd, none of
+	// which an ordinary deploy user can do. Connecting as root instead is
+	// often not an option — and is worse anyway — so the normal arrangement is
+	// an unprivileged user with passwordless sudo.
+	Sudo bool `yaml:"sudo"`
+}
+
+type SSH struct {
+	ProxyJump    string `yaml:"proxy_jump"`
+	IdentityFile string `yaml:"identity_file"`
+}
+
+// HasTag reports whether the host carries the given tag.
+func (h *Host) HasTag(tag string) bool {
+	return slices.Contains(h.Tags, tag)
+}
+
+// Service is one deployable workload, loaded from services/<name>.yaml.
+type Service struct {
+	Name    string   `yaml:"name"`
+	Runtime Runtime  `yaml:"runtime"`
+	Hosts   []string `yaml:"hosts"`
+	Manage  Manage   `yaml:"manage"`
+
+	Source  *Source           `yaml:"source"`
+	Build   *Build            `yaml:"build"`
+	Compose *Compose          `yaml:"compose"`
+	Unit    *Unit             `yaml:"unit"`
+	Env     map[string]string `yaml:"env"`
+	Expose  *Expose           `yaml:"expose"`
+	Health  *Health           `yaml:"health"`
+	Rollout *Rollout          `yaml:"rollout"`
+	Alerts  []Alert           `yaml:"alerts"`
+
+	KeepReleases int `yaml:"keep_releases"`
+
+	// Populated by Load, not by YAML.
+	File string `yaml:"-"`
+}
+
+// Deployable reports whether Pilot is permitted to write to this service.
+func (s *Service) Deployable() bool { return s.Manage != ManageObserve }
+
+// EnvKeys returns environment variable names in sorted order, so rendered
+// .env files are byte-stable across deploys and only change when the values do.
+func (s *Service) EnvKeys() []string {
+	keys := make([]string, 0, len(s.Env))
+	for k := range s.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+type Source struct {
+	Repo string `yaml:"repo"`
+	Ref  string `yaml:"ref"`
+	Path string `yaml:"path"`
+}
+
+// Build describes how an artifact is produced. It always runs on the operator's
+// machine or in CI — never on a target host.
+type Build struct {
+	// Container image builds.
+	Image      string `yaml:"image"`
+	Dockerfile string `yaml:"dockerfile"`
+	Context    string `yaml:"context"`
+
+	// Command builds (static sites, Go binaries).
+	Command string   `yaml:"command"`
+	Output  []string `yaml:"output"`
+}
+
+type Compose struct {
+	File    string `yaml:"file"`
+	Project string `yaml:"project"`
+}
+
+type Unit struct {
+	ExecStart string   `yaml:"exec_start"`
+	User      string   `yaml:"user"`
+	Group     string   `yaml:"group"`
+	Restart   string   `yaml:"restart"`
+	After     []string `yaml:"after"`
+	Wants     []string `yaml:"wants"`
+}
+
+// Expose declares the service's front door. Pilot renders it into a Caddy
+// snippet at /etc/caddy/pilot.d/<service>.caddy.
+type Expose struct {
+	Domains  []string      `yaml:"domains"`
+	Path     string        `yaml:"path"`
+	Upstream int           `yaml:"upstream"`
+	Static   *StaticExpose `yaml:"static"`
+	Timeouts *Timeouts     `yaml:"timeouts"`
+	Verify   bool          `yaml:"verify"`
+	Raw      string        `yaml:"raw"`
+}
+
+// IsStatic reports whether this route is served from disk rather than proxied.
+func (e *Expose) IsStatic() bool { return e.Static != nil }
+
+// SiteAddresses returns the Caddyfile site addresses this route claims, which
+// is what collision detection compares across services.
+func (e *Expose) SiteAddresses() []string {
+	path := strings.TrimSuffix(e.Path, "/*")
+	addrs := make([]string, 0, len(e.Domains))
+	for _, d := range e.Domains {
+		addrs = append(addrs, d+path)
+	}
+	return addrs
+}
+
+type StaticExpose struct {
+	SPA     bool                         `yaml:"spa"`
+	Index   string                       `yaml:"index"`
+	Headers map[string]map[string]string `yaml:"headers"`
+
+	// Overlay names directories whose files are carried forward from the
+	// previous release by hardlink, so a page loaded just before a swap can
+	// still fetch its hash-named assets instead of 404ing.
+	//
+	// Scoped to named directories rather than the whole tree on purpose: a
+	// blanket carry-forward would mean deleted pages never disappear. Set it
+	// to [] to turn the behaviour off entirely.
+	Overlay []string `yaml:"overlay"`
+}
+
+// DefaultOverlayDirs is used when `overlay` is not specified. It matches where
+// Vite and most bundlers put hashed assets, and is harmlessly a no-op for sites
+// that have no such directory.
+var DefaultOverlayDirs = []string{"assets"}
+
+// OverlayDirs returns the directories to carry forward. An unset value gets the
+// default; an explicitly empty list disables the behaviour.
+func (s *StaticExpose) OverlayDirs() []string {
+	if s.Overlay == nil {
+		return DefaultOverlayDirs
+	}
+	return s.Overlay
+}
+
+// UnmarshalYAML accepts both `static: true` and `static: {spa: true}`, because
+// the bare-bool form reads better for a plain file server with no options.
+func (s *StaticExpose) UnmarshalYAML(b []byte) error {
+	switch strings.TrimSpace(string(b)) {
+	case "true":
+		return nil
+	case "false", "null", "~", "":
+		return nil
+	}
+	type raw StaticExpose
+	var r raw
+	if err := unmarshalStrict(b, &r); err != nil {
+		return err
+	}
+	*s = StaticExpose(r)
+	return nil
+}
+
+type Timeouts struct {
+	Read  Duration `yaml:"read"`
+	Write Duration `yaml:"write"`
+	Dial  Duration `yaml:"dial"`
+}
+
+// Health describes how to tell whether a service is actually working. Exactly
+// one probe kind should be set.
+type Health struct {
+	HTTP    *HTTPProbe `yaml:"http"`
+	TCP     *TCPProbe  `yaml:"tcp"`
+	Exec    *ExecProbe `yaml:"exec"`
+	Docker  bool       `yaml:"docker"`
+	Systemd bool       `yaml:"systemd"`
+
+	Timeout  Duration `yaml:"timeout"`
+	Interval Duration `yaml:"interval"`
+}
+
+// Probes reports how many probe kinds are configured.
+func (h *Health) Probes() int {
+	n := 0
+	for _, set := range []bool{h.HTTP != nil, h.TCP != nil, h.Exec != nil, h.Docker, h.Systemd} {
+		if set {
+			n++
+		}
+	}
+	return n
+}
+
+type HTTPProbe struct {
+	URL    string `yaml:"url"`
+	Expect int    `yaml:"expect"`
+}
+
+type TCPProbe struct {
+	Addr string `yaml:"addr"`
+}
+
+type ExecProbe struct {
+	Cmd []string `yaml:"cmd"`
+}
+
+type Rollout struct {
+	Strategy     string   `yaml:"strategy"`
+	Concurrency  int      `yaml:"concurrency"`
+	MaxUnhealthy int      `yaml:"max_unhealthy"`
+	PauseBetween Duration `yaml:"pause_between"`
+
+	// Service names the compose service that receives traffic. Blue-green
+	// needs it because it must know which container's port to publish.
+	Service string `yaml:"service"`
+
+	// Ports are the host ports for the two colors. Declared, never inferred:
+	// a silent port collision is an outage, and one Pilot can catch at
+	// config-load time instead.
+	Ports []int `yaml:"ports"`
+
+	// Drain is how long the outgoing color keeps running after traffic moves,
+	// so in-flight requests finish against the version that started them.
+	Drain Duration `yaml:"drain"`
+}
+
+const (
+	StrategyRecreate  = "recreate"
+	StrategyBlueGreen = "blue-green"
+)
+
+// AllStrategies is every rollout strategy this build supports.
+var AllStrategies = []string{StrategyRecreate, StrategyBlueGreen}
+
+// DefaultDrain is how long the old color lingers after the flip.
+const DefaultDrain = Duration(30_000_000_000) // 30s
+
+// IsBlueGreen reports whether this service flips between two live stacks.
+func (r *Rollout) IsBlueGreen() bool { return r != nil && r.Strategy == StrategyBlueGreen }
+
+// DrainOrDefault is how long the outgoing color lingers after the flip.
+//
+// The zero value is left alone in the parsed config so validation can tell
+// whether the operator chose it; this is where the default is actually applied.
+func (r *Rollout) DrainOrDefault() Duration {
+	if r == nil || r.Drain.IsZero() {
+		return DefaultDrain
+	}
+	return r.Drain
+}
+
+// Color is which of the two stacks is meant.
+type Color string
+
+const (
+	ColorBlue  Color = "blue"
+	ColorGreen Color = "green"
+)
+
+// Other returns the color a deploy would move to.
+func (c Color) Other() Color {
+	if c == ColorGreen {
+		return ColorBlue
+	}
+	return ColorGreen
+}
+
+// AllColors is both colors, in the order ports are assigned.
+var AllColors = []Color{ColorBlue, ColorGreen}
+
+// PortFor returns the host port assigned to a color.
+func (r *Rollout) PortFor(c Color) int {
+	if len(r.Ports) < 2 {
+		return 0
+	}
+	if c == ColorGreen {
+		return r.Ports[1]
+	}
+	return r.Ports[0]
+}
+
+// Alert is one rule. `when` is the condition, `for` is how long it must hold
+// before firing, and `cooldown` is how long a firing rule stays quiet before
+// repeating itself.
+type Alert struct {
+	When     string   `yaml:"when"`
+	For      Duration `yaml:"for"`
+	Cooldown Duration `yaml:"cooldown"`
+	Notify   []string `yaml:"notify"`
+}
+
+// Duration is a time.Duration that unmarshals from YAML scalars like "90s".
+type Duration time.Duration
+
+func (d Duration) Duration() time.Duration { return time.Duration(d) }
+func (d Duration) String() string          { return time.Duration(d).String() }
+func (d Duration) IsZero() bool            { return d == 0 }
+
+func (d *Duration) UnmarshalYAML(b []byte) error {
+	s := strings.Trim(strings.TrimSpace(string(b)), `"'`)
+	if s == "" || s == "null" || s == "~" {
+		return nil
+	}
+	// A bare number is read as seconds, which is what people expect from
+	// `timeout: 30` in a config file.
+	if n, err := strconv.Atoi(s); err == nil {
+		*d = Duration(time.Duration(n) * time.Second)
+		return nil
+	}
+	parsed, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: want a value like 30s, 5m, or 1h", s)
+	}
+	*d = Duration(parsed)
+	return nil
+}
+
+func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
