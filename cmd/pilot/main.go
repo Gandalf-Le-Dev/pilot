@@ -64,6 +64,7 @@ func main() {
 	root.PersistentFlags().BoolVar(&g.json, "json", false, "emit machine-readable JSON")
 
 	root.AddCommand(
+		newInitCmd(g),
 		newDoctorCmd(g),
 		newBootstrapCmd(g),
 		newDeployCmd(g),
