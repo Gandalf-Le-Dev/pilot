@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gandalfledev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 )
 
 // Retry behaviour applied to every proxied route. During a container recreate

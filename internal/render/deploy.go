@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gandalfledev/pilot/internal/deploy"
-	"github.com/gandalfledev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/deploy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
 
 // Plan writes the human-readable form of a deploy plan.

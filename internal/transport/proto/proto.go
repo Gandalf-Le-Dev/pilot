@@ -9,7 +9,7 @@ package proto
 import (
 	"time"
 
-	"github.com/gandalfledev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
 
 // Version is the protocol version. The CLI refuses to talk to an agent that

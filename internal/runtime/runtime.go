@@ -13,9 +13,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/gandalfledev/pilot/internal/config"
-	"github.com/gandalfledev/pilot/internal/release"
-	"github.com/gandalfledev/pilot/internal/transport"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
 // Runtime adapts one kind of workload to Pilot's deploy model.

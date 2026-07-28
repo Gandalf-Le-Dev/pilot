@@ -6,12 +6,12 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/gandalfledev/pilot/internal/config"
-	"github.com/gandalfledev/pilot/internal/edge/caddy"
-	"github.com/gandalfledev/pilot/internal/release"
-	"github.com/gandalfledev/pilot/internal/runtime"
-	"github.com/gandalfledev/pilot/internal/runtime/compose"
-	"github.com/gandalfledev/pilot/internal/transport/proto"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/compose"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
 // runBlueGreen deploys by standing the new version up beside the old one and

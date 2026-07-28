@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gandalfledev/pilot/internal/transport"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
 // stub installs a fake `ssh` executable that records how it was invoked and

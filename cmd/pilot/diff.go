@@ -9,12 +9,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gandalfledev/pilot/internal/agent/remote"
-	"github.com/gandalfledev/pilot/internal/app"
-	"github.com/gandalfledev/pilot/internal/config"
-	"github.com/gandalfledev/pilot/internal/edge/caddy"
-	"github.com/gandalfledev/pilot/internal/render"
-	"github.com/gandalfledev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
+	"github.com/Gandalf-Le-Dev/pilot/internal/app"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/render"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
 
 func newDiffCmd(g *globals) *cobra.Command {

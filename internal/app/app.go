@@ -13,15 +13,15 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/gandalfledev/pilot/internal/agent/remote"
-	"github.com/gandalfledev/pilot/internal/config"
-	"github.com/gandalfledev/pilot/internal/edge/caddy"
-	"github.com/gandalfledev/pilot/internal/release"
-	"github.com/gandalfledev/pilot/internal/runtime"
-	"github.com/gandalfledev/pilot/internal/runtime/compose"
-	"github.com/gandalfledev/pilot/internal/runtime/static"
-	"github.com/gandalfledev/pilot/internal/secrets"
-	"github.com/gandalfledev/pilot/internal/transport/ssh"
+	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/compose"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/static"
+	"github.com/Gandalf-Le-Dev/pilot/internal/secrets"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/ssh"
 )
 
 // App carries the loaded fleet and the connections opened so far.

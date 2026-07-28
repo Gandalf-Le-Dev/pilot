@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gandalfledev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 )
 
 func newInitCmd(g *globals) *cobra.Command {

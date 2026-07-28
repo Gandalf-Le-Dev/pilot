@@ -1,0 +1,104 @@
+version: 2
+project_name: pilot
+
+before:
+  hooks:
+    - go mod download
+    - go test ./...
+
+builds:
+  # The CLI. Runs wherever you work.
+  - id: pilot
+    main: ./cmd/pilot
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .FullCommit }}
+      - -X main.date={{ .CommitDate }}
+
+  # The agent. Linux only — it talks to systemd and the Docker socket, and is
+  # installed onto hosts by `pilot bootstrap`, never by a user directly.
+  - id: pilotd
+    main: ./cmd/pilotd
+    binary: pilotd
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .FullCommit }}
+      - -X main.date={{ .CommitDate }}
+
+archives:
+  - id: pilot
+    ids: [pilot]
+    formats: [tar.gz]
+    files: [README.md, DESIGN.md, LICENSE]
+
+  # The agent ships as a bare binary rather than an archive, and under a name
+  # `pilot bootstrap` can construct from its own version and the host's
+  # architecture: pilotd-linux-amd64. Fetching one file instead of unpacking a
+  # tarball keeps bootstrap's download path trivial, which matters because it
+  # runs while you are already fixing a server.
+  - id: pilotd
+    ids: [pilotd]
+    formats: [binary]
+    name_template: "pilotd-{{ .Os }}-{{ .Arch }}"
+
+# `brews:` is hard-removed in GoReleaser v2.16; casks are the supported way to
+# ship pre-compiled binaries, which is what this is.
+homebrew_casks:
+  - name: pilot
+    ids: [pilot]
+    repository:
+      owner: Gandalf-Le-Dev
+      name: homebrew-tap
+      # A PAT with contents:write on homebrew-tap, stored as HOMEBREW_TAP_TOKEN
+      # on this repo. The default GITHUB_TOKEN cannot push to another repo.
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/Gandalf-Le-Dev/pilot"
+    description: "Monitor, deploy, and update the services on a small fleet of servers"
+    license: MIT
+    commit_author:
+      name: goreleaser-bot
+      email: goreleaser-bot@users.noreply.github.com
+    hooks:
+      post:
+        install: |
+          # Downloaded binaries carry a quarantine attribute, and Gatekeeper
+          # refuses to run them until it is cleared.
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/pilot"]
+          end
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+
+release:
+  footer: |
+    ## Installing
+
+    ```
+    brew install Gandalf-Le-Dev/tap/pilot
+    ```
+
+    The agent (`pilotd`) is published here as a bare binary per architecture and
+    is installed onto your hosts by `pilot bootstrap`. You do not need to
+    download it yourself.

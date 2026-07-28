@@ -10,10 +10,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gandalfledev/pilot/internal/app"
-	"github.com/gandalfledev/pilot/internal/config"
-	"github.com/gandalfledev/pilot/internal/render"
-	"github.com/gandalfledev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/app"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/render"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
 
 func newPsCmd(g *globals) *cobra.Command {

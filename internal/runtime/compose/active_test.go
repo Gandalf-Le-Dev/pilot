@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gandalfledev/pilot/internal/config"
-	"github.com/gandalfledev/pilot/internal/release"
-	"github.com/gandalfledev/pilot/internal/runtime"
-	"github.com/gandalfledev/pilot/internal/transport"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
 // recorder captures the commands a runtime would run, and serves a state.json

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gandalfledev/pilot/internal/transport/proto"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
 // Handler returns the agent's HTTP API.

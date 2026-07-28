@@ -13,10 +13,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gandalfledev/pilot/internal/edge/caddy"
-	"github.com/gandalfledev/pilot/internal/release"
-	"github.com/gandalfledev/pilot/internal/transport"
-	"github.com/gandalfledev/pilot/internal/transport/proto"
+	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
 // UnitPath is where the agent's systemd unit lives.
@@ -263,7 +263,7 @@ func RenderUnit(o UnitOptions) string {
 # regenerate with: pilot bootstrap %s
 [Unit]
 Description=Pilot agent
-Documentation=https://github.com/gandalfledev/pilot
+Documentation=https://github.com/Gandalf-Le-Dev/pilot
 After=network-online.target docker.service
 Wants=network-online.target
 

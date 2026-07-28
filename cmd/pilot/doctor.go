@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gandalfledev/pilot/internal/doctor"
-	"github.com/gandalfledev/pilot/internal/render"
+	"github.com/Gandalf-Le-Dev/pilot/internal/doctor"
+	"github.com/Gandalf-Le-Dev/pilot/internal/render"
 )
 
 func newDoctorCmd(g *globals) *cobra.Command {

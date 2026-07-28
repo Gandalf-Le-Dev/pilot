@@ -10,7 +10,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/gandalfledev/pilot/internal/doctor"
+	"github.com/Gandalf-Le-Dev/pilot/internal/doctor"
 )
 
 // Doctor writes a grouped report: config first, then one block per host in

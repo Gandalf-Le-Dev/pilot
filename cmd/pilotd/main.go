@@ -20,13 +20,19 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gandalfledev/pilot/internal/agent"
-	"github.com/gandalfledev/pilot/internal/agent/client"
-	"github.com/gandalfledev/pilot/internal/release"
-	"github.com/gandalfledev/pilot/internal/transport/proto"
+	"github.com/Gandalf-Le-Dev/pilot/internal/agent"
+	"github.com/Gandalf-Le-Dev/pilot/internal/agent/client"
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
-var version = "dev"
+// Injected at build time by GoReleaser. See cmd/pilot for why the version
+// matters beyond display.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -35,7 +41,7 @@ func main() {
 	root := &cobra.Command{
 		Use:           "pilotd",
 		Short:         "Pilot's per-host agent",
-		Version:       fmt.Sprintf("%s (protocol %d)", version, proto.Version),
+		Version:       fmt.Sprintf("%s (%s, protocol %d)", version, commit, proto.Version),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

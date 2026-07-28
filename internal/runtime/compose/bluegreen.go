@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"path"
 
-	"github.com/gandalfledev/pilot/internal/config"
-	"github.com/gandalfledev/pilot/internal/runtime"
-	"github.com/gandalfledev/pilot/internal/transport"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
 // ActiveProject returns the compose project actually backing a service.

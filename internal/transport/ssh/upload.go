@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gandalfledev/pilot/internal/transport"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
 // UploadDir copies a local directory tree to the host.

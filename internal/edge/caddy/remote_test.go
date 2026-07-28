@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gandalfledev/pilot/internal/transport/ssh"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/ssh"
 )
 
 // fakeRunner emulates a host: an in-memory filesystem plus scripted responses

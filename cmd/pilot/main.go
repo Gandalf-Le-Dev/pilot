@@ -11,11 +11,22 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gandalfledev/pilot/internal/app"
+	"github.com/Gandalf-Le-Dev/pilot/internal/app"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
-// version is overridden at build time with -ldflags.
-var version = "dev"
+// Injected at build time by GoReleaser:
+//
+//	-ldflags "-X main.version=... -X main.commit=... -X main.date=..."
+//
+// The version is not cosmetic. `pilot bootstrap` uses it to fetch the pilotd
+// asset from its *own* release, which is what makes agent/CLI protocol skew
+// impossible rather than merely unlikely.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
 // exitError carries a specific process exit status. Commands return it when
 // the status is meaningful to a script, not just "something failed".
@@ -54,7 +65,7 @@ func main() {
 		Long: "Pilot deploys and watches the services on a small fleet of servers:\n" +
 			"docker compose stacks, systemd units, and static sites, with Caddy as\n" +
 			"the front door.",
-		Version:       version,
+		Version:       versionString(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -88,6 +99,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "pilot: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// versionString renders the build identity. Commit and date come from
+// GoReleaser; a `go build` shows the placeholders, which is itself useful
+// information when someone reports a bug.
+func versionString() string {
+	if commit == "none" {
+		return version
+	}
+	if len(commit) > 7 {
+		commit = commit[:7]
+	}
+	return fmt.Sprintf("%s (%s, %s, protocol %d)", version, commit, date, proto.Version)
 }
 
 // load opens the fleet configuration for a command.

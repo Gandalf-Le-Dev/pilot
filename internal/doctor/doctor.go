@@ -14,8 +14,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gandalfledev/pilot/internal/config"
-	"github.com/gandalfledev/pilot/internal/transport/ssh"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/ssh"
 )
 
 // Status is the verdict of one finding.

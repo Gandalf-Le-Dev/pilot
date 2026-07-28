@@ -19,8 +19,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gandalfledev/pilot/internal/release"
-	"github.com/gandalfledev/pilot/internal/transport"
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
 // Executor runs commands on the local host.

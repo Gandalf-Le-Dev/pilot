@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gandalfledev/pilot/internal/agent/remote"
-	"github.com/gandalfledev/pilot/internal/config"
-	"github.com/gandalfledev/pilot/internal/runtime"
-	"github.com/gandalfledev/pilot/internal/transport/proto"
+	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
 // activateViaAgent hands the commit point to the host's daemon.

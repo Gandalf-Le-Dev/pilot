@@ -10,10 +10,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gandalfledev/pilot/internal/app"
-	"github.com/gandalfledev/pilot/internal/deploy"
-	"github.com/gandalfledev/pilot/internal/edge/caddy"
-	"github.com/gandalfledev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/app"
+	"github.com/Gandalf-Le-Dev/pilot/internal/deploy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
 
 func newRollbackCmd(g *globals) *cobra.Command {

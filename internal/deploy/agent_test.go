@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gandalfledev/pilot/internal/config"
-	"github.com/gandalfledev/pilot/internal/transport/proto"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
 // The spec the CLI sends is the spec the agent will monitor with. If it does

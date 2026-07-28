@@ -1,4 +1,4 @@
-module github.com/gandalfledev/pilot
+module github.com/Gandalf-Le-Dev/pilot
 
 go 1.26.2
 

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gandalfledev/pilot/internal/transport/proto"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
 // MaxJobs caps how many completed jobs are remembered, so a long-lived daemon

@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gandalfledev/pilot/internal/agent/remote"
-	"github.com/gandalfledev/pilot/internal/edge/caddy"
-	"github.com/gandalfledev/pilot/internal/release"
-	"github.com/gandalfledev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
+	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
 
 // Logger receives progress messages.

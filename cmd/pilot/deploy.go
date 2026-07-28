@@ -10,14 +10,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gandalfledev/pilot/internal/agent/remote"
-	"github.com/gandalfledev/pilot/internal/app"
-	"github.com/gandalfledev/pilot/internal/build"
-	"github.com/gandalfledev/pilot/internal/config"
-	"github.com/gandalfledev/pilot/internal/deploy"
-	"github.com/gandalfledev/pilot/internal/render"
-	"github.com/gandalfledev/pilot/internal/runtime"
-	"github.com/gandalfledev/pilot/internal/secrets"
+	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
+	"github.com/Gandalf-Le-Dev/pilot/internal/app"
+	"github.com/Gandalf-Le-Dev/pilot/internal/build"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/deploy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/render"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/secrets"
 )
 
 func newDeployCmd(g *globals) *cobra.Command {

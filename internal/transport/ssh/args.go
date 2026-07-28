@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gandalfledev/pilot/internal/transport"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
 // Config describes how to reach one host. Address may be a hostname, an IP, or

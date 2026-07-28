@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gandalfledev/pilot/internal/release"
-	"github.com/gandalfledev/pilot/internal/transport"
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
 // StageCommon performs the part of staging that is identical for every runtime:

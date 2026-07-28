@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gandalfledev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 )
 
 // Distinct project names are what let both stacks coexist: compose scopes

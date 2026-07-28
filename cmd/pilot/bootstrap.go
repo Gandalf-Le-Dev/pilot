@@ -15,13 +15,13 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/gandalfledev/pilot/internal/agent"
-	"github.com/gandalfledev/pilot/internal/agent/install"
-	"github.com/gandalfledev/pilot/internal/agent/remote"
-	"github.com/gandalfledev/pilot/internal/app"
-	"github.com/gandalfledev/pilot/internal/edge/caddy"
-	"github.com/gandalfledev/pilot/internal/transport/proto"
-	"github.com/gandalfledev/pilot/internal/transport/ssh"
+	"github.com/Gandalf-Le-Dev/pilot/internal/agent"
+	"github.com/Gandalf-Le-Dev/pilot/internal/agent/install"
+	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
+	"github.com/Gandalf-Le-Dev/pilot/internal/app"
+	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/ssh"
 )
 
 func newBootstrapCmd(g *globals) *cobra.Command {

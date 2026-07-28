@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gandalfledev/pilot/internal/transport"
-	"github.com/gandalfledev/pilot/internal/transport/ssh"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/ssh"
 )
 
 // Runner is the subset of an ssh client these operations need. Narrowing it

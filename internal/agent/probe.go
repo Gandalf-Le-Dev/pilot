@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gandalfledev/pilot/internal/config"
-	"github.com/gandalfledev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
 
 // probeTimeout bounds a single health check attempt, so one hung probe cannot

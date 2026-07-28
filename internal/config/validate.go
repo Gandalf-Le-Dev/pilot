@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gandalfledev/pilot/internal/alert"
+	"github.com/Gandalf-Le-Dev/pilot/internal/alert"
 )
 
 // Validate checks a loaded Fleet and returns every problem it finds, rather

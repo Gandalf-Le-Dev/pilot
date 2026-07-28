@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - run: go vet ./...
+      - run: go test -race ./...
+
+      # The agent is only ever run on Linux, but it must build for both
+      # architectures bootstrap can install to.
+      - name: cross-compile the agent
+        run: |
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH=$arch CGO_ENABLED=0 go build -o /dev/null ./cmd/pilotd
+          done
