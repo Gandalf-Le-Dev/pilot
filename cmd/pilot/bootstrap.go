@@ -166,7 +166,7 @@ func installAgent(ctx context.Context, a *app.App, client *ssh.Client, host stri
 		return err
 	}
 
-	src := install.Source{Explicit: opts.agentBinary, ModuleDir: moduleDir()}
+	src := install.Source{Explicit: opts.agentBinary, Version: version, ModuleDir: moduleDir()}
 	binary, origin, cleanup, err := src.Resolve(ctx, arch)
 	if err != nil {
 		return err

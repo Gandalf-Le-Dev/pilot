@@ -69,6 +69,15 @@ func DetectArch(ctx context.Context, ex transport.Executor) (Arch, error) {
 type Source struct {
 	// Explicit is a path given on the command line or in the environment.
 	Explicit string
+
+	// Version is the CLI's own version. A released build fetches the agent
+	// published alongside it, which is what makes protocol skew impossible
+	// rather than merely unlikely.
+	Version string
+
+	// BaseURL overrides the release download root, for tests.
+	BaseURL string
+
 	// ModuleDir is the Pilot checkout to build from, when one is available.
 	ModuleDir string
 }
@@ -87,17 +96,33 @@ func (s Source) Resolve(ctx context.Context, arch Arch) (path, origin string, cl
 
 	// A sibling of the running pilot binary, as a release tarball would lay out.
 	if self, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(self), fmt.Sprintf("pilotd-linux-%s", arch))
+		candidate := filepath.Join(filepath.Dir(self), AssetName(arch))
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, "alongside the pilot binary", noop, nil
+		}
+	}
+
+	// The agent published with this CLI's own release. Cached after the first
+	// fetch, and always checksum-verified.
+	if IsReleaseVersion(s.Version) {
+		path, origin, err := s.download(ctx, arch)
+		if err == nil {
+			return path, origin, noop, nil
+		}
+		// A download failure is only recoverable if we can build instead.
+		if s.ModuleDir == "" {
+			return "", "", noop, fmt.Errorf("could not obtain the agent for linux/%s: %w\n"+
+				"pass --agent-binary <path> to install one you already have", arch, err)
 		}
 	}
 
 	if s.ModuleDir == "" {
 		return "", "", noop, fmt.Errorf(
 			"no pilotd binary for linux/%s\n"+
-				"build one with:  GOOS=linux GOARCH=%s go build -o pilotd-linux-%s ./cmd/pilotd\n"+
-				"or pass --agent-binary <path>", arch, arch, arch)
+				"this build (%s) has no matching release to download from\n"+
+				"build one with:  GOOS=linux GOARCH=%s go build -o %s ./cmd/pilotd\n"+
+				"then pass --agent-binary %s",
+			arch, orDefault(s.Version, "dev"), arch, AssetName(arch), AssetName(arch))
 	}
 
 	built, err := buildAgent(ctx, s.ModuleDir, arch)

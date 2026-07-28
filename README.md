@@ -67,11 +67,25 @@ pilot status            what is running, and what has drifted
 pilot rollback api      return to the previous release
 ```
 
-## Building
+## Installing
+
+```
+brew install Gandalf-Le-Dev/tap/pilot
+```
+
+You do not install the agent yourself. `pilot bootstrap <host>` fetches the
+`pilotd` published alongside your CLI's own release, verifies it against the
+release checksums, and installs it under systemd. Because the agent comes from
+the same release as the CLI that fetched it, protocol skew between them is
+impossible rather than merely unlikely.
+
+## Building from source
 
 ```
 go build ./cmd/pilot
-GOOS=linux GOARCH=amd64 go build ./cmd/pilotd
+GOOS=linux GOARCH=amd64 go build -o pilotd-linux-amd64 ./cmd/pilotd
 ```
 
-The agent targets Linux; the CLI runs wherever Go does.
+A source build has no matching release to fetch from, so `bootstrap` compiles
+the agent itself when run from inside a checkout, or takes one via
+`--agent-binary`. The agent targets Linux; the CLI runs wherever Go does.
