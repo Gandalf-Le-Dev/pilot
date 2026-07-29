@@ -397,3 +397,76 @@ func TestRenderRawStripsCommonIndent(t *testing.T) {
 		t.Errorf("common indent not stripped:\n%s", got)
 	}
 }
+
+// A restricted route must not leave an unconditional path to the service
+// alongside the guarded one — that was the bug in the hand-written config this
+// replaces, where a 0.0.0.0 port bypassed the rule entirely.
+func TestRenderRestrictedRoute(t *testing.T) {
+	got, err := Render(Input{
+		Service: "paperless",
+		Expose: &config.Expose{
+			Domains:  []string{"paperless.example.com"},
+			Upstream: 8000,
+			Allow:    config.TailnetCIDRs,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{
+		"@allowed remote_ip 100.64.0.0/10 fd7a:115c:a1e0::/48",
+		"handle @allowed {",
+		"\t\treverse_proxy 127.0.0.1:8000 {",
+		"handle {",
+		"abort",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+
+	// Exactly one proxy, and it is inside the guard.
+	if n := strings.Count(got, "reverse_proxy"); n != 1 {
+		t.Errorf("%d reverse_proxy directives; a second one would serve everyone:\n%s", n, got)
+	}
+	if strings.Index(got, "handle @allowed") > strings.Index(got, "reverse_proxy") {
+		t.Errorf("the proxy must be inside the guard:\n%s", got)
+	}
+	if strings.Count(got, "{") != strings.Count(got, "}") {
+		t.Errorf("unbalanced braces:\n%s", got)
+	}
+}
+
+func TestRenderRestrictedStaticRoute(t *testing.T) {
+	got, err := Render(Input{
+		Service: "docs", Root: "/opt/pilot/services/docs/current",
+		Expose: &config.Expose{
+			Domains: []string{"docs.example.com"},
+			Static:  &config.StaticExpose{},
+			Allow:   []string{"10.0.0.0/8"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "@allowed remote_ip 10.0.0.0/8") || !strings.Contains(got, "abort") {
+		t.Errorf("static routes should be restrictable too:\n%s", got)
+	}
+	if n := strings.Count(got, "file_server"); n != 1 {
+		t.Errorf("%d file_server directives:\n%s", n, got)
+	}
+}
+
+func TestUnrestrictedRouteHasNoGuard(t *testing.T) {
+	got, err := Render(Input{
+		Service: "api",
+		Expose:  &config.Expose{Domains: []string{"api.example.com"}, Upstream: 8080},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "handle") || strings.Contains(got, "abort") {
+		t.Errorf("an unrestricted route should stay simple:\n%s", got)
+	}
+}

@@ -329,6 +329,27 @@ expose:
       "/assets/*": { Cache-Control: "public, max-age=31536000, immutable" }
 ```
 
+Restricting a route to particular networks:
+
+```yaml
+expose:
+  domains: [paperless.example.com]
+  upstream: 8000
+  allow:                      # CIDRs; anything else is closed on
+    - 100.64.0.0/10           # tailnet v4
+    - "fd7a:115c:a1e0::/48"   # tailnet v6
+```
+
+This renders a `remote_ip` matcher wrapping the whole route, with a fallback
+`handle { abort }` — `abort` rather than `respond 403` because a closed
+connection tells a scanner nothing about what is behind it.
+
+`allow:` restricts who may reach the route *through Caddy*. It is not a
+substitute for binding the service to loopback, and Pilot does both: a service
+published on `0.0.0.0` is reachable on its own port regardless of any Caddy
+rule, which is precisely how a tailnet-only service on this project's own
+server turned out to be answering the public internet on `:8000`.
+
 Escape hatch for anything not modelled:
 
 ```yaml
@@ -839,8 +860,42 @@ is checked on every command; incompatible agents are refused with a "re-bootstra
 | Orphaned `pilot.d` file after service removal | Reported by `pilot doctor`; removed by `--fix` or `pilot routes --prune`. |
 | `import` line removed from the global Caddyfile | `pilot doctor` reports it; never silently re-appended. `--fix` restores it. |
 | Global Caddyfile is brace-less single-site form | `bootstrap` refuses to append and tells you to wrap it in braces — appending would nest the import inside that site. |
+| CLI is newer than the agent | Handshake refuses before any work; `pilot bootstrap <host>` fixes it. The protocol version covers the **config schema**, so a new field is a version bump — see below. |
 | Agent crashes | systemd restarts it. Deploys still work in degraded CLI-driven mode; monitoring gaps show as `Unknown`, never as healthy. |
 | Disk fills with old releases | GC keeps N; the disk alert fires well before it matters. |
+
+---
+
+
+### The protocol version covers the config schema
+
+`proto.Version` gates the CLI/agent handshake. It once covered only the wire
+format, and that was a real gap rather than a theoretical one: `expose.allow`
+was added to the service schema while the version stayed put, so the handshake
+passed and the agent then rejected the service definition with `unknown field
+"allow"` — *after* the deploy had begun, on a host already staged.
+
+The configuration travels between the two processes just as the wire format
+does, so it is part of the contract. Two things enforce that now:
+
+- **`proto.SchemaDigest`** pins a fingerprint of every field the agent decodes,
+  computed by reflection over `config.Fleet` and `config.Service`. A test fails
+  on any schema change and names the field that moved, forcing a choice: bump
+  the version (the agent must understand it) or update the digest alone (it
+  never sees it). The decision is yours; making it is not optional.
+- **Strict parsing stays.** An agent that ignored an unknown `allow:` would
+  serve a route without its address restriction and report success — a silent
+  hole is far worse than a refused deploy.
+
+The escape hatch used to recover from that incident — a `--agent-binary` flag
+pointing at a hand-built agent — **has been removed**. It installed an
+unverified binary as root, and by making the mismatch survivable it removed the
+pressure to fix the cause. Every remaining path ties the agent to the CLI that
+installs it: the release tarball's sibling binary, the checksum-verified
+download from that CLI's own release, or a build from the checkout. A
+development build always prefers the checkout, because a sibling file matches
+on filename alone and proves nothing — that too is from life, having once
+installed a stale agent left in `/tmp`.
 
 ---
 

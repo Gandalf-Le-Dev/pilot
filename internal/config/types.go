@@ -197,14 +197,29 @@ type Unit struct {
 // Expose declares the service's front door. Pilot renders it into a Caddy
 // snippet at /etc/caddy/pilot.d/<service>.caddy.
 type Expose struct {
-	Domains  []string      `yaml:"domains"`
-	Path     string        `yaml:"path"`
-	Upstream int           `yaml:"upstream"`
+	Domains  []string `yaml:"domains"`
+	Path     string   `yaml:"path"`
+	Upstream int      `yaml:"upstream"`
+
+	// Allow restricts who may reach the service, as CIDR blocks. Everyone
+	// else gets a closed connection rather than a 403, so the service does not
+	// advertise its own existence.
+	//
+	// This is a Caddy-level control and only as strong as Caddy being the sole
+	// route in — a container publishing on 0.0.0.0 bypasses it entirely, which
+	// is why Pilot binds published ports to loopback.
+	Allow    []string      `yaml:"allow"`
 	Static   *StaticExpose `yaml:"static"`
 	Timeouts *Timeouts     `yaml:"timeouts"`
 	Verify   bool          `yaml:"verify"`
 	Raw      string        `yaml:"raw"`
 }
+
+// Restricted reports whether this route is limited to particular clients.
+func (e *Expose) Restricted() bool { return e != nil && len(e.Allow) > 0 }
+
+// TailnetCIDRs are Tailscale's address ranges, the common case for `allow`.
+var TailnetCIDRs = []string{"100.64.0.0/10", "fd7a:115c:a1e0::/48"}
 
 // IsStatic reports whether this route is served from disk rather than proxied.
 func (e *Expose) IsStatic() bool { return e.Static != nil }

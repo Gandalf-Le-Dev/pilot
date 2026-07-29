@@ -60,7 +60,23 @@ func Render(in Input) (string, error) {
 	fmt.Fprintf(&b, "%s {\n", siteAddress(e))
 	b.WriteString("\tencode gzip zstd\n")
 
-	if e.IsStatic() {
+	// A restricted route wraps its body so anything outside the allowed
+	// networks is closed on rather than served. `abort` rather than `respond
+	// 403` is deliberate: a closed connection tells a scanner nothing.
+	if e.Restricted() {
+		fmt.Fprintf(&b, "\t@allowed remote_ip %s\n", strings.Join(e.Allow, " "))
+		b.WriteString("\thandle @allowed {\n")
+		var body strings.Builder
+		if e.IsStatic() {
+			renderStatic(&body, e, in.Root)
+		} else {
+			renderProxy(&body, e)
+		}
+		for line := range strings.SplitSeq(strings.TrimRight(body.String(), "\n"), "\n") {
+			fmt.Fprintf(&b, "\t%s\n", line)
+		}
+		b.WriteString("\t}\n\thandle {\n\t\tabort\n\t}\n")
+	} else if e.IsStatic() {
 		renderStatic(&b, e, in.Root)
 	} else {
 		renderProxy(&b, e)

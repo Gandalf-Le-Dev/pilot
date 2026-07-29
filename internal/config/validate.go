@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"sort"
 	"strings"
@@ -241,6 +242,16 @@ func validateExpose(s *Service, ds *Diagnostics) {
 	if s.Runtime != "" && s.Runtime != RuntimeStatic && e.IsStatic() {
 		ds.ErrorHint(file, "expose.static", fmt.Sprintf("runtime %q serves from a process, not from disk", s.Runtime),
 			"use `upstream: <port>`")
+	}
+
+	for i, c := range e.Allow {
+		if _, _, err := net.ParseCIDR(c); err != nil {
+			if net.ParseIP(c) == nil {
+				ds.ErrorHint(file, fmt.Sprintf("expose.allow[%d]", i),
+					fmt.Sprintf("%q is not an IP or CIDR block", c),
+					"e.g. 100.64.0.0/10 for a Tailscale tailnet")
+			}
+		}
 	}
 
 	if e.Timeouts != nil && !proxied {
