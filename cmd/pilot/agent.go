@@ -75,11 +75,20 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string) error {
 	var failed, changed int
 
 	for _, host := range hosts {
-		// Skip hosts already running the right thing, so a fleet-wide run is
+		// Skip hosts already running this exact build, so a fleet-wide run is
 		// cheap and its output says what it actually did.
-		if _, state, _ := a.InspectAgent(ctx, host); state == app.AgentReady {
-			fmt.Printf("  ✔ %s already current\n", host)
-			continue
+		//
+		// The comparison is the build, not just the protocol. Matching
+		// protocols mean the two can talk, which is what a deploy needs before
+		// it will trust the agent — but they do not mean the agent is running
+		// the same code, and a fix released in the CLI is no use sitting on
+		// your laptop. Someone who types `agent upgrade` is asking for the
+		// agent to match, so protocol equality is too weak a reason to decline.
+		if rc, state, _ := a.InspectAgent(ctx, host); state == app.AgentReady {
+			if info, err := rc.Check(ctx); err == nil && info.Build == version {
+				fmt.Printf("  ✔ %s already runs %s\n", host, version)
+				continue
+			}
 		}
 
 		fmt.Printf("  %s\n", host)
@@ -100,7 +109,7 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string) error {
 		return exitWith(1)
 	}
 	if changed == 0 {
-		fmt.Printf("  every agent already matches pilot %s\n\n", version)
+		fmt.Printf("  every agent already runs pilot %s\n\n", version)
 	}
 	return nil
 }
@@ -172,6 +181,16 @@ func runAgentStatus(ctx context.Context, g *globals) error {
 		switch state {
 		case app.AgentReady:
 			info, _ := rc.Check(ctx)
+
+			// Protocol-compatible but a different build still deserves a nudge:
+			// it is running code this CLI did not ship, and saying nothing here
+			// would contradict `agent upgrade`, which does replace it.
+			if info.Build != version {
+				stale = true
+				fmt.Printf("  ⚠ %-12s agent %s, this pilot is %s (protocol %d, compatible)\n",
+					host, info.Build, version, info.Protocol)
+				continue
+			}
 			fmt.Printf("  ✔ %-12s agent %s (protocol %d)\n", host, info.Build, info.Protocol)
 		case app.AgentSkewed:
 			stale = true
