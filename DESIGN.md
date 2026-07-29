@@ -918,7 +918,138 @@ installed a stale agent left in `/tmp`.
 
 ---
 
-## 13. Roadmap
+## 13. Autonomous agents
+
+Pilot is built so that an AI agent can deploy and monitor services on a user's
+behalf without a human approving each action, and without that autonomy being
+the reason something breaks.
+
+Those two goals pull against each other, and the resolution is the whole design:
+**the human approves a policy, once, in git — not an action, every time.**
+
+### Why not approve each deploy
+
+The obvious safety mechanism is to make the agent propose and the human confirm.
+It is rejected deliberately.
+
+An approval that a user grants dozens of times a day is not a control, it is a
+keystroke. Approval fatigue converts it into a rubber stamp, and a rubber stamp
+is *worse* than no gate at all: it manufactures the belief that something was
+checked. It also destroys the reason to use an agent — an agent that stops every
+few minutes is a slower way of typing `pilot deploy` yourself.
+
+So the gate moves. What the human reviews is the boundary, expressed in the
+fleet repository, versioned and diffable like everything else Pilot treats as
+desired state.
+
+### The boundary lives in config, not in the request
+
+```yaml
+agents:
+  claude:
+    capabilities: [deploy, rollback]   # omit for read-only
+    services: [wakapi, kite, docmost]  # never atuin or paperless
+    max_concurrent: 1
+```
+
+No `agents:` block means no agent access at all. Deny by default, so a fleet
+that upgrades into a Pilot with this feature gains nothing it did not ask for.
+
+Putting the boundary in config rather than in the agent's request is not
+bookkeeping — it is what makes the boundary hold. **An agent operating on
+infrastructure reads untrusted text all day**: HTTP headers and usernames that
+landed in a log line, a hand-edited compose file surfaced as drift, a container
+name someone chose. Any of it can contain instructions aimed at the model. If
+the permitted scope travelled in the request, text of that kind could widen it.
+Because the scope is read from a file the agent cannot write, an injected
+"deploy to every host" has nothing to act on: the service is not on the list,
+and the request is refused before anything is staged.
+
+### Reversibility is what makes autonomy defensible
+
+Autonomy is acceptable here for one specific reason: Pilot already undoes its
+own mistakes. A deploy is health-verified by the agent on the host, and a failed
+verification restores both the previous release and its route, with nobody
+watching. The blast radius of a bad autonomous deploy is bounded by machinery
+that already exists and already runs unattended.
+
+That makes one flag the single most important thing to keep away from an AI:
+
+> `--no-verify` — "skip health verification (also disables the automatic
+> rollback that depends on it)"
+
+Verification is therefore **mandatory** for any agent-initiated deploy, not
+merely default. An agent that can turn off verification can turn off the only
+thing making its autonomy safe.
+
+### Visibility replaces approval
+
+Not asking the user is different from not telling them. Every agent-initiated
+deploy and rollback fires through the notifier machinery that already exists for
+alerts, carrying the service, the release, the agent that did it, and the exact
+command to undo it:
+
+    pilot rollback wakapi
+
+The user is never blocked and never surprised. Control moves from *before* the
+action, where it costs attention on every deploy, to *immediately after*, where
+it costs nothing until it is needed. That is the trade that lets an agent be
+autonomous without being a frustration.
+
+### The tool surface is a narrowing, not a mapping
+
+A one-to-one wrapper around the CLI would hand an agent every escape hatch Pilot
+has. The exposed surface is chosen by what it must *not* reach:
+
+| Withheld | Why |
+|---|---|
+| `--force` | It is the guard that stops a fleet deploy recreating a database. |
+| `@tag` selectors | One named service per call, so blast radius is one decision. |
+| `--no-verify` | Disables the automatic rollback autonomy depends on. |
+| `doctor --fix` | Edits the global Caddyfile; has taken sites down before. |
+| `bootstrap`, `agent upgrade` | Installs binaries as root. |
+| `routes --prune` | Deletes routing for services it may not know about. |
+| `manage: observe` services | Databases. Already refused without `--force`. |
+
+An agent is also never given SSH credentials or a shell. It goes through Pilot,
+because Pilot is where every rule above is enforced — a shell would route around
+all of them.
+
+### Two contracts, one lesson
+
+Logs and drift details are returned to the agent as **explicitly fenced
+untrusted data**, with a hard size cap. Uncapped log output would both flood a
+model's context and quietly turn attacker-influenced text into apparent
+instructions.
+
+The tool schemas are versioned and pinned exactly as `proto.Version` and
+`SchemaDigest` are, for the same reason and after the same failure: a surface
+that can change without its version changing produces a client that mis-parses
+it and fails somewhere far from the cause.
+
+### Shape of the work
+
+Everything of value here is CLI-level, so it is built there first and the agent
+surface is a thin wrapper. A wrapper over a safe CLI is easy; one hiding an
+unsafe CLI is a liability.
+
+1. **Capability tiers**, deny by default. Nothing else is safe to ship first.
+2. **`pilot context --json`** — the whole picture in one call, so an agent has
+   no reason to act on a partial read. `--json` also fills in on `logs`,
+   `routes`, `top`, and `agent`.
+3. **Confirm digests** covering desired *and* observed state. `Plan.Hash` covers
+   only the desired inputs by design, so it does not move when the fleet does;
+   an autonomous agent needs to be refused when it acts on a stale read.
+4. **`pilot mcp serve --as <agent>`** — the narrowed tool set. Tool descriptions
+   are where the conceptual teaching goes: releases are immutable, builds happen
+   locally, drift means someone hand-edited a host. Retries attach to the
+   running job rather than starting a second deploy.
+5. **Audit** — extend the existing `By` field with the agent identity and the
+   digest it acted on, surfaced in `pilot releases`.
+
+---
+
+## 14. Roadmap
 
 **Phase 1 — walking skeleton. ✅ Built.** Config parsing · local build · SSH transport ·
 release and symlink machinery · `compose` **and** `static` runtimes · **Caddy adapter**
@@ -952,13 +1083,17 @@ concurrency and abort gates · `manage: observe` enforcement · TLS expiry alert
 (NAT-friendly, no inbound rules) and it serves a web UI over the same protocol the CLI
 already speaks. Nothing in phases 1–3 changes.
 
+**Phase 5 — autonomous agents.** Capability tiers · `pilot context` · confirm digests ·
+`pilot mcp serve` · agent-attributed audit. See section 13; the ordering is deliberate,
+since every item before the MCP server is what makes the MCP server safe to expose.
+
 **Later:** blue/green for compose (start on a second port, flip the Caddy upstream via the
 admin API, drain, stop the old stack — now trivial because Pilot owns routing) · scheduled
 services · a `k3s` runtime · Prometheus remote-write.
 
 ---
 
-## 14. Resolved decisions
+## 15. Resolved decisions
 
 1. **Build location** — local or CI only. Never on a target host; that's how you fill a
    disk at the worst possible moment.
