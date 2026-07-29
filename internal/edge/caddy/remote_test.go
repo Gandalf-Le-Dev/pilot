@@ -2,7 +2,9 @@ package caddy
 
 import (
 	"context"
+	"fmt"
 	"maps"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +20,8 @@ type fakeRunner struct {
 
 	validateFails bool
 	reloadFails   bool
+	writeFails    bool
+	corruptWrite  bool
 	missing       map[string]bool
 }
 
@@ -51,6 +55,16 @@ func (f *fakeRunner) Run(ctx context.Context, cmd string) (ssh.Result, error) {
 		if _, ok := f.files[unquote(fields[len(fields)-1])]; !ok {
 			return ssh.Result{ExitCode: 1}, nil
 		}
+	case strings.HasPrefix(cmd, "ls -1t "):
+		prefix := strings.TrimSuffix(unquote(strings.Fields(strings.TrimPrefix(cmd, "ls -1t "))[0]), "*")
+		var found []string
+		for p := range f.files {
+			if strings.HasPrefix(p, prefix) {
+				found = append(found, p)
+			}
+		}
+		sort.Sort(sort.Reverse(sort.StringSlice(found)))
+		return ssh.Result{Stdout: strings.Join(found, "\n")}, nil
 	case strings.HasPrefix(cmd, "ls -1 "):
 		var names []string
 		dir := unquote(strings.Fields(strings.TrimPrefix(cmd, "ls -1 "))[0])
@@ -82,6 +96,17 @@ func (f *fakeRunner) ReadFile(ctx context.Context, p string) ([]byte, error) {
 }
 
 func (f *fakeRunner) WriteFile(ctx context.Context, p string, data []byte, mode string) error {
+	switch {
+	case f.writeFails:
+		// A real shell can truncate and *then* fail, which is exactly how the
+		// Caddyfile was lost.
+		f.files[p] = ""
+		return fmt.Errorf("simulated write failure after truncation")
+	case f.corruptWrite:
+		f.corruptWrite = false
+		f.files[p] = "partially written garbage"
+		return nil
+	}
 	f.files[p] = string(data)
 	return nil
 }
@@ -322,5 +347,101 @@ func TestBackupName(t *testing.T) {
 	got := BackupName("/etc/caddy/Caddyfile", at)
 	if got != "/etc/caddy/Caddyfile.pilot-bak-20260727T103000Z" {
 		t.Errorf("BackupName = %q", got)
+	}
+}
+
+// The incident this guards against, reproduced.
+//
+// A write that fails *after* truncating used to be treated as "nothing
+// happened": EnsureImport restored only when validation failed, so the
+// wrecked file survived with a backup nobody knew to use.
+func TestEnsureImportRestoresWhenTheWriteFails(t *testing.T) {
+	original := "example.com {\n\tfile_server\n}\n\nnotes.example.com {\n\treverse_proxy localhost:3001\n}\n"
+	f := newFake(map[string]string{"/etc/caddy/Caddyfile": original})
+	f.writeFails = true
+
+	_, err := EnsureImport(context.Background(), f, testPaths, at)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(err.Error(), "restored") {
+		t.Errorf("error should say the file was restored: %v", err)
+	}
+	if got := f.files["/etc/caddy/Caddyfile"]; got != original {
+		t.Errorf("Caddyfile not restored after a failed write:\n%q", got)
+	}
+}
+
+// A write can also "succeed" having landed something else. Reading it back is
+// the only way to know.
+func TestEnsureImportRestoresWhenTheWriteLandsWrong(t *testing.T) {
+	original := "example.com {\n\tfile_server\n}\n"
+	f := newFake(map[string]string{"/etc/caddy/Caddyfile": original})
+	f.corruptWrite = true
+
+	_, err := EnsureImport(context.Background(), f, testPaths, at)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(err.Error(), "does not match what was written") {
+		t.Errorf("error should name the mismatch: %v", err)
+	}
+	if got := f.files["/etc/caddy/Caddyfile"]; got != original {
+		t.Errorf("Caddyfile not restored:\n%q", got)
+	}
+}
+
+// The second half: a retry must not build on wreckage. This is what actually
+// took the sites down — a second --fix appended an import to a file that had
+// already lost most of its content, then reloaded Caddy with it.
+func TestEnsureImportRefusesATruncatedCaddyfile(t *testing.T) {
+	full := strings.Repeat("example.com {\n\tfile_server\n}\n\n", 20)
+	f := newFake(map[string]string{
+		"/etc/caddy/Caddyfile":                            "# almost nothing left\n",
+		"/etc/caddy/Caddyfile.pilot-bak-20260728T081636Z": full,
+	})
+
+	_, err := EnsureImport(context.Background(), f, testPaths, at)
+	if err == nil {
+		t.Fatal("want a refusal")
+	}
+	for _, want := range []string{"looks like a previous run damaged it", "diff", "cp -p"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q:\n%v", want, err)
+		}
+	}
+	if f.ran("caddy reload") {
+		t.Error("must not reload a config it refused to trust")
+	}
+}
+
+// Deleting a site or two is normal editing, not damage.
+func TestEnsureImportAllowsModestShrinkage(t *testing.T) {
+	full := strings.Repeat("example.com {\n\tfile_server\n}\n\n", 20)
+	slightly := strings.Repeat("example.com {\n\tfile_server\n}\n\n", 15)
+
+	f := newFake(map[string]string{
+		"/etc/caddy/Caddyfile":                            slightly,
+		"/etc/caddy/Caddyfile.pilot-bak-20260728T081636Z": full,
+	})
+
+	if _, err := EnsureImport(context.Background(), f, testPaths, at); err != nil {
+		t.Fatalf("a legitimately edited file should still be modifiable: %v", err)
+	}
+}
+
+func TestInstallSnippetUndoesAFailedWrite(t *testing.T) {
+	const good = "api.example.com {\n\treverse_proxy 127.0.0.1:8080\n}\n"
+	f := newFake(map[string]string{
+		"/etc/caddy/Caddyfile":         "import pilot.d/*.caddy\n",
+		"/etc/caddy/pilot.d/api.caddy": good,
+	})
+	f.corruptWrite = true
+
+	if _, err := InstallSnippet(context.Background(), f, testPaths, "api", "api.example.com {\n}\n"); err == nil {
+		t.Fatal("want an error")
+	}
+	if got := f.files["/etc/caddy/pilot.d/api.caddy"]; got != good {
+		t.Errorf("previous route not restored:\n%q", got)
 	}
 }
