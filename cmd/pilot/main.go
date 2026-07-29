@@ -76,6 +76,7 @@ func main() {
 
 	root.AddCommand(
 		newInitCmd(g),
+		newUpgradeCmd(g),
 		newDoctorCmd(g),
 		newBootstrapCmd(g),
 		newDeployCmd(g),

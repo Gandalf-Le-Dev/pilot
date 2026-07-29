@@ -79,6 +79,20 @@ release checksums, and installs it under systemd. Because the agent comes from
 the same release as the CLI that fetched it, protocol skew between them is
 impossible rather than merely unlikely.
 
+## Upgrading
+
+```
+pilot upgrade            # replaces this binary with the latest release
+pilot upgrade --check    # exit 2 if an update exists, 0 if current
+```
+
+Homebrew installs are detected and left alone — it names `brew upgrade pilot`
+rather than overwriting a file brew believes it owns.
+
+Upgrading the CLI does not upgrade the agents already on your hosts. A newer
+CLI refuses to talk to an older agent rather than guess, so run
+`pilot bootstrap <host>` afterwards to bring each one up to match.
+
 ## Building from source
 
 ```
