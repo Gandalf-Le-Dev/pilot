@@ -887,6 +887,25 @@ does, so it is part of the contract. Two things enforce that now:
   serve a route without its address restriction and report success — a silent
   hole is far worse than a refused deploy.
 
+**Nobody has to remember any of this.** A version check that leaves you a chore
+has only moved the problem, and the chore was worse than it looked: a skewed
+agent made `AgentOrNil` return nil, so a deploy fell back to driving the host
+over SSH and *silently* gave up the automatic rollback — a safety regression
+caused by the unrelated act of upgrading the CLI. So:
+
+- **A deploy repairs a skewed agent and continues**, announcing it. The install
+  is the same version-locked, checksum-verified one `bootstrap` performs, and a
+  deploy is already about to change the host, so it is in scope rather than a
+  surprise. `--no-agent-upgrade` opts out and accepts the degradation.
+- **`pilot agent upgrade [host|@tag]`** is the explicit form, and
+  `pilot agent status` shows each host's version. `bootstrap` still does this,
+  but naming it as the remedy was itself the bug: "bootstrap" means prepare a
+  new host, so telling someone to re-run it to update software reads as an
+  instruction to start over.
+- **`pilot doctor` reports skew and `--fix` repairs it.** An absent agent is
+  reported but *not* auto-fixed: replacing a running agent is a repair, while
+  installing a first one is setup, and setup stays an explicit command.
+
 The escape hatch used to recover from that incident — a `--agent-binary` flag
 pointing at a hand-built agent — **has been removed**. It installed an
 unverified binary as root, and by making the mismatch survivable it removed the

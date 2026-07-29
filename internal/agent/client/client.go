@@ -52,7 +52,7 @@ type SkewError struct {
 }
 
 func (e *SkewError) Error() string {
-	return fmt.Sprintf("agent speaks protocol %d, this build speaks %d — re-run `pilot bootstrap <host>` to update it",
+	return fmt.Sprintf("agent speaks protocol %d, this build speaks %d — run `pilot agent upgrade` to update it",
 		e.Agent, e.Expected)
 }
 

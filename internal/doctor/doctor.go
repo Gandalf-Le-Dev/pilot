@@ -125,6 +125,11 @@ type Env struct {
 	// Offline suppresses every check that needs the network, so config
 	// validation alone can run in CI.
 	Offline bool
+
+	// Agents answers questions about the pilotd on each host, and repairs one
+	// that has fallen behind. Nil skips the agent check entirely, which is what
+	// the tests and `--offline` want.
+	Agents Agents
 }
 
 // Client returns the connection for a host, or nil when unreachable.

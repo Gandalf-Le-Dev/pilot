@@ -107,6 +107,11 @@ pilot binary is trusted only for a released build, where the two shipped in the
 same tarball, because otherwise the filename is the only thing tying them
 together.
 
+Agents are tied to the CLI release that installed them, but keeping them in
+step is not your job: a deploy that meets a stale agent upgrades it and carries
+on. `pilot agent status` shows what each host runs, `pilot agent upgrade` brings
+them up to date on demand, and `pilot doctor --fix` repairs one it finds behind.
+
 There is deliberately no flag to install an agent from an arbitrary path. An
 agent whose protocol and config schema nobody has checked, installed as root,
 is worth less than a clear error — and the flag's one real use was hiding a CLI

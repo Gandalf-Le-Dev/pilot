@@ -22,10 +22,11 @@ import (
 
 func newDeployCmd(g *globals) *cobra.Command {
 	var (
-		planOnly bool
-		ref      string
-		noVerify bool
-		force    bool
+		planOnly       bool
+		ref            string
+		noVerify       bool
+		force          bool
+		noAgentUpgrade bool
 	)
 
 	cmd := &cobra.Command{
@@ -39,6 +40,7 @@ func newDeployCmd(g *globals) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDeploy(cmd.Context(), g, args[0], deployOpts{
 				planOnly: planOnly, ref: ref, noVerify: noVerify, force: force,
+				noAgentUpgrade: noAgentUpgrade,
 			})
 		},
 	}
@@ -48,6 +50,8 @@ func newDeployCmd(g *globals) *cobra.Command {
 	cmd.Flags().BoolVar(&noVerify, "no-verify", false,
 		"skip health verification (also disables the automatic rollback that depends on it)")
 	cmd.Flags().BoolVar(&force, "force", false, "deploy a `manage: observe` service anyway")
+	cmd.Flags().BoolVar(&noAgentUpgrade, "no-agent-upgrade", false,
+		"do not repair a version-skewed agent; deploy without one instead (loses automatic rollback)")
 
 	return cmd
 }
@@ -57,6 +61,10 @@ type deployOpts struct {
 	ref      string
 	noVerify bool
 	force    bool
+
+	// noAgentUpgrade opts out of repairing a skewed agent, accepting a deploy
+	// with no automatic rollback rather than reinstalling the daemon.
+	noAgentUpgrade bool
 }
 
 func runDeploy(ctx context.Context, g *globals, selector string, opts deployOpts) error {
@@ -126,19 +134,54 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 		targets[host] = t
 	}
 
+	log := func(format string, args ...any) { fmt.Printf(format+"\n", args...) }
+
 	// Find the agents up front, so the plan can say which hosts will have the
 	// deploy owned by a daemon and which will not.
+	//
+	// A version-skewed agent is repaired here rather than counted as absent.
+	//
+	// Falling back to driving the host over SSH looks like graceful degradation
+	// and is not one: it silently gives up the automatic rollback that is the
+	// agent's whole reason to exist, and it does so because of the unrelated act
+	// of upgrading the CLI. Reinstalling is exactly what `pilot agent upgrade`
+	// would do, from the same version-locked, checksum-verified source, and this
+	// deploy is already about to change the host.
 	agents := map[string]*remote.Client{}
-	var agentless []string
+
+	// Carry *why* a host has no usable agent, not just that it hasn't one —
+	// otherwise the warning below cannot name the right remedy.
+	type degraded struct {
+		host   string
+		skewed bool
+	}
+	var agentless []degraded
+
 	for _, host := range s.Hosts {
-		if rc, _ := a.AgentOrNil(ctx, host); rc != nil {
+		rc, state, cause := a.InspectAgent(ctx, host)
+
+		if state == app.AgentSkewed && !opts.noAgentUpgrade {
+			log("  %s: %s", host, firstLine(cause.Error()))
+			log("  %s: upgrading the agent before deploying", host)
+
+			if _, err := a.SyncAgent(ctx, host, app.AgentSync{
+				Version:   version,
+				ModuleDir: moduleDir(),
+				Log:       func(f string, args ...any) { log("    ✔ "+f, args...) },
+			}); err != nil {
+				return fmt.Errorf("the agent on %s is too old for this pilot and could not be upgraded: %w\n\n"+
+					"deploying anyway would silently lose automatic rollback — fix the agent, or pass\n"+
+					"--no-agent-upgrade to accept that", host, err)
+			}
+			rc, state, _ = a.InspectAgent(ctx, host)
+		}
+
+		if state == app.AgentReady {
 			agents[host] = rc
 		} else {
-			agentless = append(agentless, host)
+			agentless = append(agentless, degraded{host: host, skewed: state == app.AgentSkewed})
 		}
 	}
-
-	log := func(format string, args ...any) { fmt.Printf(format+"\n", args...) }
 
 	// ---- build, on this machine; never on a target host.
 	src, err := build.Resolve(ctx, s, a.Root, sourceCache())
@@ -177,10 +220,23 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 	}
 
 	if len(agentless) > 0 && !asJSON {
-		fmt.Printf("  ! no agent on %s — the deploy will run from here, so losing this\n",
-			strings.Join(agentless, ", "))
-		fmt.Printf("    terminal mid-deploy leaves nothing to finish the rollback.\n")
-		fmt.Printf("    fix with: pilot bootstrap %s\n\n", agentless[0])
+		// Name the right remedy. A skewed agent is present and running, so
+		// "no agent … pilot bootstrap" sends someone to install what is
+		// already there; the fix is to upgrade it, or to stop passing
+		// --no-agent-upgrade.
+		hosts := make([]string, 0, len(agentless))
+		for _, h := range agentless {
+			hosts = append(hosts, h.host)
+		}
+		fmt.Printf("  ! no usable agent on %s — the deploy will run from here, so losing\n",
+			strings.Join(hosts, ", "))
+		fmt.Printf("    this terminal mid-deploy leaves nothing to finish the rollback.\n")
+
+		if agentless[0].skewed {
+			fmt.Printf("    fix with: pilot agent upgrade %s\n\n", agentless[0].host)
+		} else {
+			fmt.Printf("    fix with: pilot bootstrap %s\n\n", agentless[0].host)
+		}
 	}
 
 	if opts.planOnly {

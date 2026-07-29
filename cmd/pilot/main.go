@@ -79,6 +79,7 @@ func main() {
 		newUpgradeCmd(g),
 		newDoctorCmd(g),
 		newBootstrapCmd(g),
+		newAgentCmd(g),
 		newDeployCmd(g),
 		newRollbackCmd(g),
 		newStatusCmd(g),

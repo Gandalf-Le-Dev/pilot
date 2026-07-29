@@ -167,7 +167,7 @@ func (a *Agent) PutService(spec string) (*config.Service, error) {
 		// a YAML error about a field they never wrote.
 		if strings.Contains(err.Error(), "unknown field") {
 			return nil, fmt.Errorf("%w\n\nthis agent (protocol %d) does not know that field, so it was "+
-				"probably\nwritten by a newer pilot — update the agent with:  pilot bootstrap %s",
+				"probably\nwritten by a newer pilot — update the agent with:  pilot agent upgrade %s",
 				err, proto.Version, a.Host)
 		}
 		return nil, err

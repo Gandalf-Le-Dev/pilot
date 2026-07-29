@@ -47,6 +47,7 @@ func runDoctor(ctx context.Context, g *globals, offline, fix bool) error {
 	env := &doctor.Env{Fleet: a.Fleet, Diags: a.Diags, Offline: offline}
 	if !offline {
 		env.Clients = a.ConnectAll(ctx, a.Fleet.HostNames())
+		env.Agents = agentAdapter{app: a}
 	}
 
 	report := doctor.Run(ctx, env, doctor.Standard())

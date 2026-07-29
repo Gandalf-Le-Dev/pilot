@@ -21,8 +21,9 @@ func newUpgradeCmd(g *globals) *cobra.Command {
 			"the download against the release checksums and confirming it runs.\n\n" +
 			"Upgrading the CLI does not upgrade the agents already on your hosts. Because\n" +
 			"an agent is fetched from the release of the CLI that installed it, a newer CLI\n" +
-			"will refuse to talk to an older agent rather than guess — run `pilot bootstrap\n" +
-			"<host>` afterwards to bring each one up to match.",
+			"will refuse to talk to an older agent rather than guess. Run `pilot agent\n" +
+			"upgrade` afterwards to bring them up to match — or just deploy, which repairs\n" +
+			"a skewed agent rather than quietly proceeding without one.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runUpgrade(cmd.Context(), checkOnly)
@@ -83,7 +84,9 @@ func runUpgrade(ctx context.Context, checkOnly bool) error {
 	}
 
 	fmt.Printf("\n  upgraded to %s\n", rel.Version())
-	fmt.Printf("  agents on your hosts still run their original version — bring them up to\n")
-	fmt.Printf("  match with `pilot bootstrap <host>`\n\n")
+	fmt.Printf("  agents on your hosts still run their original version:\n\n")
+	fmt.Printf("      pilot agent upgrade\n\n")
+	fmt.Printf("  a deploy repairs a skewed agent on its own, so this is a convenience\n")
+	fmt.Printf("  rather than something you must remember\n\n")
 	return nil
 }

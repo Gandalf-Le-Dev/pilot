@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,15 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/goccy/go-yaml"
-
-	"github.com/Gandalf-Le-Dev/pilot/internal/agent"
-	agentclient "github.com/Gandalf-Le-Dev/pilot/internal/agent/client"
-	"github.com/Gandalf-Le-Dev/pilot/internal/agent/install"
-	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
 	"github.com/Gandalf-Le-Dev/pilot/internal/app"
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
-	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/ssh"
 )
 
@@ -153,109 +145,23 @@ func bootstrapHost(ctx context.Context, a *app.App, host string, opts bootstrapO
 		fmt.Println("    – agent installation skipped (--no-agent)")
 		return nil
 	}
-	return installAgent(ctx, a, client, host, opts)
+	return installAgent(ctx, a, host)
 }
 
 // installAgent puts pilotd on the host and starts it under systemd.
-func installAgent(ctx context.Context, a *app.App, client *ssh.Client, host string, opts bootstrapOpts) error {
-	arch, err := install.DetectArch(ctx, client)
-	if err != nil {
-		return err
-	}
-
-	src := install.Source{Version: version, ModuleDir: moduleDir()}
-	binary, origin, cleanup, err := src.Resolve(ctx, arch)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-	fmt.Printf("    ✔ agent for linux/%s (%s)\n", arch, origin)
-
-	if _, err := install.Install(ctx, client, binary, install.Options{
-		Host: host, Layout: a.Layout, Caddy: a.CaddyPaths(),
-	}); err != nil {
-		return err
-	}
-
-	// Confirm the daemon actually came up and speaks our protocol. Reporting
-	// success on the strength of `systemctl restart` returning 0 would be a
-	// lie: the unit can start and the process exit a second later.
-	rc := remote.New(client, host, a.Layout)
-	info, err := waitForAgent(ctx, rc)
-	if err != nil {
-		// A skewed agent did come up — saying it did not sends someone to
-		// journalctl to read healthy startup logs. It means the binary just
-		// installed was not the one this pilot was built from.
-		var skew *agentclient.SkewError
-		if errors.As(err, &skew) {
-			return fmt.Errorf("the agent that started speaks protocol %d, but this pilot speaks %d\n"+
-				"      the binary installed (%s) is not the one this build expects",
-				skew.Agent, skew.Expected, origin)
-		}
-		return fmt.Errorf("the agent was installed but did not come up: %w\n"+
-			"      check it with:  ssh %s journalctl -u pilotd -n 50 --no-pager", err, host)
-	}
-
-	fmt.Printf("    ✔ agent running (build %s, protocol %d)\n", info.Build, info.Protocol)
-
-	// Push the host-wide half of the configuration. Without it the agent can
-	// evaluate rules but has nowhere to send them, and alerting silently does
-	// nothing — which is the worst possible failure mode for alerting.
-	spec, err := fleetConfigSpec(a)
-	if err != nil {
-		return err
-	}
-	if err := rc.PutConfig(ctx, spec); err != nil {
-		return fmt.Errorf("installing alert configuration: %w", err)
-	}
-	if n := len(a.Fleet.Notifiers); n > 0 {
-		fmt.Printf("    ✔ %d notifier(s) and %d host rule(s) installed\n", n, len(a.Fleet.Alerts))
-	}
-	return nil
-}
-
-// fleetConfigSpec renders the host-wide configuration the agent needs to alert
-// on its own: notifiers and host-scoped rules.
-func fleetConfigSpec(a *app.App) (string, error) {
-	body, err := yaml.Marshal(agent.FleetConfig{
-		Notifiers: a.Fleet.Notifiers,
-		Alerts:    a.Fleet.Alerts,
+//
+// The work lives in app.SyncAgent, shared with `pilot agent upgrade` and with
+// the deploy path that repairs a skewed agent — three callers that must install
+// the same binary the same way.
+func installAgent(ctx context.Context, a *app.App, host string) error {
+	_, err := a.SyncAgent(ctx, host, app.AgentSync{
+		Version:   version,
+		ModuleDir: moduleDir(),
+		Log:       func(f string, args ...any) { fmt.Printf("    ✔ "+f+"\n", args...) },
 	})
-	if err != nil {
-		return "", err
-	}
-	return string(body), nil
+	return err
 }
 
-// waitForAgent polls until the daemon answers, since systemd returns as soon as
-// it has forked rather than when the process is ready.
-func waitForAgent(ctx context.Context, rc *remote.Client) (*proto.Info, error) {
-	deadline := time.Now().Add(15 * time.Second)
-	var last error
-
-	for time.Now().Before(deadline) {
-		info, err := rc.Check(ctx)
-		if err == nil {
-			return info, nil
-		}
-		last = err
-
-		// A protocol mismatch will not resolve itself by waiting.
-		var skew *remote.SkewError
-		if errors.As(err, &skew) {
-			return nil, err
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(time.Second):
-		}
-	}
-	return nil, last
-}
-
-// moduleDir returns the Pilot checkout to build the agent from, when the CLI is
-// being run from inside its own repository.
 // moduleDir finds a Pilot checkout to build the agent from.
 //
 // It searches upward from the working directory and from the binary's own
