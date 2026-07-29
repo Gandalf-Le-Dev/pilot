@@ -62,14 +62,18 @@ func DetectArch(ctx context.Context, ex transport.Executor) (Arch, error) {
 
 // Source locates a pilotd binary for a target architecture.
 //
-// The search order goes from most explicit to most convenient, and every step
-// is something an operator can reason about. Building from source is last but
-// is the common case for someone running Pilot out of its own repository, and
-// it avoids requiring any release infrastructure to exist at all.
+// Every path here ties the agent to the CLI that installs it: the release
+// tarball's sibling binary, the agent published with this CLI's own release,
+// or a build from this checkout. That is deliberate, and it is why there is no
+// longer an option to point at an arbitrary binary.
+//
+// There used to be one. It was reached for exactly once, to work around an
+// agent that rejected a config field the CLI had learned — and by making the
+// mismatch survivable it removed the pressure to fix it. An agent installed
+// from somewhere other than the CLI's own release is an agent whose protocol
+// and schema nobody has checked, installed as root. The supported way to run
+// an agent you built is to run the pilot you built alongside it.
 type Source struct {
-	// Explicit is a path given on the command line or in the environment.
-	Explicit string
-
 	// Version is the CLI's own version. A released build fetches the agent
 	// published alongside it, which is what makes protocol skew impossible
 	// rather than merely unlikely.
@@ -82,20 +86,35 @@ type Source struct {
 	ModuleDir string
 }
 
+// executable is os.Executable, indirected so a test can place a fake pilot in
+// a temporary directory and exercise the sibling lookup.
+var executable = os.Executable
+
 // Resolve returns a local path to a pilotd binary for arch, plus a description
 // of where it came from for the operator to see.
 func (s Source) Resolve(ctx context.Context, arch Arch) (path, origin string, cleanup func(), err error) {
 	noop := func() {}
 
-	if s.Explicit != "" {
-		if _, err := os.Stat(s.Explicit); err != nil {
-			return "", "", noop, fmt.Errorf("agent binary %s: %w", s.Explicit, err)
+	// A development build compiles its own agent whenever it can, before
+	// looking at anything on disk.
+	//
+	// The sibling lookup below is a filename match, nothing more: it installs
+	// whatever `pilotd-linux-<arch>` happens to sit next to the pilot binary,
+	// as root. In a release tarball those two shipped together and that is
+	// exactly right. For a `go build` dropped in a shared directory it is a
+	// coincidence — and it bit immediately, picking up an agent built before a
+	// protocol bump and installing it over the fixed one. Source is the only
+	// thing that provably matches a build that has no version to match against.
+	if s.ModuleDir != "" && !IsReleaseVersion(s.Version) {
+		built, err := buildAgent(ctx, s.ModuleDir, arch)
+		if err != nil {
+			return "", "", noop, err
 		}
-		return s.Explicit, "given path", noop, nil
+		return built, fmt.Sprintf("built from %s", s.ModuleDir), func() { os.Remove(built) }, nil
 	}
 
-	// A sibling of the running pilot binary, as a release tarball would lay out.
-	if self, err := os.Executable(); err == nil {
+	// A sibling of the running pilot binary, as a release tarball lays out.
+	if self, err := executable(); err == nil {
 		candidate := filepath.Join(filepath.Dir(self), AssetName(arch))
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, "alongside the pilot binary", noop, nil
@@ -112,17 +131,21 @@ func (s Source) Resolve(ctx context.Context, arch Arch) (path, origin string, cl
 		// A download failure is only recoverable if we can build instead.
 		if s.ModuleDir == "" {
 			return "", "", noop, fmt.Errorf("could not obtain the agent for linux/%s: %w\n"+
-				"pass --agent-binary <path> to install one you already have", arch, err)
+				"the agent must come from the same release as this pilot, so there is\n"+
+				"nothing safe to fall back to — retry, or run pilot from a checkout to\n"+
+				"build a matching agent", arch, err)
 		}
 	}
 
 	if s.ModuleDir == "" {
 		return "", "", noop, fmt.Errorf(
 			"no pilotd binary for linux/%s\n"+
-				"this build (%s) has no matching release to download from\n"+
-				"build one with:  GOOS=linux GOARCH=%s go build -o %s ./cmd/pilotd\n"+
-				"then pass --agent-binary %s",
-			arch, orDefault(s.Version, "dev"), arch, AssetName(arch), AssetName(arch))
+				"this build (%s) has no matching release to download from, and is not\n"+
+				"running inside a Pilot checkout to build one\n\n"+
+				"build the agent next to this binary:\n"+
+				"    GOOS=linux GOARCH=%s go build -o %s ./cmd/pilotd\n"+
+				"and put it beside pilot, or run pilot from the checkout instead",
+			arch, orDefault(s.Version, "dev"), arch, AssetName(arch))
 	}
 
 	built, err := buildAgent(ctx, s.ModuleDir, arch)
@@ -136,7 +159,7 @@ func (s Source) Resolve(ctx context.Context, arch Arch) (path, origin string, cl
 func buildAgent(ctx context.Context, moduleDir string, arch Arch) (string, error) {
 	if _, err := exec.LookPath("go"); err != nil {
 		return "", fmt.Errorf("no prebuilt agent found and Go is not installed to build one:\n" +
-			"install Go, or pass --agent-binary <path>")
+			"install Go, or use a released build of pilot, which downloads its own agent")
 	}
 
 	out := filepath.Join(os.TempDir(), fmt.Sprintf("pilotd-linux-%s-%d", arch, os.Getpid()))

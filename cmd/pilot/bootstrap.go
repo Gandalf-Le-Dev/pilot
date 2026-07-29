@@ -16,6 +16,7 @@ import (
 	"github.com/goccy/go-yaml"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent"
+	agentclient "github.com/Gandalf-Le-Dev/pilot/internal/agent/client"
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent/install"
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
 	"github.com/Gandalf-Le-Dev/pilot/internal/app"
@@ -48,17 +49,13 @@ func newBootstrapCmd(g *globals) *cobra.Command {
 
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "skip the confirmation prompt before editing the Caddyfile")
 	cmd.Flags().BoolVar(&opts.skipAgent, "no-agent", false, "prepare the host but do not install the agent")
-	cmd.Flags().StringVar(&opts.agentBinary, "agent-binary", os.Getenv("PILOT_AGENT_BIN"),
-		"path to a prebuilt pilotd binary (default: found alongside pilot, or built from source)")
-
 	return cmd
 }
 
 type bootstrapOpts struct {
-	selector    string
-	yes         bool
-	skipAgent   bool
-	agentBinary string
+	selector  string
+	yes       bool
+	skipAgent bool
 }
 
 func runBootstrap(ctx context.Context, g *globals, opts bootstrapOpts) error {
@@ -166,7 +163,7 @@ func installAgent(ctx context.Context, a *app.App, client *ssh.Client, host stri
 		return err
 	}
 
-	src := install.Source{Explicit: opts.agentBinary, Version: version, ModuleDir: moduleDir()}
+	src := install.Source{Version: version, ModuleDir: moduleDir()}
 	binary, origin, cleanup, err := src.Resolve(ctx, arch)
 	if err != nil {
 		return err
@@ -186,6 +183,15 @@ func installAgent(ctx context.Context, a *app.App, client *ssh.Client, host stri
 	rc := remote.New(client, host, a.Layout)
 	info, err := waitForAgent(ctx, rc)
 	if err != nil {
+		// A skewed agent did come up — saying it did not sends someone to
+		// journalctl to read healthy startup logs. It means the binary just
+		// installed was not the one this pilot was built from.
+		var skew *agentclient.SkewError
+		if errors.As(err, &skew) {
+			return fmt.Errorf("the agent that started speaks protocol %d, but this pilot speaks %d\n"+
+				"      the binary installed (%s) is not the one this build expects",
+				skew.Agent, skew.Expected, origin)
+		}
 		return fmt.Errorf("the agent was installed but did not come up: %w\n"+
 			"      check it with:  ssh %s journalctl -u pilotd -n 50 --no-pager", err, host)
 	}
@@ -250,12 +256,41 @@ func waitForAgent(ctx context.Context, rc *remote.Client) (*proto.Info, error) {
 
 // moduleDir returns the Pilot checkout to build the agent from, when the CLI is
 // being run from inside its own repository.
+// moduleDir finds a Pilot checkout to build the agent from.
+//
+// It searches upward from the working directory and from the binary's own
+// location. The second is not redundant: a development build is normally run
+// against a fleet repository somewhere else entirely, and searching only the
+// working directory loses the checkout the binary came from — leaving a build
+// that can prove nothing about the agent it installs, and so must refuse to
+// install one.
 func moduleDir() string {
-	wd, err := os.Getwd()
-	if err != nil {
-		return ""
+	var starts []string
+	if wd, err := os.Getwd(); err == nil {
+		starts = append(starts, wd)
 	}
-	for dir := wd; ; {
+	if self, err := os.Executable(); err == nil {
+		if real, err := filepath.EvalSymlinks(self); err == nil {
+			self = real
+		}
+		starts = append(starts, filepath.Dir(self))
+	}
+
+	for _, start := range starts {
+		if dir := findModuleRoot(start); dir != "" {
+			return dir
+		}
+	}
+	return ""
+}
+
+// findModuleRoot walks up from dir looking for Pilot's own module.
+//
+// Both checks matter: go.mod alone would match any Go project the fleet
+// repository happens to sit inside, and building ./cmd/pilotd there would fail
+// in a way that looks like Pilot's fault.
+func findModuleRoot(start string) string {
+	for dir := start; ; {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 			if _, err := os.Stat(filepath.Join(dir, "cmd", "pilotd")); err == nil {
 				return dir

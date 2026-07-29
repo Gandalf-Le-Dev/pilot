@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -245,38 +246,73 @@ func TestRenderUnitQuotesAwkwardPaths(t *testing.T) {
 	}
 }
 
-func TestSourceResolvePrefersExplicitPath(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "custom-pilotd")
+// withExecutable makes Resolve believe pilot lives at path.
+func withExecutable(t *testing.T, path string) {
+	t.Helper()
+	prev := executable
+	executable = func() (string, error) { return path, nil }
+	t.Cleanup(func() { executable = prev })
+}
+
+func TestSourceResolveFindsSiblingBinary(t *testing.T) {
+	// A release tarball lays pilot and pilotd-linux-<arch> side by side, so the
+	// sibling lookup is how an installed release finds its own agent without
+	// reaching the network at all.
+	dir := t.TempDir()
+	bin := filepath.Join(dir, AssetName(ArchAMD64))
 	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	path, origin, cleanup, err := Source{Explicit: bin}.Resolve(context.Background(), ArchAMD64)
+	self := filepath.Join(dir, "pilot")
+	if err := os.WriteFile(self, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withExecutable(t, self)
+
+	path, origin, cleanup, err := Source{}.Resolve(context.Background(), ArchAMD64)
 	defer cleanup()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if path != bin || !strings.Contains(origin, "given") {
+	if path != bin || !strings.Contains(origin, "alongside") {
 		t.Errorf("path = %q, origin = %q", path, origin)
 	}
 }
 
+// TestSourceHasNoArbitraryBinaryOption locks in a deliberate removal.
+//
+// `--agent-binary` let an operator install any file as root, and its one real
+// use was papering over a CLI whose config schema had outrun its agent. The
+// mismatch is now caught by the schema digest in the proto package; reviving
+// the flag would restore the workaround and the reason to skip the fix.
+func TestSourceHasNoArbitraryBinaryOption(t *testing.T) {
+	for i := range reflect.TypeOf(Source{}).NumField() {
+		switch name := reflect.TypeOf(Source{}).Field(i).Name; name {
+		case "Explicit", "Path", "Binary", "AgentBinary":
+			t.Errorf("Source.%s reintroduces an unverified agent path", name)
+		}
+	}
+}
+
 func TestSourceResolveReportsMissingBinaryUsefully(t *testing.T) {
-	_, _, cleanup, err := Source{Explicit: "/nope/pilotd"}.Resolve(context.Background(), ArchAMD64)
+	// No sibling, no release to download from, and no checkout to build in —
+	// the error is all the operator has to work from, so it must carry the
+	// command that produces an agent.
+	withExecutable(t, filepath.Join(t.TempDir(), "pilot"))
+
+	_, _, cleanup, err := Source{}.Resolve(context.Background(), ArchARM64)
 	defer cleanup()
 	if err == nil {
 		t.Fatal("want an error")
 	}
-
-	// With no explicit path and no module to build from, the error should tell
-	// the operator exactly how to produce one.
-	_, _, cleanup2, err := Source{}.Resolve(context.Background(), ArchARM64)
-	defer cleanup2()
-	if err == nil {
-		t.Fatal("want an error")
+	for _, want := range []string{"GOARCH=arm64", AssetName(ArchARM64)} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q: %v", want, err)
+		}
 	}
-	if !strings.Contains(err.Error(), "GOARCH=arm64") {
-		t.Errorf("error should give the build command: %v", err)
+	if strings.Contains(err.Error(), "--agent-binary") {
+		t.Errorf("error still advertises the removed flag: %v", err)
 	}
 }
 
@@ -292,5 +328,62 @@ func TestUninstallLeavesReleasesAlone(t *testing.T) {
 		if strings.Contains(c, "/opt/pilot/services") {
 			t.Errorf("uninstall must not touch deployed services: %q", c)
 		}
+	}
+}
+
+// TestSourceResolvePrefersSourceOverStaleSibling pins the precedence that a
+// real failure exposed.
+//
+// A dev build once picked up a `pilotd-linux-amd64` left in /tmp beside the
+// pilot binary, installed it as root, and produced an agent one protocol
+// version behind the CLI that installed it. The sibling lookup matches on
+// filename alone, so for a build with no version to check against it proves
+// nothing; a checkout does. Asserting the error is the point — it shows the
+// sibling was not silently used.
+func TestSourceResolvePrefersSourceOverStaleSibling(t *testing.T) {
+	dir := t.TempDir()
+	self := filepath.Join(dir, "pilot")
+	for _, f := range []string{self, filepath.Join(dir, AssetName(ArchAMD64))} {
+		if err := os.WriteFile(f, []byte("stale"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withExecutable(t, self)
+
+	// A checkout that cannot build, so a successful Resolve could only mean
+	// the sibling was used.
+	src := Source{Version: "dev", ModuleDir: t.TempDir()}
+	path, origin, cleanup, err := src.Resolve(context.Background(), ArchAMD64)
+	defer cleanup()
+
+	if err == nil {
+		t.Fatalf("resolved to %q (%s) instead of building from the checkout", path, origin)
+	}
+	if strings.Contains(origin, "alongside") {
+		t.Errorf("a dev build must not install an unverified sibling binary")
+	}
+}
+
+// TestSourceResolveUsesSiblingForReleaseBuild is the other half: in a release
+// tarball pilot and its agent shipped together, so the sibling is exactly
+// right and must not trigger a needless build.
+func TestSourceResolveUsesSiblingForReleaseBuild(t *testing.T) {
+	dir := t.TempDir()
+	self := filepath.Join(dir, "pilot")
+	agent := filepath.Join(dir, AssetName(ArchARM64))
+	for _, f := range []string{self, agent} {
+		if err := os.WriteFile(f, []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withExecutable(t, self)
+
+	path, origin, cleanup, err := Source{Version: "1.2.3", ModuleDir: dir}.Resolve(context.Background(), ArchARM64)
+	defer cleanup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != agent || !strings.Contains(origin, "alongside") {
+		t.Errorf("path = %q, origin = %q; want the sibling", path, origin)
 	}
 }

@@ -101,5 +101,15 @@ GOOS=linux GOARCH=amd64 go build -o pilotd-linux-amd64 ./cmd/pilotd
 ```
 
 A source build has no matching release to fetch from, so `bootstrap` compiles
-the agent itself when run from inside a checkout, or takes one via
-`--agent-binary`. The agent targets Linux; the CLI runs wherever Go does.
+the agent itself from the checkout the binary came from. That is the only agent
+it will install for a source build: a `pilotd-linux-<arch>` found next to the
+pilot binary is trusted only for a released build, where the two shipped in the
+same tarball, because otherwise the filename is the only thing tying them
+together.
+
+There is deliberately no flag to install an agent from an arbitrary path. An
+agent whose protocol and config schema nobody has checked, installed as root,
+is worth less than a clear error — and the flag's one real use was hiding a CLI
+that had outrun its agent, which is now caught by a failing test instead.
+
+The agent targets Linux; the CLI runs wherever Go does.

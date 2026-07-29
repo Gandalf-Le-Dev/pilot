@@ -15,7 +15,29 @@ import (
 // Version is the protocol version. The CLI refuses to talk to an agent that
 // does not match, and says to re-bootstrap, rather than failing in some
 // creative way halfway through a deploy.
-const Version = 2
+//
+// Bump this for a change to the wire format *or to the configuration schema*.
+// Both travel between the CLI and the agent, so both can be misunderstood, and
+// only one of them used to be covered: `expose.allow` was added to the config
+// while this stayed at 2, the handshake therefore passed, and the agent then
+// rejected the service definition with `unknown field "allow"` — after the
+// deploy had already begun. SchemaDigest below now makes that omission a
+// failing test rather than a failed deploy.
+const Version = 3
+
+// SchemaDigest pins the configuration schema this protocol version speaks.
+//
+// It must equal config.SchemaFingerprint(); a test enforces that. When the
+// test fails you have changed the schema, and the fix is one of:
+//
+//   - The change adds or renames a field the agent must understand: bump
+//     Version above, then update this digest. Older agents will be told to
+//     re-bootstrap instead of failing mid-deploy.
+//   - The change is invisible to the agent (a comment, a field it never
+//     decodes): update this digest alone.
+//
+// The choice is deliberately yours. What is not optional is making it.
+const SchemaDigest = "c1bb4ca746c36e9e"
 
 const (
 	// DefaultSocket is where the daemon listens. A Unix socket rather than a

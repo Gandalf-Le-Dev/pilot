@@ -25,6 +25,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/static"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/local"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
 // CacheDir holds the service definitions the CLI has pushed, relative to the
@@ -152,9 +153,23 @@ func (a *Agent) loadCache() error {
 }
 
 // PutService caches a service definition, replacing any previous one.
+//
+// Parsing is strict, so a field this agent does not know is refused rather
+// than ignored — silently dropping `expose.allow` would serve a route without
+// its address restriction and call the deploy a success.
 func (a *Agent) PutService(spec string) (*config.Service, error) {
 	s, err := config.ParseService([]byte(spec), "pushed")
 	if err != nil {
+		// A rejected field usually means the CLI is newer than this agent.
+		// The handshake should have caught that first — proto.Version now
+		// moves with the config schema — so reaching here means something
+		// slipped past it, and naming the fix beats leaving an operator with
+		// a YAML error about a field they never wrote.
+		if strings.Contains(err.Error(), "unknown field") {
+			return nil, fmt.Errorf("%w\n\nthis agent (protocol %d) does not know that field, so it was "+
+				"probably\nwritten by a newer pilot — update the agent with:  pilot bootstrap %s",
+				err, proto.Version, a.Host)
+		}
 		return nil, err
 	}
 	if s.Name == "" {

@@ -167,11 +167,26 @@ func StatusFooter(w io.Writer, degraded map[string]string, firing map[string][]s
 
 	if len(degraded) > 0 {
 		fmt.Fprintln(w)
+
+		// "No agent" is only one of the reasons a host degrades, and it was the
+		// wrong word for the commonest other one: an agent that is running but
+		// too old to talk to. Saying "no agent" there sends someone looking for
+		// a daemon that is right in front of them, and the follow-up telling
+		// them to install one repeats advice its own error line already gave.
+		var missing bool
 		for _, host := range sortedMapKeys(degraded) {
-			fmt.Fprintf(w, "  – %s: no agent, so drift and alerts are unavailable\n", host)
-			fmt.Fprintf(w, "      %s\n", firstLine(degraded[host]))
+			reason := firstLine(degraded[host])
+			if strings.Contains(reason, "protocol") {
+				fmt.Fprintf(w, "  – %s: agent unusable, so drift and alerts are unavailable\n", host)
+			} else {
+				fmt.Fprintf(w, "  – %s: no agent, so drift and alerts are unavailable\n", host)
+				missing = true
+			}
+			fmt.Fprintf(w, "      %s\n", reason)
 		}
-		fmt.Fprintln(w, "    install one with `pilot bootstrap <host>`")
+		if missing {
+			fmt.Fprintln(w, "    install one with `pilot bootstrap <host>`")
+		}
 	}
 }
 
