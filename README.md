@@ -179,6 +179,22 @@ It fires whoever ran the deploy — Pilot does not detect or care. That is the
 point: a notification you did not cause is the anomaly, whatever produced it.
 Delivery failures are logged by the agent and never fail a deploy.
 
+## Pin your image tags
+
+If a compose file says `image: app:latest`, two things break silently:
+
+- **A deploy becomes a no-op.** The release hash covers the compose file's
+  content, so publishing a new image under the same tag changes nothing Pilot can
+  see. `pilot deploy` correctly reports there is nothing to do, and the new
+  version never ships.
+- **A rollback stops rolling back.** Images are pulled when a release is *staged*,
+  not when it is activated, so re-activating an earlier release runs whatever the
+  tag points at now. The release directory goes back; the software does not. It
+  reports success and changes nothing, at the moment you need it most.
+
+`pilot doctor` warns about this. Pin a version — `image: app:1.4.2` — or a digest.
+A tag like `16-alpine` is fine: it moves only when somebody decides it should.
+
 ## Rollouts and stateful services
 
 A compose service can go live without dropping requests:
