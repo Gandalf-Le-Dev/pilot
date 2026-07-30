@@ -18,20 +18,31 @@ import (
 func Doctor(w io.Writer, r *doctor.Report, hostOrder []string) {
 	groups := r.Grouped(hostOrder)
 
+	st := newStyler(w)
+
 	for i, g := range groups {
 		if i > 0 {
 			fmt.Fprintln(w)
 		}
-		fmt.Fprintf(w, "  %s\n", groupTitle(g))
+		fmt.Fprintf(w, "  %s\n", st.header(groupTitle(g)))
 		for _, f := range g.Findings {
-			writeFinding(w, f)
+			writeFinding(w, st, f)
 		}
 	}
 
 	if len(groups) > 0 {
 		fmt.Fprintln(w)
 	}
-	fmt.Fprintf(w, "  %s\n", r.Summary())
+	summary := r.Summary()
+	switch {
+	case r.Errors() > 0:
+		summary = st.fail(summary)
+	case r.Warnings() > 0:
+		summary = st.warn(summary)
+	default:
+		summary = st.ok_(summary)
+	}
+	fmt.Fprintf(w, "  %s\n", summary)
 
 	if n := len(r.Fixable()); n > 0 {
 		fmt.Fprintf(w, "  %s can be repaired automatically — run `pilot doctor --fix`\n",
@@ -46,13 +57,28 @@ func groupTitle(g doctor.Group) string {
 	return string(g.Scope)
 }
 
-func writeFinding(w io.Writer, f doctor.Finding) {
-	line := fmt.Sprintf("    %s %s", f.Status.Symbol(), f.Title)
+func writeFinding(w io.Writer, st styler, f doctor.Finding) {
+	// Only the symbol and title are coloured. Detail is a paragraph, and a
+	// coloured paragraph is harder to read than a plain one — the job of colour
+	// here is to make the eye land on the line that matters, not to decorate it.
+	mark := fmt.Sprintf("%s %s", f.Status.Symbol(), f.Title)
+	switch f.Status {
+	case doctor.StatusFail:
+		mark = st.fail(mark)
+	case doctor.StatusWarn:
+		mark = st.warn(mark)
+	case doctor.StatusOK:
+		mark = st.ok_(mark)
+	default:
+		mark = st.muted(mark)
+	}
+
+	line := "    " + mark
 	if f.Detail != "" {
-		line += "  " + f.Detail
+		line += "  " + st.muted(f.Detail)
 	}
 	if f.Fixable() {
-		line += "     → --fix"
+		line += "     " + st.ok_("→ --fix")
 	}
 	fmt.Fprintln(w, line)
 

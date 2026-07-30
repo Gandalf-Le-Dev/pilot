@@ -257,6 +257,39 @@ them and a source they did not ask for would only earn them a warning.
 
 ---
 
+## 4.4 Terminal output
+
+Colour is a property of the destination, decided per call, never a global.
+
+Pilot's output is read by three things and only one is a person: a terminal, a
+script parsing columns, and an AI agent with the skill installed. Escape codes
+improve the first and corrupt the other two — an agent receives context filled
+with noise it cannot use, and a pipeline's parsing breaks in a way that surfaces
+months later in somebody's cron job. A guard test renders every table to a
+`bytes.Buffer` and fails on any escape sequence, because this is precisely the
+kind of thing that regresses quietly.
+
+Three things learned building it, each recorded next to the code that depends on
+them:
+
+- **Pad before colouring.** Escape sequences have no display width, so `%-*s`
+  applied to a styled string adds no padding at all — and only to the rows that
+  happen to be coloured, which reads as a data problem rather than a formatting
+  one. A test asserts stripped styled output is byte-identical to unstyled.
+- **Styles must come from the bound renderer**, never `lipgloss.NewStyle()`. The
+  package-level constructor uses lipgloss's global renderer, whose profile is
+  decided from `os.Stdout` at init, so a style built that way renders plain no
+  matter what it has been told. The symptom is styling that looks like it was
+  never wired up.
+- **No adaptive colours.** `AdaptiveColor` resolves by querying the terminal for
+  its background and blocking for a reply. Terminals that do not answer cost the
+  full timeout — measured here as `pilot status` going from 1.4s to 6.4s. Fixed
+  ANSI-256 values legible on both backgrounds are worth more than a perfect
+  shade, and nothing carries meaning by colour alone: every coloured string is
+  already prefixed by a symbol or a word.
+
+---
+
 ## 5. On-host layout
 
 ```

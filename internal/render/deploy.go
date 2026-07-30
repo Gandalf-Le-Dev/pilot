@@ -88,18 +88,23 @@ func blipNote(p *deploy.Plan) string {
 
 // Outcomes summarises what a deploy actually did.
 func Outcomes(w io.Writer, outcomes []deploy.Outcome) {
+	st := newStyler(w)
+
 	for _, o := range outcomes {
 		switch {
 		case o.Succeeded && o.Message == "unchanged":
-			fmt.Fprintf(w, "  ✔ %s  unchanged\n", o.Host)
+			fmt.Fprintf(w, "  %s\n", st.muted(fmt.Sprintf("✔ %s  unchanged", o.Host)))
 		case o.Succeeded:
-			fmt.Fprintf(w, "  ✔ %s  now running %s\n", o.Host, o.Release)
+			fmt.Fprintf(w, "  %s  now running %s\n",
+				st.ok_("✔ "+o.Host), st.ok_(o.Release))
 		case o.RolledBack:
-			fmt.Fprintf(w, "  ✖ %s  failed, rolled back to %s\n", o.Host, o.From)
-			fmt.Fprintf(w, "      %s\n", firstLine(errText(o)))
+			// Rolled back is a failure that repaired itself, so it is not
+			// coloured the same as one that left a service broken.
+			fmt.Fprintf(w, "  %s\n", st.warn(fmt.Sprintf("✖ %s  failed, rolled back to %s", o.Host, o.From)))
+			fmt.Fprintf(w, "      %s\n", st.muted(firstLine(errText(o))))
 		default:
-			fmt.Fprintf(w, "  ✖ %s  failed\n", o.Host)
-			fmt.Fprintf(w, "      %s\n", firstLine(errText(o)))
+			fmt.Fprintf(w, "  %s\n", st.fail(fmt.Sprintf("✖ %s  failed", o.Host)))
+			fmt.Fprintf(w, "      %s\n", st.muted(firstLine(errText(o))))
 		}
 	}
 }
@@ -126,18 +131,33 @@ func Status(w io.Writer, rows []StatusRow) {
 	stw := width(func(r StatusRow) string { return r.State }, "STATE")
 	rw := width(func(r StatusRow) string { return r.Release }, "RELEASE")
 
-	fmt.Fprintf(w, "  %-*s  %-*s  %-*s  %-*s  %s\n",
-		sw, "SERVICE", hw, "HOST", stw, "STATE", rw, "RELEASE", "DETAIL")
+	st := newStyler(w)
+
+	// Padding is computed on the unstyled text and applied before colouring.
+	// Escape sequences have no display width, so styling first and padding
+	// after would misalign every row that happens to be coloured.
+	fmt.Fprintf(w, "  %s\n", st.header(fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %s",
+		sw, "SERVICE", hw, "HOST", stw, "STATE", rw, "RELEASE", "DETAIL")))
 
 	for _, r := range rows {
 		detail := r.Detail
 		if r.Drift != "" {
-			detail = appendDetail("drift: "+r.Drift, detail)
+			// Drift is the one thing in this table that means somebody has to
+			// do something, so it is the one thing coloured in the detail.
+			detail = appendDetail(st.warn("drift: "+r.Drift), detail)
 		}
-		fmt.Fprintf(w, "  %-*s  %-*s  %s%-*s%s  %-*s  %s\n",
+
+		// Pad first, colour second. Escape sequences have no display width, so
+		// a %-*s applied to an already-styled string adds no padding at all —
+		// and only to the rows that happen to be coloured, which reads as a data
+		// problem rather than a formatting one.
+		state := fmt.Sprintf("%s%-*s", stateMark(r.State), stw, r.State)
+		release := fmt.Sprintf("%-*s", rw, dash(r.Release))
+
+		fmt.Fprintf(w, "  %-*s  %-*s  %s  %s  %s\n",
 			sw, r.Service, hw, r.Host,
-			stateMark(r.State), stw, r.State, "",
-			rw, dash(r.Release), detail)
+			st.state(r.State, state),
+			st.muted(release), detail)
 	}
 }
 
