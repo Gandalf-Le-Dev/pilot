@@ -947,13 +947,40 @@ desired state.
 ```yaml
 agents:
   claude:
-    capabilities: [deploy, rollback]   # omit for read-only
+    level: deploy                      # read | recover | deploy
     services: [wakapi, kite, docmost]  # never atuin or paperless
     max_concurrent: 1
 ```
 
 No `agents:` block means no agent access at all. Deny by default, so a fleet
 that upgrades into a Pilot with this feature gains nothing it did not ask for.
+
+**A level, not a set of verbs.** An earlier draft granted capabilities
+individually — `[deploy, rollback]` — and that is a mistake worth recording,
+because the failure is not a locked door but a worse decision. An agent able to
+deploy but not roll back does not stop when its release turns out to be bad; it
+has only one move left, and it *fixes forward*, shipping another change on top
+of the broken one. Withholding undo produces riskier behaviour than granting it.
+
+So undo is never a separate privilege from do. The rungs are cut where each is
+coherent alone:
+
+| Level | May | Rationale |
+|---|---|---|
+| `read` | observe | Diagnosis needs no write access at all. |
+| `recover` | + roll back to a previous release | Only moves toward states that already ran and already passed verification. Safe as a standalone grant. |
+| `deploy` | + ship new releases | Always includes `recover`; it cannot be granted without it. |
+
+The asymmetry is deliberate: rollback-only is useful, deploy-only is incoherent.
+
+Two limits on how far this goes. The **automatic** rollback after a failed
+health check runs inside `pilotd` on the host, so it is not an action the CLI
+identity performs and cannot be withheld by misconfiguration — the safety net is
+on at every level. And `recover` is not *unconditionally* safe: a service whose
+database schema has migrated forward may not tolerate its previous release.
+Pilot does not model migrations and should not pretend to, so that risk is named
+here rather than designed around; it is the same one a human takes typing
+`pilot rollback`.
 
 Putting the boundary in config rather than in the agent's request is not
 bookkeeping — it is what makes the boundary hold. **An agent operating on
@@ -1033,19 +1060,39 @@ Everything of value here is CLI-level, so it is built there first and the agent
 surface is a thin wrapper. A wrapper over a safe CLI is easy; one hiding an
 unsafe CLI is a liability.
 
-1. **Capability tiers**, deny by default. Nothing else is safe to ship first.
-2. **`pilot context --json`** — the whole picture in one call, so an agent has
-   no reason to act on a partial read. `--json` also fills in on `logs`,
+1. **Levels and scope**, deny by default. Nothing else is safe to ship first,
+   because `--force`, `@tag`, and `--no-verify` are reachable today by anything
+   holding the binary.
+2. **Complete the existing JSON**, rather than adding a command that aggregates
+   it. `status --json` currently drops `manage` and `runtime` even though
+   `proto.ServiceStatus` carries both — and `manage` is exactly the field that
+   marks a service an agent must not deploy. `--json` is also missing on `logs`,
    `routes`, `top`, and `agent`.
+
+   A composite `pilot context` was designed and rejected. `doctor` is already
+   the aggregate "what is wrong" view and `status` the aggregate "what is
+   running" one; a third command re-deriving both would be a second code path
+   for the same truth. This project has already shipped that bug three times —
+   `AgentOrNil` flattening skew into "no agent", `status` printing "no agent"
+   for one that was running, and `agent status` contradicting `agent upgrade`
+   about builds. Lossy output is the real complaint, and the fix is to stop
+   losing it.
 3. **Confirm digests** covering desired *and* observed state. `Plan.Hash` covers
    only the desired inputs by design, so it does not move when the fleet does;
    an autonomous agent needs to be refused when it acts on a stale read.
-4. **`pilot mcp serve --as <agent>`** — the narrowed tool set. Tool descriptions
-   are where the conceptual teaching goes: releases are immutable, builds happen
-   locally, drift means someone hand-edited a host. Retries attach to the
-   running job rather than starting a second deploy.
+4. **A skill**, versioned in this repository so the rules Pilot enforces and the
+   concepts it teaches move together. Its job is the model's understanding —
+   releases are immutable, builds happen locally, drift means someone hand-edited
+   a host — not enforcement, which belongs to the binary.
 5. **Audit** — extend the existing `By` field with the agent identity and the
    digest it acted on, surfaced in `pilot releases`.
+
+**`pilot mcp serve` is deliberately not on this list.** A tool surface only
+bounds an agent that has no shell; one with Bash can call the CLI directly, so
+MCP would enforce nothing that the binary does not already enforce itself. It
+earns its place when a user turns up on a shell-less host — and not before,
+because it is a third versioned contract to maintain, of exactly the kind whose
+drift cost this project has already paid once.
 
 ---
 
@@ -1083,9 +1130,10 @@ concurrency and abort gates · `manage: observe` enforcement · TLS expiry alert
 (NAT-friendly, no inbound rules) and it serves a web UI over the same protocol the CLI
 already speaks. Nothing in phases 1–3 changes.
 
-**Phase 5 — autonomous agents.** Capability tiers · `pilot context` · confirm digests ·
-`pilot mcp serve` · agent-attributed audit. See section 13; the ordering is deliberate,
-since every item before the MCP server is what makes the MCP server safe to expose.
+**Phase 5 — autonomous agents.** Agent levels and scope · completing the existing JSON ·
+confirm digests · a versioned skill · agent-attributed audit. See section 13. `pilot mcp
+serve` is explicitly *not* in scope: it bounds only agents without a shell, so it enforces
+nothing the binary must not already enforce itself.
 
 **Later:** blue/green for compose (start on a second port, flip the Caddy upstream via the
 admin API, drain, stop the old stack — now trivial because Pilot owns routing) · scheduled
