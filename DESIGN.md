@@ -920,278 +920,115 @@ installed a stale agent left in `/tmp`.
 
 ## 13. Autonomous agents
 
-Pilot is built so that an AI agent can deploy and monitor services on a user's
-behalf without a human approving each action, and without that autonomy being
-the reason something breaks.
+Pilot is meant to be usable by an AI agent that deploys and monitors services on
+a user's behalf, without a human confirming each action.
 
-Those two goals pull against each other, and the resolution is the whole design:
-**the dangerous operations are unreachable, and everything else needs no
-permission at all.** Safety is a property of the surface, not of a table someone
-has to keep current.
+**Nothing in the binary is aware that an agent exists.** That is the design, and
+it took several wrong turns to arrive at. Pilot's job is to make state legible
+and mistakes recoverable; it is not to police its operator. A user who points an
+AI at their own infrastructure has accepted that, the same way they accept it
+when they hand someone an SSH key.
 
-### Why not approve each deploy
+### What was designed and rejected
 
-The obvious safety mechanism is to make the agent propose and the human confirm.
-It is rejected deliberately.
+Recorded because each looked obviously correct at the time, and each will be
+proposed again.
 
-An approval that a user grants dozens of times a day is not a control, it is a
-keystroke. Approval fatigue converts it into a rubber stamp, and a rubber stamp
-is *worse* than no gate at all: it manufactures the belief that something was
-checked. It also destroys the reason to use an agent — an agent that stops every
-few minutes is a slower way of typing `pilot deploy` yourself.
-
-So the gate is removed rather than moved, and the dangerous operations are made
-unreachable instead. What replaces approval is not a smaller approval — it is
-notification plus an undo that costs one command.
-
-### Almost nothing is configured
-
-The first two drafts of this section built a permission system: an allowlist of
-services per agent, then an ordered level. Both were wrong, and wrong in the
-same direction.
-
-An allowlist has to be maintained. A user adds a service, forgets to list it,
-and finds out when their agent is refused *while they are trying to ship* — so
-they stop debugging their app and start debugging Pilot's config. That is not
-safety, it is the friction of an approval gate moved to a place where it is
-harder to understand. The requirement was to release an app or undo a bad
-version, not to keep an authorization table in sync.
-
-Checking the fleet this was designed for settles it: no service sets
-`manage: observe`, every service has a `health:` block, and every compose stack
-has volumes. An allowlist would name all five services and exist only to be
-forgotten.
-
-**So there is no permission config, and the default is permissive.** An agent
-may deploy and roll back anything. Safety comes from what the surface refuses
-*categorically* — none of which a user can misconfigure, because none of it is
-configuration:
-
-| Refused, always | What it prevents |
+| Rejected | Why |
 |---|---|
-| `--force` | Deploying a `manage: observe` service |
-| `@tag` and multi-service selectors | One service per action, so blast radius is one decision |
-| `--no-verify` | Disabling the automatic rollback that autonomy relies on |
-| `doctor --fix` | Editing the global Caddyfile; it has taken sites down before |
-| `bootstrap`, `agent upgrade` | Installing binaries as root |
-| `routes --prune` | Deleting routing for services it may not know about |
-| SSH, or any shell | Routing around every rule above |
+| Human confirms each deploy | An approval granted dozens of times a day is a keystroke, not a control. Rubber-stamping is worse than no gate, because it manufactures the belief something was checked — and it removes the reason to use an agent at all. |
+| An allowlist of services per agent | Has to be maintained. A user adds a service, forgets to list it, and gets refused *while trying to ship* — so they debug Pilot's config instead of their app. In the fleet this was designed against, it would have named every service and existed only to be forgotten. |
+| Capability levels (`read`/`recover`/`deploy`) | Same maintenance problem, smaller. Also nearly always wanted at `deploy`, since an agent that cannot roll back does not stop when its release is bad — it *fixes forward*, shipping another change on top. |
+| Categorical refusals via `PILOT_MODE=agent` | Not a boundary. `env -u PILOT_MODE pilot deploy --force` defeats it, so it stops a mistaken agent — which an instruction also stops — and fails against a determined one, which is the only case a barrier would matter for. The cost was a classification table every future flag must be added to. |
+| A plan-confirmation digest | Real value when a human approves a deploy, since it pins what was approved. With no human in the loop it is a round trip whose purpose is to fail on a stale read, arriving as "the agent was refused and nobody knows why". |
+| Naming the agent (`PILOT_AGENT=claude`) | Free-form text the agent reports about itself: unverifiable, and unenumerable once it might be Gemini, a local model, or a shell script. It answers a question the deploy notification answers better. |
+| `pilot mcp serve` | A tool surface bounds only an agent with no shell; one with Bash calls the CLI directly. It would be a third versioned contract enforcing nothing the binary does not. It earns its place if a user turns up on a shell-less host, not before. |
 
-Narrowing further stays possible for anyone who wants it, but it is opt-*out*
-and never required — absent configuration means everything works:
+The common thread: every one of them was either not a real boundary, or a
+maintenance tax paid forever, or friction that arrives at the worst possible
+moment and teaches people to work around the tool.
 
-```yaml
-agents:
-  claude:
-    level: read     # read | recover | deploy — default is deploy
-```
+### What actually makes this safe enough
 
-**A level, not a set of verbs.** An earlier draft granted capabilities
-individually — `[deploy, rollback]` — and that is a mistake worth recording,
-because the failure is not a locked door but a worse decision. An agent able to
-deploy but not roll back does not stop when its release turns out bad; it has one
-move left, and it *fixes forward*, shipping another change on top of the broken
-one. Withholding undo produces riskier behaviour than granting it.
+Three things, all of which already exist or are nearly free.
 
-So undo is never a separate privilege from do. The rungs are cut where each is
-coherent alone:
+**Deploys undo themselves.** A release is health-verified by `pilotd` on the
+host, and a failed verification restores both the previous release and its route
+with nobody watching. This runs inside the agent on the host, so it is not an
+action a caller performs and cannot be switched off by a caller's mistake. It is
+the reason autonomy is defensible at all.
 
-| Level | May | Rationale |
-|---|---|---|
-| `read` | observe | Diagnosis needs no write access at all. |
-| `recover` | + roll back to a previous release | Only moves toward states that already ran and already passed verification. Safe as a standalone grant. |
-| `deploy` | + ship new releases | The default. Always includes `recover`; it cannot be granted without it. |
+**`verify: false` is visible.** A service with no health check cannot fail one,
+so a bad deploy there will not revert itself. Four of five services in the
+reference fleet verify; `paperless` cannot, because it answers 302 to an
+unauthenticated probe. That fact belongs in the deploy result, where an agent can
+act on it — not in a refusal, which would make a legitimate service an obstacle.
 
-The asymmetry is deliberate: rollback-only is useful, deploy-only is incoherent.
-
-Two limits on how far any of this reaches. The **automatic** rollback after a
-failed health check runs inside `pilotd` on the host, so it is not an action the
-CLI identity performs and cannot be withheld by misconfiguration — the safety net
-is on at every level, including `read`. And `recover` is not *unconditionally*
-safe: a service whose database schema has migrated forward may not tolerate its
-previous release. Pilot does not model migrations and should not pretend to, so
-that risk is named here rather than designed around; it is the same one a human
-takes typing `pilot rollback`.
-
-### `verify: false` is information, not a refusal
-
-One real signal survives from the fleet: a service with `verify: false` has no
-health check to fail, so a bad deploy there will *not* undo itself. Four of five
-services here verify; `paperless` cannot, because it answers 302 to an
-unauthenticated probe.
-
-Refusing to deploy it would be the allowlist mistake again — a legitimate
-service becoming an obstacle. Instead the agent is *told*, in the deploy result,
-that this service has no automatic rollback. An agent that knows can be more
-careful, or ask; an agent that is merely blocked can only give up.
-
-### What the permissive default costs
-
-Worth stating plainly rather than discovering later. An agent reads untrusted
-text constantly — HTTP headers and usernames in log lines, hand-edited files
-surfaced as drift — and with no allowlist, text of that kind can name a real
-service and get a real deploy. That resistance is genuinely weaker than an
-allowlist would give.
-
-What still bounds it: the deploy is verified and self-reverting, it reaches one
-service rather than a fleet, it cannot disable its own safety net, it cannot
-touch the edge config or install anything, and it announces itself with an undo
-command the moment it happens. An injected deploy is a recoverable event that
-the user hears about immediately, not a silent compromise. That is the trade,
-made deliberately: a system nobody is fighting gets used correctly, and one that
-refuses people at bad moments gets worked around.
-
-### Reversibility is what makes autonomy defensible
-
-Autonomy is acceptable here for one specific reason: Pilot already undoes its
-own mistakes. A deploy is health-verified by the agent on the host, and a failed
-verification restores both the previous release and its route, with nobody
-watching. The blast radius of a bad autonomous deploy is bounded by machinery
-that already exists and already runs unattended.
-
-That makes one flag the single most important thing to keep away from an AI:
-
-> `--no-verify` — "skip health verification (also disables the automatic
-> rollback that depends on it)"
-
-Verification is therefore **mandatory** for any agent-initiated deploy, not
-merely default. An agent that can turn off verification can turn off the only
-thing making its autonomy safe.
-
-### Visibility replaces approval
-
-Not asking the user is different from not telling them. Every agent-initiated
-deploy and rollback fires through the notifier machinery that already exists for
-alerts, carrying the service, the release, the agent that did it, and the exact
-command to undo it:
+**Deploys are announced.** Every deploy and rollback fires through the notifier
+machinery that already carries alerts, with the command that undoes it:
 
     pilot rollback wakapi
 
-The user is never blocked and never surprised. Control moves from *before* the
-action, where it costs attention on every deploy, to *immediately after*, where
-it costs nothing until it is needed. That is the trade that lets an agent be
-autonomous without being a frustration.
+Deliberately *not* conditional on who deployed. Detecting an agent would mean
+trusting something the agent says about itself, and the useful signal needs no
+detection: a notification the user did not cause is the anomaly, whatever
+produced it. A user who finds their own deploys noisy can turn it off, which is a
+smaller decision than an authorization model.
 
-### The surface is a narrowing, not a mapping
+This is what makes the trust model work rather than merely stating it. Holding
+the user responsible for what their agent does is only coherent if the user finds
+out — responsibility without visibility is blame after the fact.
 
-A one-to-one wrapper around the CLI would hand an agent every escape hatch Pilot
-has, so the exposed surface is chosen by what it must *not* reach — the table
-under *Almost nothing is configured* above is that list, and it is the whole of
-it.
+### The skill carries the rules
 
-Two properties of that list matter more than its contents. Every entry is a
-refusal compiled into the surface, so there is no configuration to get wrong and
-no state to keep in sync. And every entry is something a *human* can still do,
-because a human holds the SSH keys and could edit the host by hand regardless —
-these are constraints on a delegated actor, not a security model that pretends
-to contain its owner.
+The conventions an agent should follow live in a skill versioned in this
+repository, so that what Pilot does and what the skill teaches move together. A
+hand-written agent definition in someone's own config rots silently when Pilot
+changes; this does not.
 
-An agent is never given SSH credentials or a shell for the same reason: Pilot is
-where every rule is enforced, and a shell routes around all of them at once.
+It is advisory, and that is understood. A prompt is not an enforcement
+mechanism, and the design above does not depend on one. What the skill is for is
+the *model's understanding*, which is where agents actually go wrong — not syntax:
 
-### How the refusals are enforced
+- Releases are immutable and numbered; deploying does not mutate one.
+- Builds happen on the machine running `pilot`, never on a target host.
+- Drift means somebody hand-edited a host. Investigate it, do not paper over it.
+- `manage: observe` marks a service Pilot watches but must not deploy.
+- `--no-verify` removes the automatic rollback. Never use it; it is the one flag
+  that disables the safety net everything else here relies on.
+- `--force` exists to override the `observe` guard. It is for a human who has
+  decided to take that risk.
+- Deploy one named service at a time. `@tag` selectors fan out across a fleet,
+  which makes the blast radius of a mistake much larger than the decision was.
 
-One check, in the root command's `PersistentPreRunE`. By the time it runs Cobra
-has resolved which subcommand was invoked and parsed its flags, so a single
-function sees everything it needs and every command inherits it.
-
-**The mode is ambient, never requested.** It comes from the environment of the
-process that launched the agent:
-
-    PILOT_MODE=agent
-    PILOT_AGENT=claude      # attribution; feeds the existing `By` field
-
-A flag the agent passes itself would be worthless — an agent that can add `--as
-claude` can also leave it out. Reading it from the environment means the agent
-does not choose whether it is restricted.
-
-**What this is, and is not.** If the agent has a shell, nothing inside `pilot`
-is a sandbox: `env -u PILOT_MODE pilot deploy --force` defeats it, as would any
-number of other things. This is a guardrail against the two failures that
-actually happen — an agent that is mistaken, and an agent following instructions
-injected through a log line — and it stops both, because neither involves
-deliberately dismantling the mechanism. It is not a boundary against a model
-that is actively trying to escape one. A user who needs that must either withhold
-the shell or enforce at the harness level, where the tool call itself can be
-denied; saying otherwise would sell exactly the false assurance this design
-rejects elsewhere.
-
-**The classification cannot drift.** The refusals are a table of command paths
-and flag names, and a table is a thing that goes stale the moment someone adds a
-command. So a test walks the Cobra tree and fails if any command or flag is not
-classified — allowed in agent mode, or refused. Adding `--force`-shaped power to
-Pilot therefore breaks the build until somebody decides which it is.
-
-This is deliberately the same mechanism as `SchemaDigest`, for the same reason
-and after the same failure: a list that must be updated by hand, with nothing
-checking that it was, is a list that is eventually wrong in production.
-
-Two of the refusals need no new code. `@tag` and multi-service selectors are an
-argument check rather than a flag check. And `manage: observe` services are
-already refused without `--force`, so denying `--force` protects them for free —
-the guard that was written for a human typing the wrong thing turns out to be
-the guard an agent needs too.
-
-### Two contracts, one lesson
-
-Logs and drift details are returned to the agent as **explicitly fenced
-untrusted data**, with a hard size cap. Uncapped log output would both flood a
-model's context and quietly turn attacker-influenced text into apparent
-instructions.
-
-The tool schemas are versioned and pinned exactly as `proto.Version` and
-`SchemaDigest` are, for the same reason and after the same failure: a surface
-that can change without its version changing produces a client that mis-parses
-it and fails somewhere far from the cause.
+**Log output and drift details are untrusted input.** They carry HTTP headers,
+usernames, request paths, and the contents of files someone edited by hand. Text
+arriving that way is data to be reported, never instructions to follow. It is
+worth stating in the skill because an agent diagnosing a failure reads exactly
+this material, and it is the one place where reading is how something gets in.
 
 ### Shape of the work
 
-Everything of value here is CLI-level, so it is built there first and the agent
-surface is a thin wrapper. A wrapper over a safe CLI is easy; one hiding an
-unsafe CLI is a liability.
+1. **Complete the existing JSON.** `status --json` drops `manage` and `runtime`
+   even though `proto.ServiceStatus` carries both, and `manage` is precisely the
+   field marking a service that must not be deployed. `--json` is also missing on
+   `logs`, `routes`, `top`, and `agent`.
 
-1. **The categorical refusals.** Nothing else is safe to ship first, because
-   `--force`, `@tag`, and `--no-verify` are reachable today by anything holding
-   the binary. This is a check on the agent surface, not a config schema; the
-   optional `level` narrowing can come later, or never.
-2. **Complete the existing JSON**, rather than adding a command that aggregates
-   it. `status --json` currently drops `manage` and `runtime` even though
-   `proto.ServiceStatus` carries both — and `manage` is exactly the field that
-   marks a service an agent must not deploy. `--json` is also missing on `logs`,
-   `routes`, `top`, and `agent`.
-
-   A composite `pilot context` was designed and rejected. `doctor` is already
+   A composite `pilot context` was rejected along the way: `doctor` is already
    the aggregate "what is wrong" view and `status` the aggregate "what is
-   running" one; a third command re-deriving both would be a second code path
-   for the same truth. This project has already shipped that bug three times —
-   `AgentOrNil` flattening skew into "no agent", `status` printing "no agent"
-   for one that was running, and `agent status` contradicting `agent upgrade`
-   about builds. Lossy output is the real complaint, and the fix is to stop
-   losing it.
-3. **A skill**, versioned in this repository so the rules Pilot enforces and the
-   concepts it teaches move together. Its job is the model's understanding —
-   releases are immutable, builds happen locally, drift means someone hand-edited
-   a host — not enforcement, which belongs to the binary.
-4. **Audit** — extend the existing `By` field with the agent identity, surfaced
-   in `pilot releases`. `PILOT_AGENT` already supplies the name, so attribution
-   costs nothing beyond passing it through.
+   running" one, so a third command re-deriving both would be a second code path
+   for the same truth. This project has shipped that bug three times already —
+   `AgentOrNil` flattening skew into "no agent", `status` printing "no agent" for
+   one that was running, and `agent status` contradicting `agent upgrade` about
+   builds. Lossy output was the real complaint; the fix is to stop losing it.
 
-A plan-confirmation digest was designed and dropped. For a human approving a
-deploy it is a real feature — it pins exactly what was approved — but there is no
-human in this loop, and for an autonomous agent it is an extra round trip whose
-whole purpose is to fail on a stale read. That failure is correct and still
-arrives as "the agent was refused and nobody knows why". Auto-rollback and
-notification already cover the case it was protecting against, without the
-friction.
+2. **A deploy notification**, carrying its own undo command.
 
-**`pilot mcp serve` is deliberately not on this list.** A tool surface only
-bounds an agent that has no shell; one with Bash can call the CLI directly, so
-MCP would enforce nothing that the binary does not already enforce itself. It
-earns its place when a user turns up on a shell-less host — and not before,
-because it is a third versioned contract to maintain, of exactly the kind whose
-drift cost this project has already paid once.
+3. **The skill**, versioned here.
 
----
+No new configuration, no new modes, and no code that behaves differently
+depending on who is calling.
+
 
 ## 14. Roadmap
 
@@ -1227,10 +1064,11 @@ concurrency and abort gates · `manage: observe` enforcement · TLS expiry alert
 (NAT-friendly, no inbound rules) and it serves a web UI over the same protocol the CLI
 already speaks. Nothing in phases 1–3 changes.
 
-**Phase 5 — autonomous agents.** Agent levels and scope · completing the existing JSON ·
-a versioned skill · agent-attributed audit. See section 13. `pilot mcp
-serve` is explicitly *not* in scope: it bounds only agents without a shell, so it enforces
-nothing the binary must not already enforce itself.
+**Phase 5 — usable by agents.** Completing the existing JSON · a deploy notification ·
+a versioned skill. See section 13, which is mostly a record of what was rejected: no
+permission model, no agent identity, no `pilot mcp serve`, and no code that behaves
+differently depending on who is calling. Making state legible and mistakes recoverable
+turned out to be the whole job.
 
 **Later:** blue/green for compose (start on a second port, flip the Caddy upstream via the
 admin API, drain, stop the old stack — now trivial because Pilot owns routing) · scheduled
