@@ -160,6 +160,15 @@ func runTop(ctx context.Context, g *globals, selector string, interval time.Dura
 	}
 	defer a.Close()
 
+	// `top` redraws a full screen in place with ANSI escapes, and its rows are
+	// exactly what `status` produces. There is no honest JSON form of that, and
+	// silently ignoring the flag would leave a caller waiting for output that
+	// never arrives — so say where to go instead.
+	if g.json {
+		return fmt.Errorf("`top` is an interactive display and has no JSON form\n" +
+			"poll `pilot status --json` instead; it returns the same rows")
+	}
+
 	services, err := selectServices(a, selector)
 	if err != nil {
 		return err

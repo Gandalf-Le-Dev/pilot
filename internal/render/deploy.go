@@ -206,6 +206,17 @@ type StatusRow struct {
 	State   string `json:"state"`
 	Release string `json:"release,omitempty"`
 
+	// Runtime and Manage come from configuration rather than from the host, so
+	// they are present even on a host with no agent.
+	//
+	// Manage is here because the human table only hints at it, in a "observe
+	// only" suffix inside Detail. A reader parsing this output has to know that
+	// `observe` means Pilot watches the service but must never deploy it — and
+	// inferring that from a phrase buried in a free-text field is exactly the
+	// kind of thing a machine gets wrong.
+	Runtime string `json:"runtime,omitempty"`
+	Manage  string `json:"manage,omitempty"`
+
 	// Drift names what diverged, empty when nothing has. Only an agent can
 	// report it, so a host without one leaves this blank rather than claiming
 	// everything is fine.

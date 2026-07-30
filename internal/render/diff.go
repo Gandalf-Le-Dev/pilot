@@ -108,22 +108,29 @@ func WriteDiff(w io.Writer, lines []DiffLine, context int) {
 }
 
 // DriftEntry is one service's divergence, ready to render.
+//
+// The json tags are not decoration. Without them Go emits the field names as
+// written, so `pilot diff --json` was the one command answering in PascalCase
+// with no `omitempty` — `"Service"` and `"RouteBefore": ""` where every other
+// command says `"service"` and omits what is empty. A caller parsing Pilot's
+// output had to special-case exactly one command, which is the sort of
+// inconsistency that is discovered by something breaking.
 type DriftEntry struct {
-	Service string
-	Host    string
-	Release string
+	Service string `json:"service"`
+	Host    string `json:"host"`
+	Release string `json:"release,omitempty"`
 
-	ConfigDrift bool
-	RouteDrift  bool
-	Detail      string
+	ConfigDrift bool   `json:"config_drift,omitempty"`
+	RouteDrift  bool   `json:"route_drift,omitempty"`
+	Detail      string `json:"detail,omitempty"`
 
 	// RouteBefore and RouteAfter are the deployed and installed routes, shown
 	// as a diff when they differ.
-	RouteBefore string
-	RouteAfter  string
+	RouteBefore string `json:"route_before,omitempty"`
+	RouteAfter  string `json:"route_after,omitempty"`
 
 	// Unavailable explains why nothing could be determined.
-	Unavailable string
+	Unavailable string `json:"unavailable,omitempty"`
 }
 
 // Drifted reports whether anything actually diverged.

@@ -202,6 +202,8 @@ func rowFromAgent(s *config.Service, host string, got proto.ServiceStatus) rende
 		State:   string(got.Obs.State),
 		Release: got.Obs.Release,
 		Detail:  got.Obs.Detail,
+		Runtime: string(s.Runtime),
+		Manage:  string(s.Manage),
 	}
 	if got.Error != "" {
 		row.State = string(runtime.StateUnknown)
@@ -225,7 +227,10 @@ func rowFromAgent(s *config.Service, host string, got proto.ServiceStatus) rende
 
 // observeDirect is the degraded path: no agent, so Pilot drives the host itself.
 func observeDirect(ctx context.Context, a *app.App, s *config.Service, host string) render.StatusRow {
-	row := render.StatusRow{Service: s.Name, Host: host, State: string(runtime.StateUnknown)}
+	row := render.StatusRow{
+		Service: s.Name, Host: host, State: string(runtime.StateUnknown),
+		Runtime: string(s.Runtime), Manage: string(s.Manage),
+	}
 
 	rt, err := app.RuntimeFor(s)
 	if err != nil {

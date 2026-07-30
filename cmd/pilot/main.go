@@ -54,11 +54,54 @@ type globals struct {
 	json bool
 }
 
+// jsonAnnotation marks how a command treats the global --json flag.
+//
+// Every command carries one, and a test walks the tree to make sure of it. The
+// flag is global, so a command that quietly ignores it leaves a caller waiting
+// for output that never comes — and "somebody will remember to wire it up" is
+// exactly the assumption that put `manage` and `runtime` outside `status --json`
+// in the first place. Forgetting now fails the build instead.
+const jsonAnnotation = "json"
+
+// How a command may answer --json.
+const (
+	jsonStructured = "structured" // a single JSON document
+	jsonNDJSON     = "ndjson"     // one object per line, for streams that never end
+	jsonRefused    = "refused"    // errors, pointing at a command that does support it
+	jsonNone       = "none"       // interactive or progress-only; nothing to serialise
+	jsonGroup      = "group"      // a parent command; its children carry the annotation
+)
+
+// annotate tags a command with its --json behaviour.
+func annotate(cmd *cobra.Command, how string) *cobra.Command {
+	if cmd.Annotations == nil {
+		cmd.Annotations = map[string]string{}
+	}
+	cmd.Annotations[jsonAnnotation] = how
+	return cmd
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	g := &globals{}
+	if err := buildRoot(&globals{}).ExecuteContext(ctx); err != nil {
+		if ee, ok := errors.AsType[*exitError](err); ok {
+			if ee.err != nil {
+				fmt.Fprintf(os.Stderr, "pilot: %v\n", ee.err)
+			}
+			os.Exit(ee.code)
+		}
+		fmt.Fprintf(os.Stderr, "pilot: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// buildRoot assembles the command tree.
+//
+// Separate from main so a test can walk it. Every command is wrapped in
+// annotate(), which is what makes the --json guard possible.
+func buildRoot(g *globals) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "pilot",
 		Short: "Monitor, deploy, and update the services on your servers",
@@ -75,32 +118,22 @@ func main() {
 	root.PersistentFlags().BoolVar(&g.json, "json", false, "emit machine-readable JSON")
 
 	root.AddCommand(
-		newInitCmd(g),
-		newUpgradeCmd(g),
-		newDoctorCmd(g),
-		newBootstrapCmd(g),
-		newAgentCmd(g),
-		newDeployCmd(g),
-		newRollbackCmd(g),
-		newStatusCmd(g),
-		newDiffCmd(g),
-		newPsCmd(g),
-		newTopCmd(g),
-		newReleasesCmd(g),
-		newLogsCmd(g),
-		newRoutesCmd(g),
+		annotate(newInitCmd(g), jsonNone),
+		annotate(newUpgradeCmd(g), jsonNone),
+		annotate(newDoctorCmd(g), jsonStructured),
+		annotate(newBootstrapCmd(g), jsonNone),
+		annotate(newAgentCmd(g), jsonGroup),
+		annotate(newDeployCmd(g), jsonStructured),
+		annotate(newRollbackCmd(g), jsonStructured),
+		annotate(newStatusCmd(g), jsonStructured),
+		annotate(newDiffCmd(g), jsonStructured),
+		annotate(newPsCmd(g), jsonStructured),
+		annotate(newTopCmd(g), jsonRefused),
+		annotate(newReleasesCmd(g), jsonStructured),
+		annotate(newLogsCmd(g), jsonNDJSON),
+		annotate(newRoutesCmd(g), jsonStructured),
 	)
-
-	if err := root.ExecuteContext(ctx); err != nil {
-		if ee, ok := errors.AsType[*exitError](err); ok {
-			if ee.err != nil {
-				fmt.Fprintf(os.Stderr, "pilot: %v\n", ee.err)
-			}
-			os.Exit(ee.code)
-		}
-		fmt.Fprintf(os.Stderr, "pilot: %v\n", err)
-		os.Exit(1)
-	}
+	return root
 }
 
 // versionString renders the build identity. Commit and date come from

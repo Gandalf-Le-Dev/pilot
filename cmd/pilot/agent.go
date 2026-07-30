@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -31,7 +32,10 @@ func newAgentCmd(g *globals) *cobra.Command {
 			"CLI leaves your agents behind. Pilot will not talk to a mismatched agent —\n" +
 			"it says so rather than guessing — and a deploy repairs one on the spot.",
 	}
-	cmd.AddCommand(newAgentUpgradeCmd(g), newAgentStatusCmd(g))
+	cmd.AddCommand(
+		annotate(newAgentUpgradeCmd(g), jsonNone),
+		annotate(newAgentStatusCmd(g), jsonStructured),
+	)
 	return cmd
 }
 
@@ -173,7 +177,20 @@ func runAgentStatus(ctx context.Context, g *globals) error {
 	}
 	defer a.Close()
 
-	fmt.Printf("\n  pilot %s\n\n", version)
+	type agentRow struct {
+		Host     string `json:"host"`
+		State    string `json:"state"`
+		Build    string `json:"build,omitempty"`
+		Protocol int    `json:"protocol,omitempty"`
+		Expected int    `json:"expected_protocol"`
+		Detail   string `json:"detail,omitempty"`
+	}
+	var rows []agentRow
+	emit := func(r agentRow) { rows = append(rows, r) }
+
+	if !g.json {
+		fmt.Printf("\n  pilot %s\n\n", version)
+	}
 
 	var stale bool
 	for _, host := range a.Fleet.HostNames() {
@@ -187,20 +204,52 @@ func runAgentStatus(ctx context.Context, g *globals) error {
 			// would contradict `agent upgrade`, which does replace it.
 			if info.Build != version {
 				stale = true
-				fmt.Printf("  ⚠ %-12s agent %s, this pilot is %s (protocol %d, compatible)\n",
-					host, info.Build, version, info.Protocol)
+				emit(agentRow{Host: host, State: "build-drift", Build: info.Build,
+					Protocol: info.Protocol, Expected: proto.Version,
+					Detail: fmt.Sprintf("agent %s, this pilot is %s", info.Build, version)})
+				if !g.json {
+					fmt.Printf("  ⚠ %-12s agent %s, this pilot is %s (protocol %d, compatible)\n",
+						host, info.Build, version, info.Protocol)
+				}
 				continue
 			}
-			fmt.Printf("  ✔ %-12s agent %s (protocol %d)\n", host, info.Build, info.Protocol)
+			emit(agentRow{Host: host, State: "ready", Build: info.Build,
+				Protocol: info.Protocol, Expected: proto.Version})
+			if !g.json {
+				fmt.Printf("  ✔ %-12s agent %s (protocol %d)\n", host, info.Build, info.Protocol)
+			}
 		case app.AgentSkewed:
 			stale = true
-			fmt.Printf("  ⚠ %-12s %s\n", host, firstLine(cause.Error()))
+			emit(agentRow{Host: host, State: "skewed", Expected: proto.Version,
+				Detail: firstLine(cause.Error())})
+			if !g.json {
+				fmt.Printf("  ⚠ %-12s %s\n", host, firstLine(cause.Error()))
+			}
 		case app.AgentAbsent:
 			stale = true
-			fmt.Printf("  – %-12s no agent installed\n", host)
+			emit(agentRow{Host: host, State: "absent", Expected: proto.Version})
+			if !g.json {
+				fmt.Printf("  – %-12s no agent installed\n", host)
+			}
 		default:
-			fmt.Printf("  ✖ %-12s %s\n", host, firstLine(cause.Error()))
+			emit(agentRow{Host: host, State: "unreachable", Expected: proto.Version,
+				Detail: firstLine(cause.Error())})
+			if !g.json {
+				fmt.Printf("  ✖ %-12s %s\n", host, firstLine(cause.Error()))
+			}
 		}
+	}
+
+	if g.json {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(rows); err != nil {
+			return err
+		}
+		if stale {
+			return exitWith(2)
+		}
+		return nil
 	}
 
 	fmt.Println()

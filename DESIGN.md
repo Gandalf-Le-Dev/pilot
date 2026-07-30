@@ -1009,10 +1009,22 @@ this material, and it is the one place where reading is how something gets in.
 
 ### Shape of the work
 
-1. **Complete the existing JSON.** `status --json` drops `manage` and `runtime`
-   even though `proto.ServiceStatus` carries both, and `manage` is precisely the
-   field marking a service that must not be deployed. `--json` is also missing on
-   `logs`, `routes`, `top`, and `agent`.
+1. **Complete the existing JSON. ✅ Built.** `status --json` now carries
+   `manage` and `runtime`; `releases`, `logs`, `agent status`, and `rollback`
+   answer `--json` at all; `diff` answers in the same snake_case as everything
+   else rather than PascalCase with no `omitempty`; and `top` *refuses* the flag
+   instead of ignoring it, since it is a full-screen ANSI display whose rows are
+   exactly what `status` already returns.
+
+   `logs --json` is newline-delimited, one object per line. A single document
+   cannot work for `-f`, which never ends — and wrapping each line as a JSON
+   string is worth having anyway, since log text is escaped and unambiguously
+   data rather than something a reader might mistake for structure.
+
+   Every command now declares how it treats `--json`, and a test walks the Cobra
+   tree to enforce that. The flag is global, so one that quietly ignores it
+   leaves a caller waiting for output that never comes; "somebody will remember
+   to wire it up" is what left `manage` outside `status --json` to begin with.
 
    A composite `pilot context` was rejected along the way: `doctor` is already
    the aggregate "what is wrong" view and `status` the aggregate "what is

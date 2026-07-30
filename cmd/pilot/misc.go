@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/app"
 	"github.com/Gandalf-Le-Dev/pilot/internal/deploy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
 
@@ -53,14 +56,33 @@ func runRollback(ctx context.Context, g *globals, name, to string) error {
 		return err
 	}
 
+	type rollbackResult struct {
+		Service string `json:"service"`
+		Host    string `json:"host"`
+		OK      bool   `json:"ok"`
+		Error   string `json:"error,omitempty"`
+	}
+	var results []rollbackResult
+
 	log := func(format string, args ...any) { fmt.Printf(format+"\n", args...) }
-	fmt.Println()
+	if g.json {
+		log = func(string, ...any) {} // progress lines would corrupt the document
+	} else {
+		fmt.Println()
+	}
+
+	fail := func(host string, err error) {
+		results = append(results, rollbackResult{Service: name, Host: host, Error: err.Error()})
+		if !g.json {
+			fmt.Fprintf(os.Stderr, "  ✖ %s: %v\n", host, err)
+		}
+	}
 
 	var failed int
 	for _, host := range s.Hosts {
 		t, err := a.Target(s, host, "")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "  ✖ %s: %v\n", host, err)
+			fail(host, err)
 			failed++
 			continue
 		}
@@ -68,16 +90,31 @@ func runRollback(ctx context.Context, g *globals, name, to string) error {
 		// the same guarantee that closing this terminal cannot strand it.
 		if rc, _ := a.AgentOrNil(ctx, host); rc != nil {
 			if err := deploy.RollbackViaAgent(ctx, rc, name, to, deploy.Deployer(), log); err != nil {
-				fmt.Fprintf(os.Stderr, "  ✖ %s: %v\n", host, err)
+				fail(host, err)
 				failed++
 				continue
 			}
 		} else if err := deploy.Rollback(ctx, rt, t, a.CaddyPaths(), to, log); err != nil {
-			fmt.Fprintf(os.Stderr, "  ✖ %s: %v\n", host, err)
+			fail(host, err)
 			failed++
 			continue
 		}
-		fmt.Printf("  ✔ %s rolled back\n", host)
+		results = append(results, rollbackResult{Service: name, Host: host, OK: true})
+		if !g.json {
+			fmt.Printf("  ✔ %s rolled back\n", host)
+		}
+	}
+
+	if g.json {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(results); err != nil {
+			return err
+		}
+		if failed > 0 {
+			return exitWith(1)
+		}
+		return nil
 	}
 
 	fmt.Println()
@@ -110,6 +147,16 @@ func runReleases(ctx context.Context, g *globals, name string) error {
 		return fmt.Errorf("no such service %q", name)
 	}
 
+	// release.State is already fully JSON-tagged, so the machine-readable form
+	// is the state itself rather than a reduced view of it — a rollback target
+	// an agent can see but not name would be worse than no output.
+	type releaseView struct {
+		Service string         `json:"service"`
+		Host    string         `json:"host"`
+		State   *release.State `json:"state"`
+	}
+	var views []releaseView
+
 	for _, host := range s.Hosts {
 		t, err := a.Target(s, host, "")
 		if err != nil {
@@ -121,6 +168,11 @@ func runReleases(ctx context.Context, g *globals, name string) error {
 		}
 		if _, err := runtime.Reconcile(ctx, t, st); err != nil {
 			return err
+		}
+
+		if g.json {
+			views = append(views, releaseView{Service: name, Host: host, State: st})
+			continue
 		}
 
 		fmt.Printf("\n  %s on %s\n", name, host)
@@ -140,6 +192,12 @@ func runReleases(ctx context.Context, g *globals, name string) error {
 				fmt.Printf("        %s\n", r.Reason)
 			}
 		}
+	}
+
+	if g.json {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(views)
 	}
 	fmt.Println()
 	return nil
@@ -196,10 +254,16 @@ func runLogs(ctx context.Context, g *globals, name string, opts runtime.LogOptio
 		if err != nil {
 			return err
 		}
-		if len(s.Hosts) > 1 {
+		out := io.Writer(os.Stdout)
+		if g.json {
+			w := newLogJSONWriter(os.Stdout, name, host)
+			defer w.Close()
+			out = w
+		} else if len(s.Hosts) > 1 {
 			fmt.Printf("\n==> %s on %s <==\n", name, host)
 		}
-		if err := rt.Logs(ctx, t, opts, os.Stdout); err != nil {
+
+		if err := rt.Logs(ctx, t, opts, out); err != nil {
 			if ctx.Err() != nil {
 				return nil // interrupted by the operator, not a failure
 			}
@@ -317,4 +381,61 @@ func runRoutes(ctx context.Context, g *globals, prune bool) error {
 func firstLine(s string) string {
 	head, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
 	return head
+}
+
+// logJSONWriter turns a log stream into one JSON object per line.
+//
+// Newline-delimited rather than a single document, because `logs -f` never ends
+// and a document that is never closed cannot be parsed. Each line also carries
+// its host, which the human format only prints once as a banner — unusable when
+// the lines themselves are the record.
+//
+// Wrapping each line as a JSON *string* is the other reason to do this. Log
+// output is attacker-influenced: HTTP headers, usernames, and request paths all
+// end up in it. Encoded as a string value it is escaped and unambiguously data,
+// so nothing in it can be mistaken for structure by whatever reads this next.
+type logJSONWriter struct {
+	enc     *json.Encoder
+	service string
+	host    string
+	buf     []byte
+}
+
+func newLogJSONWriter(w io.Writer, service, host string) *logJSONWriter {
+	return &logJSONWriter{enc: json.NewEncoder(w), service: service, host: host}
+}
+
+type logLine struct {
+	Service string `json:"service"`
+	Host    string `json:"host"`
+	Line    string `json:"line"`
+}
+
+func (w *logJSONWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		line := string(w.buf[:i])
+		w.buf = w.buf[i+1:]
+		if err := w.emit(line); err != nil {
+			return len(p), err
+		}
+	}
+}
+
+// Close flushes a trailing line with no newline, which is otherwise lost.
+func (w *logJSONWriter) Close() error {
+	if len(w.buf) == 0 {
+		return nil
+	}
+	line := string(w.buf)
+	w.buf = nil
+	return w.emit(line)
+}
+
+func (w *logJSONWriter) emit(line string) error {
+	return w.enc.Encode(logLine{Service: w.service, Host: w.host, Line: line})
 }
