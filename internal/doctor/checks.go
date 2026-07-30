@@ -23,6 +23,7 @@ func Standard() []Check {
 		{Name: "reachability", Scope: ScopeHost, NeedsNetwork: true, Run: checkReachability},
 		{Name: "prerequisites", Scope: ScopeHost, NeedsNetwork: true, Run: checkPrerequisites},
 		{Name: "agent", Scope: ScopeHost, NeedsNetwork: true, Run: checkAgents},
+		{Name: "log-secrets", Scope: ScopeHost, NeedsNetwork: true, Run: checkLogSecrets},
 		{Name: "caddy-import", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyImport},
 		{Name: "caddy-routes", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyRoutes},
 		{Name: "disk", Scope: ScopeHost, NeedsNetwork: true, Run: checkDisk},

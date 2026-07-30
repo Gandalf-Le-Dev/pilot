@@ -130,6 +130,10 @@ type Env struct {
 	// that has fallen behind. Nil skips the agent check entirely, which is what
 	// the tests and `--offline` want.
 	Agents Agents
+
+	// Logs fetches a bounded tail of a service's output, for the credential
+	// scan. Nil skips that check.
+	Logs LogSampler
 }
 
 // Client returns the connection for a host, or nil when unreachable.

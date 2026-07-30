@@ -1036,6 +1036,24 @@ this material, and it is the one place where reading is how something gets in.
 
 2. **A deploy notification**, carrying its own undo command.
 
+3. **Credentials in logs. ✅ Built.** `pilot doctor` samples each service's
+   recent output and reports credentials found in it. Written before log
+   redaction, and instead of it for now, because redaction cleans one read path
+   while the credential is still written to the host on every request and stays
+   in `docker logs`, in journald, and in any backup of them. Reporting it lets
+   the *cause* be fixed; hiding it from one reader does not. The check is
+   deliberately not `--fix`-able — nothing Pilot can do to a host stops a service
+   writing a secret to stdout.
+
+   Detection lives in `internal/redact` so that redaction, when it lands, agrees
+   with the check rather than drifting from it. Three layers, and the ordering of
+   trust matters: values Pilot itself supplied (exact), parameters whose *name*
+   says credential (`api_key=`), and formats that can only be credentials (a JWT,
+   a PEM header). Generic entropy scanning is rejected outright — Pilot's own
+   release IDs, git SHAs, container IDs, and UUIDs are all high-entropy, so a
+   threshold either floods the report with Pilot's own output or misses real keys.
+   A finding never quotes the value it reports.
+
 3. **The skill**, versioned here.
 
 No new configuration, no new modes, and no code that behaves differently
