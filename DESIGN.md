@@ -1092,7 +1092,16 @@ this material, and it is the one place where reading is how something gets in.
    threshold either floods the report with Pilot's own output or misses real keys.
    A finding never quotes the value it reports.
 
-3. **The skill**, versioned here.
+3. **The skill. ✅ Built.** `pilot skill` prints it; `pilot skill --install`
+   writes `.claude/skills/pilot/SKILL.md`. Embedded in the binary via
+   `internal/skill`, so the guidance and the behaviour it describes cannot drift
+   apart — the third time this project has needed that property, after the
+   CLI/agent protocol and the configuration schema, and the only one of the three
+   that did not have to be learned from a failed deploy.
+
+   Tests assert the frontmatter parses, that every withheld flag is named, and
+   that log output is described as untrusted input. The skill is advisory, so a
+   flag it forgets to mention is a flag nothing warns an agent away from.
 
 No new configuration, no new modes, and no code that behaves differently
 depending on who is calling.

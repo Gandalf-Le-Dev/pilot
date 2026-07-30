@@ -93,6 +93,37 @@ Upgrading the CLI does not upgrade the agents already on your hosts. A newer
 CLI refuses to talk to an older agent rather than guess, so run
 `pilot bootstrap <host>` afterwards to bring each one up to match.
 
+## Using it with an AI agent
+
+Pilot ships instructions for an agent operating a fleet — the concepts that are
+not guessable from the command names, and the handful of flags an agent must
+never use.
+
+```bash
+pilot skill --install     # writes .claude/skills/pilot/SKILL.md
+pilot skill               # or print it, to pipe anywhere
+```
+
+It is embedded in the binary, so the guidance and the behaviour it describes are
+always the same version.
+
+**It is advisory.** Pilot does not enforce it and does not detect whether an
+agent is calling — there is no permission model and no agent identity, because a
+tool surface only bounds an agent that has no shell, and one with a shell calls
+the CLI directly. What makes this safe enough is that a failed deploy
+health-checks and rolls itself back unattended, and that every deploy is
+announced through your notifiers with the command that reverses it. If you point
+an AI at your infrastructure, you own what it does — the design assumes that
+rather than pretending otherwise.
+
+Two things worth knowing before you do:
+
+- `pilot logs` redacts credentials by default, because services log their own API
+  keys more often than anyone expects. It removes what it can *identify*, which
+  makes logs safer to share rather than safe.
+- `pilot doctor` reports credentials it finds in service logs, so the cause can
+  be fixed rather than hidden from one reader.
+
 ## Building from source
 
 ```
