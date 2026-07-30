@@ -925,7 +925,9 @@ behalf without a human approving each action, and without that autonomy being
 the reason something breaks.
 
 Those two goals pull against each other, and the resolution is the whole design:
-**the human approves a policy, once, in git — not an action, every time.**
+**the dangerous operations are unreachable, and everything else needs no
+permission at all.** Safety is a property of the surface, not of a table someone
+has to keep current.
 
 ### Why not approve each deploy
 
@@ -938,29 +940,58 @@ is *worse* than no gate at all: it manufactures the belief that something was
 checked. It also destroys the reason to use an agent — an agent that stops every
 few minutes is a slower way of typing `pilot deploy` yourself.
 
-So the gate moves. What the human reviews is the boundary, expressed in the
-fleet repository, versioned and diffable like everything else Pilot treats as
-desired state.
+So the gate is removed rather than moved, and the dangerous operations are made
+unreachable instead. What replaces approval is not a smaller approval — it is
+notification plus an undo that costs one command.
 
-### The boundary lives in config, not in the request
+### Almost nothing is configured
+
+The first two drafts of this section built a permission system: an allowlist of
+services per agent, then an ordered level. Both were wrong, and wrong in the
+same direction.
+
+An allowlist has to be maintained. A user adds a service, forgets to list it,
+and finds out when their agent is refused *while they are trying to ship* — so
+they stop debugging their app and start debugging Pilot's config. That is not
+safety, it is the friction of an approval gate moved to a place where it is
+harder to understand. The requirement was to release an app or undo a bad
+version, not to keep an authorization table in sync.
+
+Checking the fleet this was designed for settles it: no service sets
+`manage: observe`, every service has a `health:` block, and every compose stack
+has volumes. An allowlist would name all five services and exist only to be
+forgotten.
+
+**So there is no permission config, and the default is permissive.** An agent
+may deploy and roll back anything. Safety comes from what the surface refuses
+*categorically* — none of which a user can misconfigure, because none of it is
+configuration:
+
+| Refused, always | What it prevents |
+|---|---|
+| `--force` | Deploying a `manage: observe` service |
+| `@tag` and multi-service selectors | One service per action, so blast radius is one decision |
+| `--no-verify` | Disabling the automatic rollback that autonomy relies on |
+| `doctor --fix` | Editing the global Caddyfile; it has taken sites down before |
+| `bootstrap`, `agent upgrade` | Installing binaries as root |
+| `routes --prune` | Deleting routing for services it may not know about |
+| SSH, or any shell | Routing around every rule above |
+
+Narrowing further stays possible for anyone who wants it, but it is opt-*out*
+and never required — absent configuration means everything works:
 
 ```yaml
 agents:
   claude:
-    level: deploy                      # read | recover | deploy
-    services: [wakapi, kite, docmost]  # never atuin or paperless
-    max_concurrent: 1
+    level: read     # read | recover | deploy — default is deploy
 ```
-
-No `agents:` block means no agent access at all. Deny by default, so a fleet
-that upgrades into a Pilot with this feature gains nothing it did not ask for.
 
 **A level, not a set of verbs.** An earlier draft granted capabilities
 individually — `[deploy, rollback]` — and that is a mistake worth recording,
 because the failure is not a locked door but a worse decision. An agent able to
-deploy but not roll back does not stop when its release turns out to be bad; it
-has only one move left, and it *fixes forward*, shipping another change on top
-of the broken one. Withholding undo produces riskier behaviour than granting it.
+deploy but not roll back does not stop when its release turns out bad; it has one
+move left, and it *fixes forward*, shipping another change on top of the broken
+one. Withholding undo produces riskier behaviour than granting it.
 
 So undo is never a separate privilege from do. The rungs are cut where each is
 coherent alone:
@@ -969,28 +1000,46 @@ coherent alone:
 |---|---|---|
 | `read` | observe | Diagnosis needs no write access at all. |
 | `recover` | + roll back to a previous release | Only moves toward states that already ran and already passed verification. Safe as a standalone grant. |
-| `deploy` | + ship new releases | Always includes `recover`; it cannot be granted without it. |
+| `deploy` | + ship new releases | The default. Always includes `recover`; it cannot be granted without it. |
 
 The asymmetry is deliberate: rollback-only is useful, deploy-only is incoherent.
 
-Two limits on how far this goes. The **automatic** rollback after a failed
-health check runs inside `pilotd` on the host, so it is not an action the CLI
-identity performs and cannot be withheld by misconfiguration — the safety net is
-on at every level. And `recover` is not *unconditionally* safe: a service whose
-database schema has migrated forward may not tolerate its previous release.
-Pilot does not model migrations and should not pretend to, so that risk is named
-here rather than designed around; it is the same one a human takes typing
-`pilot rollback`.
+Two limits on how far any of this reaches. The **automatic** rollback after a
+failed health check runs inside `pilotd` on the host, so it is not an action the
+CLI identity performs and cannot be withheld by misconfiguration — the safety net
+is on at every level, including `read`. And `recover` is not *unconditionally*
+safe: a service whose database schema has migrated forward may not tolerate its
+previous release. Pilot does not model migrations and should not pretend to, so
+that risk is named here rather than designed around; it is the same one a human
+takes typing `pilot rollback`.
 
-Putting the boundary in config rather than in the agent's request is not
-bookkeeping — it is what makes the boundary hold. **An agent operating on
-infrastructure reads untrusted text all day**: HTTP headers and usernames that
-landed in a log line, a hand-edited compose file surfaced as drift, a container
-name someone chose. Any of it can contain instructions aimed at the model. If
-the permitted scope travelled in the request, text of that kind could widen it.
-Because the scope is read from a file the agent cannot write, an injected
-"deploy to every host" has nothing to act on: the service is not on the list,
-and the request is refused before anything is staged.
+### `verify: false` is information, not a refusal
+
+One real signal survives from the fleet: a service with `verify: false` has no
+health check to fail, so a bad deploy there will *not* undo itself. Four of five
+services here verify; `paperless` cannot, because it answers 302 to an
+unauthenticated probe.
+
+Refusing to deploy it would be the allowlist mistake again — a legitimate
+service becoming an obstacle. Instead the agent is *told*, in the deploy result,
+that this service has no automatic rollback. An agent that knows can be more
+careful, or ask; an agent that is merely blocked can only give up.
+
+### What the permissive default costs
+
+Worth stating plainly rather than discovering later. An agent reads untrusted
+text constantly — HTTP headers and usernames in log lines, hand-edited files
+surfaced as drift — and with no allowlist, text of that kind can name a real
+service and get a real deploy. That resistance is genuinely weaker than an
+allowlist would give.
+
+What still bounds it: the deploy is verified and self-reverting, it reaches one
+service rather than a fleet, it cannot disable its own safety net, it cannot
+touch the edge config or install anything, and it announces itself with an undo
+command the moment it happens. An injected deploy is a recoverable event that
+the user hears about immediately, not a silent compromise. That is the trade,
+made deliberately: a system nobody is fighting gets used correctly, and one that
+refuses people at bad moments gets worked around.
 
 ### Reversibility is what makes autonomy defensible
 
@@ -1023,24 +1072,22 @@ action, where it costs attention on every deploy, to *immediately after*, where
 it costs nothing until it is needed. That is the trade that lets an agent be
 autonomous without being a frustration.
 
-### The tool surface is a narrowing, not a mapping
+### The surface is a narrowing, not a mapping
 
 A one-to-one wrapper around the CLI would hand an agent every escape hatch Pilot
-has. The exposed surface is chosen by what it must *not* reach:
+has, so the exposed surface is chosen by what it must *not* reach — the table
+under *Almost nothing is configured* above is that list, and it is the whole of
+it.
 
-| Withheld | Why |
-|---|---|
-| `--force` | It is the guard that stops a fleet deploy recreating a database. |
-| `@tag` selectors | One named service per call, so blast radius is one decision. |
-| `--no-verify` | Disables the automatic rollback autonomy depends on. |
-| `doctor --fix` | Edits the global Caddyfile; has taken sites down before. |
-| `bootstrap`, `agent upgrade` | Installs binaries as root. |
-| `routes --prune` | Deletes routing for services it may not know about. |
-| `manage: observe` services | Databases. Already refused without `--force`. |
+Two properties of that list matter more than its contents. Every entry is a
+refusal compiled into the surface, so there is no configuration to get wrong and
+no state to keep in sync. And every entry is something a *human* can still do,
+because a human holds the SSH keys and could edit the host by hand regardless —
+these are constraints on a delegated actor, not a security model that pretends
+to contain its owner.
 
-An agent is also never given SSH credentials or a shell. It goes through Pilot,
-because Pilot is where every rule above is enforced — a shell would route around
-all of them.
+An agent is never given SSH credentials or a shell for the same reason: Pilot is
+where every rule is enforced, and a shell routes around all of them at once.
 
 ### Two contracts, one lesson
 
@@ -1060,9 +1107,10 @@ Everything of value here is CLI-level, so it is built there first and the agent
 surface is a thin wrapper. A wrapper over a safe CLI is easy; one hiding an
 unsafe CLI is a liability.
 
-1. **Levels and scope**, deny by default. Nothing else is safe to ship first,
-   because `--force`, `@tag`, and `--no-verify` are reachable today by anything
-   holding the binary.
+1. **The categorical refusals.** Nothing else is safe to ship first, because
+   `--force`, `@tag`, and `--no-verify` are reachable today by anything holding
+   the binary. This is a check on the agent surface, not a config schema; the
+   optional `level` narrowing can come later, or never.
 2. **Complete the existing JSON**, rather than adding a command that aggregates
    it. `status --json` currently drops `manage` and `runtime` even though
    `proto.ServiceStatus` carries both — and `manage` is exactly the field that
