@@ -14,12 +14,18 @@ import (
 const MaxJobs = 50
 
 // JobStore holds running and recently finished jobs.
+//
+// OnFinish, when set, is called once per job as it completes. It is the single
+// place a finished deploy becomes observable to anything outside the store.
 type JobStore struct {
 	mu      sync.RWMutex
 	jobs    map[string]*proto.Job
 	order   []string
 	waiters map[string][]chan struct{}
 	seq     int
+
+	// OnFinish is invoked with a copy of each job as it completes.
+	OnFinish func(proto.Job)
 }
 
 func NewJobStore() *JobStore {
@@ -130,8 +136,14 @@ func (s *JobStore) Start(id string) {
 }
 
 // Finish records a job's outcome.
+//
+// OnFinish is called here rather than at the seventeen places that call this,
+// which is the whole reason it is a hook: a new deploy path added later notifies
+// without anyone remembering to wire it up. Getting that wrong would mean a
+// deploy nobody was told about, which is the one outcome this must not have.
 func (s *JobStore) Finish(id string, err error, rolledBack bool) {
 	s.mu.Lock()
+	var done proto.Job
 	if j, ok := s.jobs[id]; ok {
 		j.FinishedAt = time.Now().UTC()
 		j.Phase = proto.PhaseDone
@@ -142,9 +154,17 @@ func (s *JobStore) Finish(id string, err error, rolledBack bool) {
 		} else {
 			j.State = proto.JobSucceeded
 		}
+		done = *j
 	}
 	s.notifyLocked(id)
+	hook := s.OnFinish
 	s.mu.Unlock()
+
+	// Outside the lock: delivery can touch the network, and holding the store
+	// while it does would stall every other job on the host.
+	if hook != nil && done.ID != "" {
+		hook(done)
+	}
 }
 
 // notifyLocked wakes every waiter for a job. Callers must hold the lock.

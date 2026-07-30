@@ -41,9 +41,11 @@ func SchemaFingerprint() string {
 // is an instruction; "you added expose.allow" is an explanation.
 func SchemaFields() []string {
 	var lines []string
-	// Both halves of what a CLI pushes to an agent: the host-wide config and
-	// the per-service definition. A change to either can be rejected.
-	for _, root := range []any{Fleet{}, Service{}} {
+	// Every schema that travels from the CLI to an agent: the fleet file, a
+	// service definition, and the host-wide config pushed for alerting. Each is
+	// parsed strictly on the far side, so a change to any of them can be
+	// rejected mid-deploy.
+	for _, root := range []any{Fleet{}, Service{}, FleetConfig{}} {
 		t := reflect.TypeOf(root)
 		walkSchema(t, strings.ToLower(t.Name()), map[reflect.Type]bool{}, &lines)
 	}

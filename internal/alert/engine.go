@@ -232,6 +232,19 @@ func (e *Engine) startWorker() {
 	})
 }
 
+// Notify sends a one-off message to every named notifier.
+//
+// Separate from Evaluate because an event is not a condition: there is no
+// firing state to enter, nothing to resolve later, and no cooldown to suppress
+// a repeat. Two deploys a minute apart are two facts, and collapsing them would
+// hide the second one.
+//
+// It reuses the same ordered delivery queue as alerts, so a deploy notification
+// cannot overtake a firing alert that was decided first.
+func (e *Engine) Notify(ctx context.Context, msg Notification, notifiers []string) {
+	e.dispatch(ctx, Rule{}, msg, notifiers)
+}
+
 // Flush waits for every queued message to be delivered. Used by tests and on
 // shutdown, so a stopping daemon does not swallow an alert it had already
 // decided to send.

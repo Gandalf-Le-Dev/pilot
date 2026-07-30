@@ -17,6 +17,12 @@ type Severity string
 const (
 	SevFiring   Severity = "firing"
 	SevResolved Severity = "resolved"
+
+	// SevEvent is something that happened, rather than a condition that became
+	// true. A deploy is an event: there is nothing to resolve, no duration to
+	// report, and no cooldown to apply, so it deliberately skips the firing
+	// state machine entirely.
+	SevEvent Severity = "event"
 )
 
 // Notification is one message about one rule.
@@ -37,8 +43,14 @@ func (n Notification) Title() string {
 	if n.Service != "" {
 		subject = n.Service + " on " + n.Host
 	}
-	if n.Severity == SevResolved {
+	switch n.Severity {
+	case SevResolved:
 		return "RESOLVED: " + subject
+	case SevEvent:
+		// Not "ALERT". A deploy having happened is not a problem, and a
+		// notification that cries alarm about routine work gets muted — taking
+		// the real alerts with it.
+		return "PILOT: " + subject
 	}
 	return "ALERT: " + subject
 }
@@ -54,7 +66,9 @@ func (n Notification) Text() string {
 	if n.Severity == SevFiring && !n.Since.IsZero() {
 		fmt.Fprintf(&b, "\nsince %s", n.Since.Format(time.RFC3339))
 	}
-	b.WriteString("\nrule: " + n.Rule)
+	if n.Rule != "" {
+		b.WriteString("\nrule: " + n.Rule)
+	}
 	return b.String()
 }
 

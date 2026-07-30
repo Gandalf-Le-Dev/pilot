@@ -52,6 +52,13 @@ type Fleet struct {
 	// live on the service.
 	Alerts []Alert `yaml:"alerts"`
 
+	// NotifyDeploys announces finished deploys and rollbacks through the
+	// configured notifiers. Nil means enabled.
+	//
+	// A pointer so "unset" and "explicitly false" differ: the default has to be
+	// on, because a deploy nobody was told about is the case this exists for.
+	NotifyDeploys *bool `yaml:"notify_deploys,omitempty"`
+
 	// Populated by Load, not by YAML.
 	Services map[string]*Service `yaml:"-"`
 	Root     string              `yaml:"-"`
@@ -437,3 +444,29 @@ func (d *Duration) UnmarshalYAML(b []byte) error {
 }
 
 func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
+
+// FleetConfig is the host-wide half of the configuration: notifiers and
+// host-scoped rules, which have no service to hang off.
+//
+// It lives here rather than in the agent package because the agent parses it
+// strictly, which makes it part of the CLI/agent contract — and because
+// SchemaFingerprint can only guard schemas it can reach. Defined next to the
+// agent it would have been a field set nobody was checking, which is precisely
+// the hole `expose.allow` went through.
+type FleetConfig struct {
+	Notifiers map[string]Notifier `yaml:"notifiers"`
+	Alerts    []Alert             `yaml:"alerts"`
+
+	// NotifyDeploys sends a message through the configured notifiers whenever a
+	// deploy or rollback finishes. Nil means enabled.
+	//
+	// A pointer so that "unset" and "explicitly false" are distinguishable: the
+	// default has to be on, because a deploy nobody was told about is the case
+	// this exists for.
+	NotifyDeploys *bool `yaml:"notify_deploys,omitempty"`
+}
+
+// DeployNotificationsEnabled reports whether finished deploys should notify.
+func (f FleetConfig) DeployNotificationsEnabled() bool {
+	return f.NotifyDeploys == nil || *f.NotifyDeploys
+}

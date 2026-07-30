@@ -23,7 +23,12 @@ import (
 // rejected the service definition with `unknown field "allow"` — after the
 // deploy had already begun. SchemaDigest below now makes that omission a
 // failing test rather than a failed deploy.
-const Version = 3
+//
+// Version 4 added `notify_deploys` to the host-wide config, and closed a second
+// hole while doing it: the digest covered `Fleet` and `Service` but not the
+// host-wide config the agent also parses strictly, so a field added there would
+// have gone through unguarded — the same gap in a different struct.
+const Version = 4
 
 // SchemaDigest pins the configuration schema this protocol version speaks.
 //
@@ -37,7 +42,7 @@ const Version = 3
 //     decodes): update this digest alone.
 //
 // The choice is deliberately yours. What is not optional is making it.
-const SchemaDigest = "c1bb4ca746c36e9e"
+const SchemaDigest = "d76b902bf0f159e9"
 
 const (
 	// DefaultSocket is where the daemon listens. A Unix socket rather than a

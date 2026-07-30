@@ -8,9 +8,9 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/Gandalf-Le-Dev/pilot/internal/agent"
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent/install"
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
@@ -123,9 +123,10 @@ func (a *App) SyncAgent(ctx context.Context, host string, s AgentSync) (*AgentSy
 // FleetConfigSpec renders the host-wide configuration the agent needs in order
 // to alert on its own: notifiers and host-scoped rules.
 func (a *App) FleetConfigSpec() (string, error) {
-	body, err := yaml.Marshal(agent.FleetConfig{
-		Notifiers: a.Fleet.Notifiers,
-		Alerts:    a.Fleet.Alerts,
+	body, err := yaml.Marshal(config.FleetConfig{
+		Notifiers:     a.Fleet.Notifiers,
+		Alerts:        a.Fleet.Alerts,
+		NotifyDeploys: a.Fleet.NotifyDeploys,
 	})
 	if err != nil {
 		return "", err

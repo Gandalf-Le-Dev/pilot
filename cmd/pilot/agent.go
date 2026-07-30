@@ -40,7 +40,9 @@ func newAgentCmd(g *globals) *cobra.Command {
 }
 
 func newAgentUpgradeCmd(g *globals) *cobra.Command {
-	return &cobra.Command{
+	var force bool
+
+	cmd := &cobra.Command{
 		Use:   "upgrade [host|@tag]",
 		Short: "Install the agent matching this Pilot on one or more hosts",
 		Long: "Installs the pilotd belonging to this Pilot release, restarts it, and waits\n" +
@@ -54,12 +56,18 @@ func newAgentUpgradeCmd(g *globals) *cobra.Command {
 			if len(args) == 1 {
 				selector = args[0]
 			}
-			return runAgentUpgrade(cmd.Context(), g, selector)
+			return runAgentUpgrade(cmd.Context(), g, selector, force)
 		},
 	}
+	// Two dev builds both report "dev", so the version comparison cannot tell
+	// them apart and the upgrade skips — which is wrong exactly when iterating
+	// on the agent itself. `bootstrap` was the workaround; this is the flag.
+	cmd.Flags().BoolVar(&force, "force", false,
+		"reinstall even when the agent reports the same version (dev builds all report `dev`)")
+	return cmd
 }
 
-func runAgentUpgrade(ctx context.Context, g *globals, selector string) error {
+func runAgentUpgrade(ctx context.Context, g *globals, selector string, force bool) error {
 	a, err := g.load()
 	if err != nil {
 		return err
@@ -88,7 +96,7 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string) error {
 		// the same code, and a fix released in the CLI is no use sitting on
 		// your laptop. Someone who types `agent upgrade` is asking for the
 		// agent to match, so protocol equality is too weak a reason to decline.
-		if rc, state, _ := a.InspectAgent(ctx, host); state == app.AgentReady {
+		if rc, state, _ := a.InspectAgent(ctx, host); state == app.AgentReady && !force {
 			if info, err := rc.Check(ctx); err == nil && info.Build == version {
 				fmt.Printf("  ✔ %s already runs %s\n", host, version)
 				continue

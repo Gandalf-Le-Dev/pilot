@@ -99,6 +99,10 @@ func New(opts Options) (*Agent, error) {
 		logf("alert %q: notifier %q failed: %v", rule, notifier, err)
 	}
 
+	// Every finished job announces itself. Hooked once here rather than at each
+	// place a deploy can end, so a path added later cannot forget to.
+	a.jobs.OnFinish = a.notifyDeployFinished
+
 	if err := a.loadCache(); err != nil {
 		return nil, err
 	}
@@ -134,6 +138,13 @@ func (a *Agent) loadCache() error {
 
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		// The host-wide config shares this directory and is not a service.
+		// Without this it was parsed as one, failed, and logged
+		// `unknown field "notifiers"` on every agent start — a message that
+		// reads exactly like alerting is broken when it is fine.
+		if e.Name() == FleetConfigFile {
 			continue
 		}
 		path := filepath.Join(a.cacheDir(), e.Name())

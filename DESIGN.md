@@ -1058,7 +1058,21 @@ this material, and it is the one place where reading is how something gets in.
    the values Pilot supplied stays visible, which is why the `doctor` check
    matters more — it points at the cause.
 
-3. **A deploy notification**, carrying its own undo command.
+3. **A deploy notification. ✅ Built.** Every finished deploy and rollback goes
+   through the notifier machinery that already carries alerts, with the command
+   that reverses it. `notify_deploys: false` turns it off; unset means on,
+   because a deploy nobody hears about is the case this exists for.
+
+   Hooked into `JobStore.Finish` rather than at the seventeen places that call
+   it, so a deploy path added later notifies without anyone remembering to wire
+   it up. Severity is `event`, not `firing` — a routine deploy that reads as an
+   alarm gets the notifier muted, taking the real alerts with it — and it skips
+   the firing/resolved state machine entirely, since an event has nothing to
+   resolve and no cooldown to apply.
+
+   The undo is offered only where it means what it says: not after an automatic
+   rollback, which would suggest undoing the recovery, and not after a manual
+   rollback, which would move forward again.
 
 4. **Credentials in logs. ✅ Built.** `pilot doctor` samples each service's
    recent output and reports credentials found in it. Written before log
