@@ -220,6 +220,43 @@ Adding a fourth runtime later means implementing six methods. Nothing else chang
 
 ---
 
+## 4.3 Fleet layout
+
+A service's definition and the files it deploys are halves of one thing, so they
+live in one directory:
+
+```
+services/api/service.yaml
+services/api/compose.yaml
+```
+
+That directory is the service's source. The earlier layout put definitions in
+`services/*.yaml` and deployable content in `src/*/`, which forced a
+`source: {path: src/api}` line into every service — boilerplate whose only job
+was to point across a gap the layout had created. Co-locating them deletes it.
+
+An explicit `source` still wins, which is how a service built from a git
+repository is expressed. The flat form remains valid and is not deprecated: both
+can coexist, and a fleet gains nothing by migrating except tidiness.
+
+Two details that are load-bearing rather than cosmetic:
+
+- **`service.yaml` is excluded from build outputs.** It sits inside what would
+  otherwise be shipped, and it is Pilot's configuration rather than the
+  service's. More importantly it is part of the release digest — without the
+  exclusion, adopting this layout would change every service's hash and force a
+  redeploy of an entire fleet purely to move files. With it, migration is a
+  `git mv` and `pilot deploy --plan` reports `unchanged`.
+- **A directory under `services/` with no `service.yaml` is an error**, not a
+  skipped entry. A half-migrated service would otherwise vanish silently, and
+  the first symptom would be `pilot status` listing one service fewer than the
+  operator expects.
+
+No source is implied for `manage: observe` services, since Pilot never deploys
+them and a source they did not ask for would only earn them a warning.
+
+---
+
 ## 5. On-host layout
 
 ```

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,9 @@ import (
 const (
 	FleetFile   = "fleet.yaml"
 	ServicesDir = "services"
+
+	// ServiceFile is the definition inside a per-service directory.
+	ServiceFile = "service.yaml"
 
 	DefaultKeepReleases = 5
 	DefaultCaddyAdmin   = "http://127.0.0.1:2019"
@@ -105,12 +109,22 @@ func Load(root string) (*Fleet, Diagnostics, error) {
 	f.Services = map[string]*Service{}
 	svcDir := filepath.Join(root, ServicesDir)
 	files, err := serviceFiles(svcDir)
-	if err != nil {
+
+	var stray *StrayDirsError
+	switch {
+	case errors.As(err, &stray):
+		for _, d := range stray.Dirs {
+			ds.ErrorHint(filepath.ToSlash(filepath.Join(ServicesDir, d)), "",
+				fmt.Sprintf("directory has no %s, so no service is defined here", ServiceFile),
+				"add "+ServiceFile+", or remove the directory if it is left over")
+		}
+	case err != nil:
 		return nil, nil, err
 	}
-	for _, path := range files {
-		rel := filepath.ToSlash(filepath.Join(ServicesDir, filepath.Base(path)))
-		raw, err := os.ReadFile(path)
+
+	for _, sf := range files {
+		rel := sf.rel
+		raw, err := os.ReadFile(sf.path)
 		if err != nil {
 			ds.Errorf(rel, "", "cannot read: %v", err)
 			continue
@@ -122,13 +136,30 @@ func Load(root string) (*Fleet, Diagnostics, error) {
 		}
 		s.File = rel
 
-		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		// The definition sits beside what it deploys, so that directory is the
+		// source unless the service says otherwise. This is the whole reason the
+		// layout is worth changing: it deletes a line of pointing-elsewhere from
+		// every service.
+		// Not for `manage: observe`: Pilot never deploys those, so handing them a
+		// source would earn them a warning for a field they did not write. The
+		// validator found this the moment the example was loaded.
+		if sf.Own && s.Deployable() && (s.Source == nil || (s.Source.Repo == "" && s.Source.Path == "")) {
+			if s.Source == nil {
+				s.Source = &Source{}
+			}
+			s.Source.Path = sf.dir
+		}
+
 		switch {
 		case s.Name == "":
-			s.Name = base
-		case s.Name != base:
+			s.Name = sf.name
+		case s.Name != sf.name && sf.Own:
 			ds.WarnHint(rel, "name",
-				fmt.Sprintf("name %q does not match filename %q", s.Name, base),
+				fmt.Sprintf("name %q does not match directory %q", s.Name, sf.name),
+				"rename the directory to services/"+s.Name+" so it's findable")
+		case s.Name != sf.name:
+			ds.WarnHint(rel, "name",
+				fmt.Sprintf("name %q does not match filename %q", s.Name, sf.name),
 				"rename the file to "+s.Name+".yaml so it's findable")
 		}
 		if prev, dup := f.Services[s.Name]; dup {
@@ -143,7 +174,26 @@ func Load(root string) (*Fleet, Diagnostics, error) {
 	return f, ds, nil
 }
 
-func serviceFiles(dir string) ([]string, error) {
+// serviceFile is one discovered service definition.
+type serviceFile struct {
+	path string // absolute path on disk
+	rel  string // path for diagnostics, relative to the fleet root
+	name string // the name implied by where it was found
+	dir  string // directory holding the service, relative to the fleet root
+
+	// Own is true for the directory form, where the definition sits beside the
+	// files it deploys. Only then does `source.path` default to that directory.
+	Own bool
+}
+
+// serviceFiles finds every service definition under dir.
+//
+// Two layouts, both supported. `services/wakapi.yaml` is the original flat form.
+// `services/wakapi/service.yaml` keeps a service's definition beside the compose
+// file it deploys, which is the layout worth having: the two are halves of one
+// thing, and separating them forced a `source: {path: src/wakapi}` line into
+// every service that existed only to point across the gap.
+func serviceFiles(dir string) ([]serviceFile, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -151,18 +201,63 @@ func serviceFiles(dir string) ([]string, error) {
 		}
 		return nil, err
 	}
-	var out []string
+
+	var out []serviceFile
+	var strays []string
+
 	for _, e := range entries {
 		if e.IsDir() {
+			inner := filepath.Join(dir, e.Name(), ServiceFile)
+			if _, err := os.Stat(inner); err != nil {
+				// A directory here looks like a service. Losing it silently is
+				// the worst outcome — the service simply stops existing — so it
+				// is collected and reported rather than skipped.
+				strays = append(strays, e.Name())
+				continue
+			}
+			out = append(out, serviceFile{
+				path: inner,
+				rel:  filepath.ToSlash(filepath.Join(ServicesDir, e.Name(), ServiceFile)),
+				name: e.Name(),
+				dir:  filepath.ToSlash(filepath.Join(ServicesDir, e.Name())),
+				Own:  true,
+			})
 			continue
 		}
+
 		switch filepath.Ext(e.Name()) {
 		case ".yaml", ".yml":
-			out = append(out, filepath.Join(dir, e.Name()))
+			out = append(out, serviceFile{
+				path: filepath.Join(dir, e.Name()),
+				rel:  filepath.ToSlash(filepath.Join(ServicesDir, e.Name())),
+				name: strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())),
+			})
 		}
 	}
-	sort.Strings(out)
-	return out, nil
+
+	sort.Slice(out, func(i, j int) bool { return out[i].rel < out[j].rel })
+	sort.Strings(strays)
+	return out, strayError(strays)
+}
+
+// strayError reports directories under services/ that hold no definition.
+func strayError(strays []string) error {
+	if len(strays) == 0 {
+		return nil
+	}
+	return &StrayDirsError{Dirs: strays}
+}
+
+// StrayDirsError names directories under services/ with no service.yaml.
+//
+// Not fatal — Load turns it into diagnostics — but never silent. A half-migrated
+// service whose definition is missing would otherwise vanish from the fleet, and
+// the first sign of that would be `pilot status` quietly listing one fewer
+// service than the operator expects.
+type StrayDirsError struct{ Dirs []string }
+
+func (e *StrayDirsError) Error() string {
+	return fmt.Sprintf("no %s in services/%s", ServiceFile, strings.Join(e.Dirs, ", services/"))
 }
 
 // applyDefaults fills in every value the rest of Pilot is allowed to assume is

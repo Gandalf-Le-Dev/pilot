@@ -1,0 +1,24 @@
+# A database. Pilot watches it and never deploys it.
+#
+# `manage: observe` is what stops a fleet-wide deploy recreating a stateful
+# service. It is the guard `--force` overrides, which is why `--force` is the
+# other flag an agent must never be handed.
+runtime: compose
+manage: observe
+hosts: [web-1]
+
+compose:
+  file: compose.yaml
+  project: db
+
+# Still health-checked and still alerted on — observing is not ignoring.
+health:
+  tcp:
+    addr: 127.0.0.1:5432
+  timeout: 3s
+
+# A per-service alert rule. Host-wide rules live in fleet.yaml.
+alerts:
+  - when: service.down
+    for: 2m
+    notify: [phone, chat]

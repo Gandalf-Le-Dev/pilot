@@ -72,6 +72,45 @@ a credential logged without a recognisable label survives. Do not paste log
 output anywhere it is not needed, and do not repeat a value that looks like a
 key even if it was not redacted.
 
+## Where things live
+
+```
+fleet.yaml              hosts, Caddy paths, notifiers, host-wide alerts
+services/
+  wakapi/
+    service.yaml        the service definition
+    compose.yaml        what it deploys
+```
+
+A service's directory **is** its source, so a definition there needs no
+`source:` line. The older flat layout — `services/wakapi.yaml` with an explicit
+`source: {path: …}` — is still valid; do not "fix" one into the other unasked.
+
+A minimal service, which is most of them:
+
+```yaml
+runtime: compose          # or `static`
+hosts: [web-1]
+compose:
+  file: compose.yaml
+health:
+  http:
+    url: http://127.0.0.1:8080/healthz
+    expect: 200
+expose:
+  domains: [api.example.com]
+  upstream: 8080          # the container port
+```
+
+`health` is not optional in spirit: without it there is nothing for a failed
+deploy to fail, and so nothing to trigger the rollback. If you are adding a
+service and cannot find a health endpoint, say so rather than omitting it
+quietly.
+
+The repository has a complete example under `example/`, covering blue-green,
+static sites, `manage: observe`, secret references, and alerts. Read it before
+inventing field names — a test loads it, so it is accurate, which prose is not.
+
 ## Diagnosing, in order
 
 Every command takes `--json`. Use it — the human tables are for humans and are

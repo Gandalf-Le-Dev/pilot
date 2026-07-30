@@ -93,6 +93,30 @@ Upgrading the CLI does not upgrade the agents already on your hosts. A newer
 CLI refuses to talk to an older agent rather than guess, so run
 `pilot bootstrap <host>` afterwards to bring each one up to match.
 
+## Fleet layout
+
+```
+fleet.yaml
+services/
+  api/
+    service.yaml      the definition
+    compose.yaml      what it deploys
+  site/
+    service.yaml
+```
+
+A service's directory is its source, so nothing needs a `source: {path: …}` line
+pointing across the repository. A service built from elsewhere — a git repo, say
+— declares that explicitly and the explicit source wins.
+
+The flat form, `services/api.yaml` with `source` spelled out, still works and is
+not deprecated. Both can coexist in one fleet.
+
+`example/` holds a complete fleet exercising every feature: both runtimes,
+blue-green, restricted routes, static sites, `manage: observe`, all three secret
+reference forms, notifiers, and alerts. A test loads it and asserts the coverage,
+so unlike a README it cannot quietly go stale.
+
 ## Using it with an AI agent
 
 Pilot ships instructions for an agent operating a fleet — the concepts that are

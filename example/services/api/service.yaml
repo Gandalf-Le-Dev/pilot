@@ -1,0 +1,79 @@
+# A compose service with blue/green rollout, secrets, and a restricted route.
+#
+# `source` is absent on purpose: a service defined in services/api/ takes that
+# directory as its source. Nothing needs to point anywhere.
+runtime: compose
+hosts: [web-1, web-2]
+
+build:
+  output: ["./"]
+
+compose:
+  file: compose.yaml
+
+  # Pin the compose project name when adopting a stack that already exists under
+  # a different one. Getting this wrong brings up a *second* stack against the
+  # same volumes — Compose treats a different project as a different deployment.
+  project: api
+
+env:
+  LOG_LEVEL: info
+
+  # Three ways to reference a secret. None of them stores a value here, and
+  # Pilot refuses to pass an unresolvable reference through as a literal.
+  DATABASE_URL: ${env:API_DATABASE_URL}
+  SESSION_KEY: ${cmd:security find-generic-password -s pilot/api -w}
+  TLS_CLIENT_CERT: ${file:/etc/pilot/secrets/api-client.pem}
+
+health:
+  # Checked by the agent on the host after activation. If it fails, the previous
+  # release *and* its route are restored automatically — which is why
+  # `--no-verify` is the one flag that turns a bad deploy into an outage.
+  http:
+    url: http://127.0.0.1:8080/healthz
+    expect: 200
+  timeout: 5s
+  interval: 2s
+
+rollout:
+  # Start the new stack on a second port, move the route, then drain and stop the
+  # old one. Requests in flight finish on the release that started them.
+  strategy: blue-green
+
+  # Which compose service receives traffic.
+  service: api
+
+  # The two *host* ports the colours alternate between. `expose.upstream` below
+  # is the container port and stays fixed; these are what Pilot publishes and
+  # flips the route between, so they must not collide with it.
+  ports: [18080, 18081]
+  drain: 15s
+
+  # Across hosts: one at a time, and stop if one fails rather than continuing
+  # into a fleet-wide outage.
+  concurrency: 1
+  max_unhealthy: 0
+  pause_between: 10s
+
+expose:
+  domains: [api.example.com]
+  upstream: 8080
+  path: /v1/*
+
+  timeouts:
+    read: 60s
+    write: 60s
+    dial: 5s
+
+  # Restrict who may reach the route. Rendered as a remote_ip matcher with a
+  # fallback that closes the connection rather than answering 403 — a closed
+  # connection tells a scanner nothing.
+  allow:
+    - 100.64.0.0/10
+    - "fd7a:115c:a1e0::/48"
+
+  # Anything not modelled goes here verbatim.
+  raw: |
+    header /v1/* X-Robots-Tag noindex
+
+keep_releases: 10

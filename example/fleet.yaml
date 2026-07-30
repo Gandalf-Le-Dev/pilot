@@ -1,0 +1,66 @@
+# A complete Pilot fleet, exercising every feature. Loaded by a test in
+# internal/config, so it cannot drift out of date without the build failing —
+# documentation that lies is worse than none.
+version: 1
+
+defaults:
+  # Applied to every service that does not say otherwise.
+  keep_releases: 5
+
+hosts:
+  web-1:
+    address: web-1.example.com
+    user: deploy
+    tags: [web, eu]
+
+    # Pilot writes to /opt/pilot and /etc/caddy and drives systemd, so it needs
+    # root. `sudo: true` escalates with passwordless sudo; without it, connect
+    # as root directly. `pilot doctor` checks this before a deploy discovers it.
+    sudo: true
+
+  web-2:
+    address: web-2.example.com
+    user: deploy
+    tags: [web, us]
+    sudo: true
+
+caddy:
+  # Pilot owns everything under snippet_dir and nothing outside it. The single
+  # edit it makes to the global Caddyfile is one `import` line.
+  caddyfile: /etc/caddy/Caddyfile
+  snippet_dir: /etc/caddy/pilot.d
+  admin: http://localhost:2019
+
+notifiers:
+  phone:
+    type: ntfy
+    url: https://ntfy.sh/your-private-topic
+
+  chat:
+    type: slack
+    webhook: https://hooks.slack.com/services/T000/B000/xxx
+
+  # A command notifier runs locally on the host, which is useful for piping into
+  # something else — or for testing delivery without sending anything anywhere.
+  logfile:
+    type: command
+    command: [sh, -c, "cat >> /var/log/pilot-events.log"]
+
+# Announce finished deploys and rollbacks through the notifiers above, with the
+# command that reverses them. On by default; set false to silence.
+notify_deploys: true
+
+# Host-wide alert rules, evaluated by every agent on the host itself — no
+# central server, and they keep firing when nobody's laptop is open.
+#
+# Only host metrics belong here. Per-service ones like `service.down` and
+# `drift.detected` hang off a service, since there is nothing for them to mean
+# fleet-wide — see services/db/service.yaml.
+alerts:
+  - when: host.disk.used_pct > 85
+    for: 10m
+    cooldown: 6h
+    notify: [phone]
+
+  - when: host.disk.free_pct < 10
+    notify: [phone, chat]

@@ -1,0 +1,42 @@
+# A static site. No containers, no ports — a tarball and a symlink swap.
+runtime: static
+
+# Built from a git repository rather than this directory, which is why `source`
+# appears here: an explicit source always wins over the implied one.
+source:
+  repo: https://github.com/example/site.git
+  ref: main
+
+build:
+  # Runs on the machine holding the checkout, never on a target host. If it
+  # fails, nothing on the server has been touched.
+  command: npm run build
+  output: [dist/]
+
+hosts: [web-1, web-2]
+
+health:
+  # A static site still gets verified after activation — a broken build that
+  # deploys cleanly is exactly what the check is for.
+  http:
+    url: http://127.0.0.1/
+    expect: 200
+  timeout: 5s
+
+expose:
+  domains: [example.com, www.example.com]
+
+  static:
+    # try_files fallback to index.html, for a client-side router.
+    spa: true
+    index: index.html
+
+    headers:
+      "/assets/*":
+        Cache-Control: "public, max-age=31536000, immutable"
+      "/*":
+        X-Content-Type-Options: nosniff
+
+    # Only these directories carry over from the previous release. Scoped rather
+    # than blanket, so a deleted page actually disappears.
+    overlay: [uploads]

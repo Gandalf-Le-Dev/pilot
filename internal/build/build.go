@@ -262,6 +262,24 @@ func collect(srcDir string, outputs []string) (string, []release.Artifact, error
 	return stage, artifacts, nil
 }
 
+// excluded reports whether a path inside a build output is Pilot's own metadata
+// rather than deployable content.
+//
+// `service.yaml` sits beside the compose file it deploys, which is the point of
+// the per-service directory layout — but it must not be shipped. Two reasons,
+// and the second is the load-bearing one:
+//
+//   - It is Pilot's configuration, not the service's. The host has no use for it.
+//   - It is part of the release digest. Without this, adopting the directory
+//     layout would change every service's hash and force a redeploy of the whole
+//     fleet purely to move files around.
+//
+// The same predicate drives both the copy and the digest, so what is staged and
+// what is hashed cannot disagree.
+func excluded(rel string) bool {
+	return filepath.Base(rel) == config.ServiceFile
+}
+
 func copyPath(from, to string) error {
 	fi, err := os.Stat(from)
 	if err != nil {
@@ -285,6 +303,9 @@ func copyPath(from, to string) error {
 		rel, err := filepath.Rel(from, p)
 		if err != nil {
 			return err
+		}
+		if excluded(rel) {
+			return nil
 		}
 		dst := filepath.Join(to, rel)
 		if info.IsDir() {
@@ -333,6 +354,9 @@ func hashPath(p string) (string, int64, error) {
 		rel, err := filepath.Rel(p, path)
 		if err != nil {
 			return err
+		}
+		if excluded(rel) {
+			return nil
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
