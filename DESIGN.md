@@ -1089,6 +1089,49 @@ to contain its owner.
 An agent is never given SSH credentials or a shell for the same reason: Pilot is
 where every rule is enforced, and a shell routes around all of them at once.
 
+### How the refusals are enforced
+
+One check, in the root command's `PersistentPreRunE`. By the time it runs Cobra
+has resolved which subcommand was invoked and parsed its flags, so a single
+function sees everything it needs and every command inherits it.
+
+**The mode is ambient, never requested.** It comes from the environment of the
+process that launched the agent:
+
+    PILOT_MODE=agent
+    PILOT_AGENT=claude      # attribution; feeds the existing `By` field
+
+A flag the agent passes itself would be worthless — an agent that can add `--as
+claude` can also leave it out. Reading it from the environment means the agent
+does not choose whether it is restricted.
+
+**What this is, and is not.** If the agent has a shell, nothing inside `pilot`
+is a sandbox: `env -u PILOT_MODE pilot deploy --force` defeats it, as would any
+number of other things. This is a guardrail against the two failures that
+actually happen — an agent that is mistaken, and an agent following instructions
+injected through a log line — and it stops both, because neither involves
+deliberately dismantling the mechanism. It is not a boundary against a model
+that is actively trying to escape one. A user who needs that must either withhold
+the shell or enforce at the harness level, where the tool call itself can be
+denied; saying otherwise would sell exactly the false assurance this design
+rejects elsewhere.
+
+**The classification cannot drift.** The refusals are a table of command paths
+and flag names, and a table is a thing that goes stale the moment someone adds a
+command. So a test walks the Cobra tree and fails if any command or flag is not
+classified — allowed in agent mode, or refused. Adding `--force`-shaped power to
+Pilot therefore breaks the build until somebody decides which it is.
+
+This is deliberately the same mechanism as `SchemaDigest`, for the same reason
+and after the same failure: a list that must be updated by hand, with nothing
+checking that it was, is a list that is eventually wrong in production.
+
+Two of the refusals need no new code. `@tag` and multi-service selectors are an
+argument check rather than a flag check. And `manage: observe` services are
+already refused without `--force`, so denying `--force` protects them for free —
+the guard that was written for a human typing the wrong thing turns out to be
+the guard an agent needs too.
+
 ### Two contracts, one lesson
 
 Logs and drift details are returned to the agent as **explicitly fenced
@@ -1125,15 +1168,21 @@ unsafe CLI is a liability.
    for one that was running, and `agent status` contradicting `agent upgrade`
    about builds. Lossy output is the real complaint, and the fix is to stop
    losing it.
-3. **Confirm digests** covering desired *and* observed state. `Plan.Hash` covers
-   only the desired inputs by design, so it does not move when the fleet does;
-   an autonomous agent needs to be refused when it acts on a stale read.
-4. **A skill**, versioned in this repository so the rules Pilot enforces and the
+3. **A skill**, versioned in this repository so the rules Pilot enforces and the
    concepts it teaches move together. Its job is the model's understanding —
    releases are immutable, builds happen locally, drift means someone hand-edited
    a host — not enforcement, which belongs to the binary.
-5. **Audit** — extend the existing `By` field with the agent identity and the
-   digest it acted on, surfaced in `pilot releases`.
+4. **Audit** — extend the existing `By` field with the agent identity, surfaced
+   in `pilot releases`. `PILOT_AGENT` already supplies the name, so attribution
+   costs nothing beyond passing it through.
+
+A plan-confirmation digest was designed and dropped. For a human approving a
+deploy it is a real feature — it pins exactly what was approved — but there is no
+human in this loop, and for an autonomous agent it is an extra round trip whose
+whole purpose is to fail on a stale read. That failure is correct and still
+arrives as "the agent was refused and nobody knows why". Auto-rollback and
+notification already cover the case it was protecting against, without the
+friction.
 
 **`pilot mcp serve` is deliberately not on this list.** A tool surface only
 bounds an agent that has no shell; one with Bash can call the CLI directly, so
@@ -1179,7 +1228,7 @@ concurrency and abort gates · `manage: observe` enforcement · TLS expiry alert
 already speaks. Nothing in phases 1–3 changes.
 
 **Phase 5 — autonomous agents.** Agent levels and scope · completing the existing JSON ·
-confirm digests · a versioned skill · agent-attributed audit. See section 13. `pilot mcp
+a versioned skill · agent-attributed audit. See section 13. `pilot mcp
 serve` is explicitly *not* in scope: it bounds only agents without a shell, so it enforces
 nothing the binary must not already enforce itself.
 
