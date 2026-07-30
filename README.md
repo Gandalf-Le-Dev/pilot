@@ -28,13 +28,15 @@ See [DESIGN.md](DESIGN.md) for the full design and the reasoning behind it.
 
 ## Status
 
-Working: compose and static runtimes, Caddy route generation, the agent with
-health verification and automatic rollback, drift detection, a local alert
-engine, and blue-green deploys for compose.
+Working: compose and static runtimes, Caddy route generation with per-route
+network restrictions, the agent with health verification and automatic rollback,
+blue-green deploys for compose, drift detection, a local alert engine, deploy
+notifications, credential redaction in logs, machine-readable output on every
+command, and an embedded skill for AI agents.
 
 Not implemented, and erroring clearly when used: the systemd runtime,
-`${sops:}` and `${op:}` secret schemes, rollout concurrency (serial only), and
-multi-host `logs --follow`.
+`${sops:}` and `${op:}` secret schemes, rollout concurrency (serial only),
+multi-host `logs --follow`, and authenticated notifier endpoints.
 
 ## Quick look
 
@@ -48,24 +50,201 @@ hosts:
 ```
 
 ```yaml
-# services/api.yaml
-name: api
+# services/api/service.yaml — the directory is the source, so no `source:` line
 runtime: compose
 hosts: [web-1]
-source:  {repo: "git@github.com:me/api.git", ref: main}
-build:   {image: "ghcr.io/me/api", dockerfile: Dockerfile}
-compose: {file: deploy/compose.yaml}
+compose: {file: compose.yaml}
 expose:  {domains: [api.example.com], upstream: 8080}
 health:  {http: {url: "http://127.0.0.1:8080/healthz"}}
 ```
 
 ```
+pilot init              create a fleet configuration to start from
 pilot doctor            is this setup sound?
 pilot bootstrap web-1   prepare the host, install the agent
 pilot deploy api        build, ship, activate, verify
 pilot status            what is running, and what has drifted
 pilot rollback api      return to the previous release
 ```
+
+## Commands
+
+```
+pilot init                 create a fleet configuration to start from
+pilot doctor               check config, hosts, routing, TLS, agents, secrets in logs
+pilot doctor --fix         repair what can be repaired unambiguously
+pilot bootstrap <host>     prepare a host and install its agent
+
+pilot deploy <svc>         build locally, ship, activate, verify
+pilot deploy <svc> --plan  show what would change, then stop
+pilot rollback <svc>       return to the previous release
+pilot releases <svc>       release history, and the rollback targets
+
+pilot status               what is running across the fleet, and what has drifted
+pilot ps                   the containers and processes behind each service
+pilot top                  the same, refreshing until interrupted
+pilot diff                 where a host no longer matches what was deployed
+pilot logs <svc>           stream logs, with credentials redacted
+pilot routes               the Caddy routes Pilot manages, and any orphans
+
+pilot agent status         each host's agent version
+pilot agent upgrade        bring agents up to match this CLI
+pilot skill                the agent skill; --install writes it for Claude Code
+pilot upgrade              replace this binary with the latest release
+```
+
+Selectors work where they make sense: `pilot deploy @web` deploys every service
+on hosts tagged `web`, and `pilot status api` narrows to one service.
+
+## Routing
+
+Pilot owns Caddy configuration for the services it manages, and nothing else. It
+writes one file per service under `/etc/caddy/pilot.d/`, and makes exactly one
+edit outside that directory — a single `import` line, added once, with a backup
+taken first and restored if Caddy then rejects the result.
+
+```yaml
+expose:
+  domains: [api.example.com]
+  upstream: 8080            # the container's loopback port
+  path: /v1/*
+
+  timeouts: {read: 60s, write: 60s}
+
+  allow:                    # restrict to these networks; everything else is
+    - 100.64.0.0/10         # closed on rather than answered with a 403
+    - "fd7a:115c:a1e0::/48"
+
+  raw: |                    # anything not modelled, verbatim
+    header /v1/* X-Robots-Tag noindex
+```
+
+A static site gets `static:` instead of `upstream:`, with SPA fallback, cache
+headers, and a scoped `overlay:` for directories that survive a release.
+
+`allow:` restricts who reaches the route *through Caddy*. It is not a substitute
+for binding the service to loopback — a container published on `0.0.0.0` is
+reachable on its own port whatever Caddy says, which is how a tailnet-only
+service on this project's own server turned out to be answering the internet.
+
+## Secrets
+
+Values are referenced, never stored:
+
+```yaml
+env:
+  DATABASE_URL: ${env:API_DATABASE_URL}
+  SESSION_KEY:  ${cmd:security find-generic-password -s pilot/api -w}
+  CLIENT_CERT:  ${file:/etc/pilot/secrets/api.pem}
+```
+
+Resolved at deploy time and written to a `0600` `.env` on the host. A reference
+that cannot be resolved fails the deploy — it is never passed through as a
+literal string, because shipping `${cmd:...}` as a password would be worse than
+stopping. `${sops:}` and `${op:}` parse but are not implemented, and say so.
+
+## Notifications and alerts
+
+Each agent evaluates alert rules on its own host. There is no central server, so
+they keep firing when nothing else is running.
+
+```yaml
+notifiers:
+  phone:
+    type: ntfy
+    url: https://ntfy.sh/your-private-topic
+
+notify_deploys: true            # default; announce every deploy and rollback
+
+alerts:                          # host-wide; per-service rules live on a service
+  - when: host.disk.used_pct > 85
+    for: 10m
+    cooldown: 6h
+    notify: [phone]
+```
+
+Types are `ntfy`, `slack`, `discord`, `webhook`, and `command` — the last runs a local
+program with the notification as JSON on stdin, which is also the easiest way to
+test delivery without sending anything anywhere.
+
+A deploy notification carries the command that reverses it:
+
+```
+PILOT: api on web-1
+api deployed 0042-9f3ac1b
+undo with:  pilot rollback api
+```
+
+It fires whoever ran the deploy — Pilot does not detect or care. That is the
+point: a notification you did not cause is the anomaly, whatever produced it.
+Delivery failures are logged by the agent and never fail a deploy.
+
+## Rollouts and stateful services
+
+A compose service can go live without dropping requests:
+
+```yaml
+rollout:
+  strategy: blue-green     # or `recreate`, the default
+  service: api             # the compose service receiving traffic
+  ports: [18080, 18081]    # one host port per colour
+  drain: 15s
+```
+
+The new stack starts on the other colour's port, the route moves, then the old
+one drains and stops. Requests in flight finish on the release that started
+them. `recreate` is simpler and briefly drops connections, which is usually fine
+and is what you get without asking.
+
+Databases and anything else Pilot should watch but never deploy:
+
+```yaml
+manage: observe
+```
+
+`pilot status` reports it, alerts fire on it, drift is detected on it — and
+`pilot deploy` refuses unless you pass `--force`. That refusal is the guard that
+stops a fleet-wide deploy recreating a Postgres, so it is also the flag an AI
+agent is told never to use.
+
+## Machine-readable output
+
+Every command takes `--json`, and each declares what it does with it — a test
+walks the command tree and fails if one does not, so a new command cannot
+silently ignore the flag.
+
+```
+pilot status --json        per service: state, release, drift, runtime, manage
+pilot doctor --json        findings with severity, scope, and hints
+pilot diff --json          what diverged
+pilot releases api --json  full release state, history included
+pilot logs api --json      newline-delimited, one object per line
+```
+
+`logs` is NDJSON because a followed stream never ends and a document that never
+closes cannot be parsed. `top` refuses `--json` rather than ignoring it, and
+names `status --json` instead.
+
+## Credentials in logs
+
+Services log their own API keys more often than anyone expects — usually inside
+a request URI. `pilot logs` replaces them with `<redacted>` by default, keeping
+the label so the line stays readable:
+
+```
+uri="/api/heartbeats?api_key=<redacted>" status="201"
+```
+
+`--no-redact` shows the raw value. Detection is three layers, most certain
+first: values Pilot itself supplied to the service, parameters whose *name* says
+credential, and formats that can only be credentials. Entropy scanning is
+deliberately not used — release IDs, commit SHAs and container IDs are all
+high-entropy, so a threshold either floods the output or misses real keys.
+
+It removes what it can **identify**, which makes logs safer to share rather than
+safe. A secret logged without a recognisable label survives, which is why
+`pilot doctor` also reports credentials it finds — hiding one from a single
+reader does not stop the service writing it to disk on every request.
 
 ## Installing
 
@@ -89,9 +268,18 @@ pilot upgrade --check    # exit 2 if an update exists, 0 if current
 Homebrew installs are detected and left alone — it names `brew upgrade pilot`
 rather than overwriting a file brew believes it owns.
 
-Upgrading the CLI does not upgrade the agents already on your hosts. A newer
-CLI refuses to talk to an older agent rather than guess, so run
-`pilot bootstrap <host>` afterwards to bring each one up to match.
+Upgrading the CLI does not upgrade the agents on your hosts, and a newer CLI
+refuses to talk to an older agent rather than guess. Keeping them in step is not
+a chore you have to remember, though:
+
+```
+pilot agent status       what each host runs, and whether it matches
+pilot agent upgrade      bring them all up to date
+```
+
+A deploy that meets a stale agent upgrades it and carries on, and
+`pilot doctor --fix` repairs one it finds behind. `pilot bootstrap` is for
+preparing a *new* host, not for updating an existing one.
 
 ## Fleet layout
 
@@ -140,13 +328,7 @@ announced through your notifiers with the command that reverses it. If you point
 an AI at your infrastructure, you own what it does — the design assumes that
 rather than pretending otherwise.
 
-Two things worth knowing before you do:
-
-- `pilot logs` redacts credentials by default, because services log their own API
-  keys more often than anyone expects. It removes what it can *identify*, which
-  makes logs safer to share rather than safe.
-- `pilot doctor` reports credentials it finds in service logs, so the cause can
-  be fixed rather than hidden from one reader.
+See **Credentials in logs** below before you point one at a real fleet.
 
 ## Building from source
 
