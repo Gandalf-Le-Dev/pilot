@@ -1034,9 +1034,33 @@ this material, and it is the one place where reading is how something gets in.
    one that was running, and `agent status` contradicting `agent upgrade` about
    builds. Lossy output was the real complaint; the fix is to stop losing it.
 
-2. **A deploy notification**, carrying its own undo command.
+2. **Log redaction. ✅ Built.** `pilot logs` replaces credentials with
+   `<redacted>` by default, keeping the label — `api_key=<redacted>` still says a
+   key was passed, so the line stays debuggable. `--no-redact` shows the raw
+   value.
 
-3. **Credentials in logs. ✅ Built.** `pilot doctor` samples each service's
+   Default-on rather than opt-in: the leak this exists for is invisible until
+   somebody reads the logs, and by then they have read the key. A protection that
+   must be switched on does not protect that case.
+
+   The writer is line-buffered, which is the point rather than an implementation
+   detail — log output arrives in whatever sizes the transport chooses, so a
+   credential can straddle two `Write` calls and chunk-by-chunk redaction would
+   let both halves through. Buffering is capped so a service emitting no newlines
+   cannot exhaust memory on the machine reading it.
+
+   It composes with the JSON writer as `Logs → redact → json → stdout`: cleaned
+   first, escaped second, neither step aware of the other.
+
+   Stated plainly in `pilot logs --help`, because the alternative is the
+   false-confidence trap: this removes what it can *identify*, so it makes logs
+   safer to share rather than safe. A secret logged with no label and not among
+   the values Pilot supplied stays visible, which is why the `doctor` check
+   matters more — it points at the cause.
+
+3. **A deploy notification**, carrying its own undo command.
+
+4. **Credentials in logs. ✅ Built.** `pilot doctor` samples each service's
    recent output and reports credentials found in it. Written before log
    redaction, and instead of it for now, because redaction cleans one read path
    while the credential is still written to the host on every request and stays

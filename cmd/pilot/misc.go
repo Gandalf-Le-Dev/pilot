@@ -15,6 +15,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/app"
 	"github.com/Gandalf-Le-Dev/pilot/internal/deploy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/redact"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
@@ -205,28 +206,40 @@ func runReleases(ctx context.Context, g *globals, name string) error {
 
 func newLogsCmd(g *globals) *cobra.Command {
 	var (
-		follow bool
-		tail   int
-		since  string
+		follow   bool
+		tail     int
+		since    string
+		noRedact bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "logs <service>",
 		Short: "Stream a service's logs",
-		Args:  cobra.ExactArgs(1),
+		Long: "Credentials are replaced with <redacted> by default — services log their own\n" +
+			"API keys more often than anyone expects, usually inside a request URI, and a\n" +
+			"leak like that is invisible until someone reads the logs and has therefore\n" +
+			"already read the key.\n\n" +
+			"Only what can be identified is removed: values Pilot supplied to the service,\n" +
+			"parameters named like credentials, and formats that can only be credentials.\n" +
+			"A secret logged with no label is not detectable, so this makes logs safer to\n" +
+			"share rather than safe. `pilot doctor` reports what it finds so the service\n" +
+			"can be stopped from logging it at all.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runLogs(cmd.Context(), g, args[0], runtime.LogOptions{
 				Follow: follow, Tail: tail, Since: since,
-			})
+			}, noRedact)
 		},
 	}
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "keep streaming new output")
 	cmd.Flags().IntVar(&tail, "tail", 200, "number of lines to show from the end")
 	cmd.Flags().StringVar(&since, "since", "", "show logs since a timestamp or duration, e.g. 15m")
+	cmd.Flags().BoolVar(&noRedact, "no-redact", false,
+		"show credentials in the output instead of replacing them with <redacted>")
 	return cmd
 }
 
-func runLogs(ctx context.Context, g *globals, name string, opts runtime.LogOptions) error {
+func runLogs(ctx context.Context, g *globals, name string, opts runtime.LogOptions, noRedact bool) error {
 	a, err := g.load()
 	if err != nil {
 		return err
@@ -261,6 +274,20 @@ func runLogs(ctx context.Context, g *globals, name string, opts runtime.LogOptio
 			out = w
 		} else if len(s.Hosts) > 1 {
 			fmt.Printf("\n==> %s on %s <==\n", name, host)
+		}
+
+		// Redaction wraps the JSON writer rather than the reverse: the text is
+		// cleaned first and escaped second, so a placeholder is what gets
+		// encoded and neither step needs to know about the other.
+		//
+		// On by default. The leak this was written for — a service logging its
+		// own API key on every request — is invisible until somebody reads the
+		// logs, and by then they have read the key. A protection that must be
+		// switched on does not protect the case that matters.
+		if !noRedact {
+			w := redact.NewWriter(out, literalSecretEnv(s))
+			defer w.Close()
+			out = w
 		}
 
 		if err := rt.Logs(ctx, t, opts, out); err != nil {
