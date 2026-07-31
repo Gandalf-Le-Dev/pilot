@@ -527,11 +527,22 @@ func validateNotifiers(f *Fleet, ds *Diagnostics) {
 
 		switch alert.NotifierType(n.Type) {
 		case alert.TypeWebhook, alert.TypeNtfy, alert.TypeSlack, alert.TypeDiscord:
-			if n.Endpoint() == "" {
+			endpoint := n.Endpoint()
+			switch {
+			case endpoint == "":
 				ds.ErrorHint(FleetFile, field+".url", "missing",
 					fmt.Sprintf("a %s notifier posts to a URL", n.Type))
-			} else if u, err := url.Parse(n.Endpoint()); err != nil || u.Scheme == "" || u.Host == "" {
-				ds.Errorf(FleetFile, field+".url", "%q is not a valid URL", n.Endpoint())
+
+			// A secret reference cannot be checked here: it resolves on the
+			// operator's machine when the config is pushed. Rejecting it would
+			// force webhooks — which are credentials — to be written literally
+			// into the fleet repository, which is the opposite of the point.
+			case HasSecretRef(endpoint):
+
+			default:
+				if u, err := url.Parse(endpoint); err != nil || u.Scheme == "" || u.Host == "" {
+					ds.Errorf(FleetFile, field+".url", "%q is not a valid URL", endpoint)
+				}
 			}
 			if len(n.Command) > 0 {
 				ds.Warnf(FleetFile, field+".command", "ignored for a %s notifier", n.Type)

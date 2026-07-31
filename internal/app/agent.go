@@ -11,6 +11,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent/install"
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/secrets"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
@@ -123,8 +124,13 @@ func (a *App) SyncAgent(ctx context.Context, host string, s AgentSync) (*AgentSy
 // FleetConfigSpec renders the host-wide configuration the agent needs in order
 // to alert on its own: notifiers and host-scoped rules.
 func (a *App) FleetConfigSpec() (string, error) {
+	notifiers, err := resolveNotifiers(a.Fleet.Notifiers)
+	if err != nil {
+		return "", err
+	}
+
 	body, err := yaml.Marshal(config.FleetConfig{
-		Notifiers:     a.Fleet.Notifiers,
+		Notifiers:     notifiers,
 		Alerts:        a.Fleet.Alerts,
 		NotifyDeploys: a.Fleet.NotifyDeploys,
 	})
@@ -132,6 +138,42 @@ func (a *App) FleetConfigSpec() (string, error) {
 		return "", err
 	}
 	return string(body), nil
+}
+
+// resolveNotifiers expands secret references in notifier endpoints.
+//
+// A notifier URL *is* a credential — a Discord or Slack webhook lets anyone
+// holding it post as you, and an ntfy topic is the only access control ntfy has.
+// Without this they can only be written literally, which puts them in the fleet
+// repository and in its history forever.
+//
+// Resolution happens here, on the operator's machine, for the same reason
+// service secrets do: the values come from a keychain or a local file that the
+// host cannot reach. What lands on the host is the resolved endpoint, in a file
+// this change also narrows to 0600.
+func resolveNotifiers(in map[string]config.Notifier) (map[string]config.Notifier, error) {
+	if len(in) == 0 {
+		return in, nil
+	}
+
+	out := make(map[string]config.Notifier, len(in))
+	for name, n := range in {
+		var err error
+		if n.URL, err = secrets.Resolve(n.URL); err != nil {
+			return nil, fmt.Errorf("notifier %q: url: %w", name, err)
+		}
+		if n.Webhook, err = secrets.Resolve(n.Webhook); err != nil {
+			return nil, fmt.Errorf("notifier %q: webhook: %w", name, err)
+		}
+		// A command notifier can carry a token in its argv too.
+		for i, arg := range n.Command {
+			if n.Command[i], err = secrets.Resolve(arg); err != nil {
+				return nil, fmt.Errorf("notifier %q: command[%d]: %w", name, i, err)
+			}
+		}
+		out[name] = n
+	}
+	return out, nil
 }
 
 // WaitForAgent polls until the daemon answers, since systemd returns as soon as

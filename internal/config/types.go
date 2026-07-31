@@ -470,3 +470,12 @@ type FleetConfig struct {
 func (f FleetConfig) DeployNotificationsEnabled() bool {
 	return f.NotifyDeploys == nil || *f.NotifyDeploys
 }
+
+// HasSecretRef reports whether a value contains a `${scheme:...}` reference.
+//
+// Validation runs before resolution, so anything checking the *shape* of a
+// value — a URL, a port, a path — has to accept a reference it cannot see
+// through yet. Getting this wrong does not merely produce a spurious error: it
+// forces the value to be written literally, and the values worth referencing
+// are the ones worth keeping out of a repository.
+func HasSecretRef(v string) bool { return strings.Contains(v, "${") }

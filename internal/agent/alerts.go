@@ -42,7 +42,9 @@ func (a *Agent) PutFleetConfig(spec string) error {
 		return err
 	}
 	path := filepath.Join(a.cacheDir(), FleetConfigFile)
-	if err := release.WriteFileAtomic(path, []byte(spec), 0o644); err != nil {
+	// 0600: this file holds notifier URLs, and a Discord or Slack webhook is a
+	// credential — anyone holding it can post as you. It was world-readable.
+	if err := release.WriteFileAtomic(path, []byte(spec), 0o600); err != nil {
 		return err
 	}
 
