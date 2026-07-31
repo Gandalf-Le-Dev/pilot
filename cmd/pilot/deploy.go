@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -242,15 +243,26 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 	if opts.planOnly {
 		return nil
 	}
-	if plan.NoOp() {
-		fmt.Println("  nothing to do — every host already runs this release")
-		fmt.Println()
-		return nil
-	}
-
 	spec, err := deploy.SpecFor(s)
 	if err != nil {
 		return err
+	}
+
+	if plan.NoOp() {
+		fmt.Println("  nothing to do — every host already runs this release")
+
+		// The release is unchanged; the definition may not be. `health`,
+		// `manage`, `rollout` and `alerts` are all outside the release hash, so
+		// editing one produces exactly this no-op — and the agent keeps
+		// observing, probing and alerting with whatever it was last handed.
+		//
+		// This is the common case, not the exotic one: adding an alert rule
+		// changes nothing about what runs. Doing it only in the executor missed
+		// it entirely, because a wholly-unchanged plan never reaches there.
+		refreshSpecs(ctx, agents, s.Name, spec)
+
+		fmt.Println()
+		return nil
 	}
 
 	exec := &deploy.Executor{
@@ -285,4 +297,32 @@ func sourceCache() string {
 		return filepath.Join(os.TempDir(), "pilot-src")
 	}
 	return filepath.Join(home, ".pilot", "src")
+}
+
+// refreshSpecs hands each agent the current service definition.
+//
+// Called when a deploy changes nothing about the release, which is precisely
+// when the agent would otherwise be left with a stale spec — and it uses that
+// spec to observe, probe health, detect drift and evaluate alerts for as long
+// as the service exists.
+//
+// Failures are reported and not fatal. The deploy genuinely had nothing to do;
+// refusing to exit zero because a cache could not be refreshed would turn a
+// no-op into an error.
+func refreshSpecs(ctx context.Context, agents map[string]*remote.Client, name, spec string) {
+	for _, host := range sortedKeys(agents) {
+		if err := agents[host].PutService(ctx, name, spec); err != nil {
+			fmt.Fprintf(os.Stderr, "  ! %s: could not refresh the cached definition: %v\n", host, err)
+		}
+	}
+}
+
+// sortedKeys keeps output order stable across runs.
+func sortedKeys(m map[string]*remote.Client) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -28,7 +28,10 @@ import (
 // hole while doing it: the digest covered `Fleet` and `Service` but not the
 // host-wide config the agent also parses strictly, so a field added there would
 // have gone through unguarded — the same gap in a different struct.
-const Version = 4
+//
+// Version 5 added PUT /v1/services/{name}, so a no-op deploy can still refresh
+// the spec an agent observes, probes and alerts with.
+const Version = 5
 
 // SchemaDigest pins the configuration schema this protocol version speaks.
 //

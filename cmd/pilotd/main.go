@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -165,6 +166,19 @@ func newCtlCmd() *cobra.Command {
 				return fmt.Errorf("reading request: %w", err)
 			}
 			return client.NewUnix(socket).PutConfig(c.Context(), req.Spec)
+		},
+	})
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "put-service <name>",
+		Short: "Cache a service definition without deploying (spec on stdin)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(c *cobra.Command, args []string) error {
+			spec, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+			if err != nil {
+				return fmt.Errorf("reading spec: %w", err)
+			}
+			return client.NewUnix(socket).PutService(c.Context(), args[0], string(spec))
 		},
 	})
 

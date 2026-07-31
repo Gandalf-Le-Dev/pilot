@@ -159,6 +159,15 @@ func (c *Client) PutConfig(ctx context.Context, spec string) error {
 }
 
 // Alerts reports which rules are currently firing on the host.
+// PutService hands the agent a service definition without deploying.
+//
+// Used when a deploy is a no-op: the release is unchanged, but health, drift,
+// rollout and manage settings may not be, and the agent acts on those for as
+// long as the service exists.
+func (c *Client) PutService(ctx context.Context, name, spec string) error {
+	return c.ctl(ctx, nil, []byte(spec), "put-service", name)
+}
+
 func (c *Client) Alerts(ctx context.Context) (*proto.AlertsResponse, error) {
 	var out proto.AlertsResponse
 	if err := c.ctl(ctx, &out, nil, "alerts"); err != nil {

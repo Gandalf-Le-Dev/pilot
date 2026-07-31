@@ -21,6 +21,7 @@ func Standard() []Check {
 	return []Check{
 		{Name: "config", Scope: ScopeConfig, Run: checkConfig},
 		{Name: "image-tags", Scope: ScopeConfig, Run: checkImageTags},
+		{Name: "blue-green", Scope: ScopeConfig, Run: checkBlueGreen},
 		{Name: "reachability", Scope: ScopeHost, NeedsNetwork: true, Run: checkReachability},
 		{Name: "prerequisites", Scope: ScopeHost, NeedsNetwork: true, Run: checkPrerequisites},
 		{Name: "agent", Scope: ScopeHost, NeedsNetwork: true, Run: checkAgents},

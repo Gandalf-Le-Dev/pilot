@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
@@ -119,6 +120,44 @@ func (c *Client) Info(ctx context.Context) (*proto.Info, error) {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// PutService caches a service definition without deploying it.
+//
+// The spec is sent as-is rather than wrapped in JSON: it is already YAML, and
+// the agent parses it with the same strict decoder it uses for a pushed deploy,
+// so wrapping would only add an encoding for both ends to agree about.
+func (c *Client) PutService(ctx context.Context, name, spec string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		c.base+proto.PathServices+name, strings.NewReader(spec))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/yaml")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		var oe *net.OpError
+		if errorsAs(err, &oe) {
+			return &NotRunningError{Socket: c.socket}
+		}
+		return err
+	}
+	defer resp.Body.Close()
+
+	if v := resp.Header.Get(proto.HeaderProtocol); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n != proto.Version {
+			return &SkewError{Agent: n, Expected: proto.Version}
+		}
+	}
+	if resp.StatusCode >= 400 {
+		var e proto.Error
+		if err := json.NewDecoder(resp.Body).Decode(&e); err == nil && e.Error != "" {
+			return fmt.Errorf("%s", e.Error)
+		}
+		return fmt.Errorf("agent returned %s", resp.Status)
+	}
+	return nil
 }
 
 func (c *Client) Status(ctx context.Context) (*proto.StatusResponse, error) {

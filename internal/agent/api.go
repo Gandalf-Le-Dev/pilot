@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -28,6 +29,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST "+proto.PathRollback, a.handleRollback)
 	mux.HandleFunc("GET "+proto.PathJobs+"{id}", a.handleJob)
 	mux.HandleFunc("GET "+proto.PathServices+"{name}", a.handleService)
+	mux.HandleFunc("PUT "+proto.PathServices+"{name}", a.handlePutService)
 	mux.HandleFunc("DELETE "+proto.PathServices+"{name}", a.handleForget)
 
 	// Stamp the protocol version on every response, so a skewed CLI finds out
@@ -112,6 +114,37 @@ func (a *Agent) handleService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, a.statusFor(r.Context(), name))
+}
+
+// handlePutService caches a definition without deploying anything.
+//
+// The agent uses a service's spec long after the deploy that delivered it — to
+// observe, probe health, detect drift, and evaluate alerts. Those fields do not
+// affect the release hash, so changing one alone leaves the deploy a no-op and,
+// before this existed, the agent kept acting on the previous spec indefinitely.
+//
+// That is not theoretical. A service reverted from blue-green to recreate went
+// on being observed as blue-green: the agent looked for a compose project that
+// did not exist and reported a service that was serving traffic as stopped —
+// which a `service.down` rule would have escalated at 3am.
+func (a *Agent) handlePutService(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+
+	s, err := a.PutService(string(body))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.Name != r.PathValue("name") {
+		writeErr(w, http.StatusBadRequest,
+			fmt.Errorf("spec is for %q but was pushed as %q", s.Name, r.PathValue("name")))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *Agent) handleForget(w http.ResponseWriter, r *http.Request) {

@@ -70,6 +70,22 @@ func (e *Executor) Run(ctx context.Context, p *Plan) ([]Outcome, error) {
 
 		if hp.NoOp {
 			e.Log("  %s: already running %s, nothing to do", hp.Host, hp.To)
+
+			// The release is unchanged, but the spec may not be. `health`,
+			// `manage` and `rollout` are not part of the release hash, so
+			// editing one leaves the deploy a no-op — while the agent goes on
+			// observing, probing and alerting with whatever it was last given.
+			//
+			// Found the hard way: a service reverted from blue-green to
+			// recreate kept being observed as blue-green, so the agent looked
+			// for a compose project that did not exist and reported a service
+			// serving traffic as stopped.
+			if rc := e.Agents[hp.Host]; rc != nil && e.Spec != "" {
+				if err := rc.PutService(ctx, p.Service.Name, e.Spec); err != nil {
+					e.Log("  %s: could not refresh the cached spec: %v", hp.Host, err)
+				}
+			}
+
 			outcomes = append(outcomes, Outcome{
 				Host: hp.Host, Release: hp.To, From: hp.From,
 				Succeeded: true, Message: "unchanged",
