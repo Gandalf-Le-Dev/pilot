@@ -119,15 +119,24 @@ func (s styler) header(text string) string {
 	return s.r.NewStyle().Foreground(colHeader).Bold(true).Render(text)
 }
 
-// forceColour lets a test exercise the styled path without a real terminal.
+// forceColour overrides the per-writer decision.
 var forceColour struct {
 	sync.Mutex
 	on bool
 }
 
-// ForceColourForTest turns styling on regardless of the destination, and
-// returns a function restoring the previous setting.
-func ForceColourForTest(on bool) func() {
+// ColourOverride forces styling on regardless of the destination, returning a
+// function that restores the previous setting.
+//
+// Two callers, and the first is the reason it is not test-only. `pilot top`
+// renders into a buffer that bubbletea then writes to the terminal, so the
+// writer these functions see is a strings.Builder and would be judged
+// colourless — while the real destination is a terminal. Without this, the TUI
+// would have to reimplement every table, and `top` drifting from `status` is
+// precisely the class of bug this project keeps finding.
+//
+// The second caller is the test that proves styling is applied at all.
+func ColourOverride(on bool) func() {
 	forceColour.Lock()
 	prev := forceColour.on
 	forceColour.on = on

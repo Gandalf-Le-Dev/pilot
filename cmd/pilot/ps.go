@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -130,75 +129,4 @@ func age(since time.Time) string {
 		return fmt.Sprintf("%dh", int(d.Hours()))
 	}
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
-}
-
-func newTopCmd(g *globals) *cobra.Command {
-	var interval time.Duration
-
-	cmd := &cobra.Command{
-		Use:   "top [service|@tag]",
-		Short: "Watch the fleet, refreshing until interrupted",
-		Long: "A repeating `status`. Useful while a deploy lands, or when waiting to see\n" +
-			"whether something settles.",
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
-			return runTop(cmd.Context(), g, selector, interval)
-		},
-	}
-	cmd.Flags().DurationVar(&interval, "interval", 3*time.Second, "how often to refresh")
-	return cmd
-}
-
-func runTop(ctx context.Context, g *globals, selector string, interval time.Duration) error {
-	a, err := g.load()
-	if err != nil {
-		return err
-	}
-	defer a.Close()
-
-	// `top` redraws a full screen in place with ANSI escapes, and its rows are
-	// exactly what `status` produces. There is no honest JSON form of that, and
-	// silently ignoring the flag would leave a caller waiting for output that
-	// never arrives — so say where to go instead.
-	if g.json {
-		return fmt.Errorf("`top` is an interactive display and has no JSON form\n" +
-			"poll `pilot status --json` instead; it returns the same rows")
-	}
-
-	services, err := selectServices(a, selector)
-	if err != nil {
-		return err
-	}
-	if interval < time.Second {
-		interval = time.Second
-	}
-
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
-
-	for {
-		views := gatherHosts(ctx, a, hostsFor(services))
-		rows := buildRows(ctx, a, services, views)
-
-		var b strings.Builder
-		// Clear and home, so the table redraws in place rather than scrolling.
-		b.WriteString("\033[H\033[2J")
-		fmt.Fprintf(&b, "  pilot — %s (refreshing every %s, ctrl-c to stop)\n\n",
-			time.Now().Format("15:04:05"), interval)
-		render.Status(&b, rows)
-		render.StatusFooter(&b, views.degraded(), views.alerts())
-		fmt.Print(b.String())
-
-		select {
-		case <-ctx.Done():
-			// Leave the terminal on a fresh line rather than mid-frame.
-			fmt.Println()
-			return nil
-		case <-tick.C:
-		}
-	}
 }

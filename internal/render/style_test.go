@@ -60,7 +60,7 @@ func TestNoEscapesWhenNotATerminal(t *testing.T) {
 // TestStylingAppliesWhenEnabled proves the styling is real rather than dead
 // code that the guard above passes trivially.
 func TestStylingAppliesWhenEnabled(t *testing.T) {
-	defer ForceColourForTest(true)()
+	defer ColourOverride(true)()
 
 	var b bytes.Buffer
 	Status(&b, sampleRows())
@@ -77,7 +77,7 @@ func TestStylingDoesNotChangeTheText(t *testing.T) {
 	var plain bytes.Buffer
 	Status(&plain, sampleRows())
 
-	restore := ForceColourForTest(true)
+	restore := ColourOverride(true)
 	var styled bytes.Buffer
 	Status(&styled, sampleRows())
 	restore()
@@ -92,7 +92,7 @@ func TestStylingDoesNotChangeTheText(t *testing.T) {
 // misaligns every row that happens to be coloured — and only those rows, which
 // makes it look like a data problem rather than a formatting one.
 func TestColumnsStayAlignedWhenColoured(t *testing.T) {
-	restore := ForceColourForTest(true)
+	restore := ColourOverride(true)
 	var b bytes.Buffer
 	Status(&b, sampleRows())
 	restore()
