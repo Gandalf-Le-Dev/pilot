@@ -133,11 +133,12 @@ func Status(w io.Writer, rows []StatusRow) {
 
 	st := newStyler(w)
 
-	// Padding is computed on the unstyled text and applied before colouring.
-	// Escape sequences have no display width, so styling first and padding
-	// after would misalign every row that happens to be coloured.
+	// The STATE cell carries a leading symbol, so its column is wider than the
+	// state word by exactly that much. The header has to allow for it or every
+	// column from STATE rightwards sits two places off — which is what shipped,
+	// and stayed invisible until colour drew the eye to the boundary.
 	fmt.Fprintf(w, "  %s\n", st.header(fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %s",
-		sw, "SERVICE", hw, "HOST", stw, "STATE", rw, "RELEASE", "DETAIL")))
+		sw, "SERVICE", hw, "HOST", stw+stateMarkWidth, "STATE", rw, "RELEASE", "DETAIL")))
 
 	for _, r := range rows {
 		detail := r.Detail
@@ -308,6 +309,11 @@ func shortImage(ref string) string {
 	}
 	return repo + "@" + short(strings.TrimPrefix(digest, "sha256:"), 12)
 }
+
+// stateMarkWidth is the display width of every value stateMark returns: one
+// symbol and one space. A constant rather than len(), which counts bytes and
+// would make "✔ " four columns wide.
+const stateMarkWidth = 2
 
 func stateMark(state string) string {
 	switch runtime.State(state) {
