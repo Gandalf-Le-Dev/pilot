@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -166,9 +167,19 @@ func (e *Engine) build(r Rule, reading Reading, sev Severity, since time.Time) *
 		Since:    since,
 		At:       e.now(),
 	}
+	// Both facts, when both exist. The measured value answers "how bad", the
+	// runtime's own line answers "what is wrong" — and the second is what was
+	// missing: a rule name plus "the service is running but not fully healthy"
+	// told an operator less than the dashboard they were not looking at, and
+	// for a scheduled job it was not even true, since a timer is never running.
+	var detail []string
 	if v, ok := r.Cond.Value_(reading); ok {
-		msg.Detail = fmt.Sprintf("currently %s", trimFloat(v))
+		detail = append(detail, fmt.Sprintf("currently %s", trimFloat(v)))
 	}
+	if reading.Detail != "" {
+		detail = append(detail, reading.Detail)
+	}
+	msg.Detail = strings.Join(detail, " — ")
 	if sev == SevResolved {
 		msg.Summary = "recovered: " + msg.Summary
 	}

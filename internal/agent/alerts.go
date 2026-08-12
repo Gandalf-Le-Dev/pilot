@@ -202,6 +202,7 @@ func (a *Agent) readings(ctx context.Context) map[string]alert.Reading {
 
 		r.ServiceDown = obs.State != runtime.StateRunning
 		r.ServiceDegraded = obs.State == runtime.StateDegraded
+		r.Detail = obs.Detail
 		for _, in := range obs.Instances {
 			r.Restarts += in.Restarts
 		}

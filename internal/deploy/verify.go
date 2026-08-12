@@ -153,6 +153,18 @@ func probeUnit(ctx context.Context, rt runtime.Runtime, t *runtime.Target) error
 	if err != nil {
 		return err
 	}
+	// A state that judges a past run is not a verdict on this release. A
+	// scheduled job that has never run, or whose last success predates its
+	// freshness bound, cannot be made healthy by deploying — so gating on it
+	// rolls back every fix pushed to a service that was already stale,
+	// including the fix for whatever stopped it running.
+	//
+	// Alerting still reports these as degraded, which is what the operator
+	// wants to hear. Only the gate ignores them, because only the gate is
+	// asking a question the state cannot answer.
+	if obs.AwaitingRun {
+		return nil
+	}
 	if obs.State != runtime.StateRunning {
 		detail := obs.Detail
 		if detail == "" {
