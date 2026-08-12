@@ -174,6 +174,12 @@ func (e *Executor) RemoveAll(ctx context.Context, path string) error {
 
 // UploadDir copies a tree. On the agent both sides are local, so this is a
 // plain recursive copy rather than a transfer.
+//
+// Modes are normalized rather than preserved, matching the SSH executor: the
+// source is a staging directory whose permissions describe the builder, not
+// the release. A 0700 directory would be unreadable by the process that has to
+// serve it — Caddy's file_server runs as its own user — so directories become
+// 0755 and files 0644, keeping execute bits for staged binaries.
 func (e *Executor) UploadDir(ctx context.Context, srcDir, dstDir string) error {
 	fi, err := os.Stat(srcDir)
 	if err != nil {
@@ -183,6 +189,9 @@ func (e *Executor) UploadDir(ctx context.Context, srcDir, dstDir string) error {
 		return fmt.Errorf("%s is not a directory", srcDir)
 	}
 	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.Chmod(dstDir, 0o755); err != nil {
 		return err
 	}
 
@@ -201,7 +210,10 @@ func (e *Executor) UploadDir(ctx context.Context, srcDir, dstDir string) error {
 
 		switch {
 		case info.IsDir():
-			return os.MkdirAll(dst, info.Mode().Perm())
+			if err := os.MkdirAll(dst, 0o755); err != nil {
+				return err
+			}
+			return os.Chmod(dst, 0o755)
 		case info.Mode()&os.ModeSymlink != 0:
 			target, err := os.Readlink(p)
 			if err != nil {
@@ -211,11 +223,18 @@ func (e *Executor) UploadDir(ctx context.Context, srcDir, dstDir string) error {
 			return os.Symlink(target, dst)
 		}
 
+		mode := os.FileMode(0o644)
+		if info.Mode().Perm()&0o111 != 0 {
+			mode = 0o755
+		}
 		data, err := os.ReadFile(p)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(dst, data, info.Mode().Perm())
+		if err := os.WriteFile(dst, data, mode); err != nil {
+			return err
+		}
+		return os.Chmod(dst, mode)
 	})
 }
 

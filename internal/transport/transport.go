@@ -66,6 +66,12 @@ type Executor interface {
 	Exists(ctx context.Context, path string) (bool, error)
 	HasCommand(ctx context.Context, name string) (bool, error)
 
+	// UploadDir copies a directory tree to the host and leaves it owned by
+	// the executing identity with world-readable permissions (0755/0644,
+	// execute bits kept). The source's ownership and modes describe the
+	// machine it was staged on, not the host — an operator's uid means
+	// nothing there, and a 0700 staging directory would hide a static
+	// release from the web server that has to read it.
 	UploadDir(ctx context.Context, localDir, remoteDir string) error
 	MkdirAll(ctx context.Context, dir string) error
 	RemoveAll(ctx context.Context, path string) error
