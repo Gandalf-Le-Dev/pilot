@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Gandalf-Le-Dev/pilot/internal/composefile"
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 )
 
@@ -98,22 +99,11 @@ func unpinnedImages(body []byte) []string {
 	seen := map[string]bool{}
 	var out []string
 
-	for _, m := range imageLine.FindAllStringSubmatch(string(body), -1) {
-		ref := m[1]
-		if strings.Contains(ref, "${") {
-			continue // an interpolated reference cannot be judged from here
-		}
+	for _, ref := range composefile.Images(body) {
 		if strings.Contains(ref, "@sha256:") {
 			continue // a digest is as pinned as it gets
 		}
-
-		// A tag is what follows the last colon, unless that colon is part of a
-		// registry's host:port — `registry.example.com:5000/app` has no tag.
-		tag := "latest"
-		if i := strings.LastIndex(ref, ":"); i >= 0 && !strings.Contains(ref[i:], "/") {
-			tag = ref[i+1:]
-		}
-		if tag != "latest" {
+		if composefile.Tag(ref) != "latest" {
 			continue
 		}
 		if !seen[ref] {

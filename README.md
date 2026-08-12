@@ -32,8 +32,9 @@ Working: compose and static runtimes, Caddy route generation with per-route
 network restrictions, the agent with health verification and automatic rollback,
 blue-green deploys for compose, the systemd runtime for adopted units — both
 long-running daemons and oneshots behind a timer — drift detection, a local
-alert engine, deploy notifications, credential redaction in logs,
-machine-readable output on every command, and an embedded skill for AI agents.
+alert engine, deploy notifications, `pilot updates` reporting newer upstream
+image versions, credential redaction in logs, machine-readable output on every
+command, and an embedded skill for AI agents.
 
 Not implemented, and erroring clearly when used: `${sops:}` and `${op:}` secret
 schemes, rollout concurrency (serial only), multi-host `logs --follow`, and
