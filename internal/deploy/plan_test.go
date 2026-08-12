@@ -138,9 +138,10 @@ func TestPlanManifestOmitsSecretValues(t *testing.T) {
 
 func TestRenderRoute(t *testing.T) {
 	layout := release.NewLayout("")
+	fleet := &config.Fleet{}
 
 	t.Run("unexposed service has no route", func(t *testing.T) {
-		got, err := renderRoute(&config.Service{Name: "worker"}, layout)
+		got, err := renderRoute(&config.Service{Name: "worker"}, fleet, layout)
 		if err != nil || got != "" {
 			t.Errorf("got %q, %v", got, err)
 		}
@@ -155,7 +156,7 @@ func TestRenderRoute(t *testing.T) {
 				Static:  &config.StaticExpose{Index: "index.html"},
 			},
 		}
-		got, err := renderRoute(s, layout)
+		got, err := renderRoute(s, fleet, layout)
 		if err != nil {
 			t.Fatal(err)
 		}

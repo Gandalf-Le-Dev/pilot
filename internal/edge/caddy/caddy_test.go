@@ -470,3 +470,46 @@ func TestUnrestrictedRouteHasNoGuard(t *testing.T) {
 		t.Errorf("an unrestricted route should stay simple:\n%s", got)
 	}
 }
+
+// A host that binds its own sites explicitly needs generated blocks to bind
+// the same way, or they land in a Caddy server public traffic never reaches.
+func TestRenderBind(t *testing.T) {
+	got, err := Render(Input{
+		Service: "docs",
+		Expose:  &config.Expose{Domains: []string{"docs.example.com"}, Upstream: 8080},
+		Bind:    []string{"37.187.24.219", "2001:41d0:a:18db::1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "\tbind 37.187.24.219 2001:41d0:a:18db::1\n") {
+		t.Errorf("bind line missing:\n%s", got)
+	}
+	// bind must come before body directives, right under the site address.
+	if strings.Index(got, "bind ") > strings.Index(got, "encode ") {
+		t.Errorf("bind should lead the block:\n%s", got)
+	}
+}
+
+func TestBindUsage(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		site, deflt bool
+	}{
+		{"site bind", "box.example.com {\n\tbind 37.187.24.219 2001:41d0:a:18db::1\n}\n", true, false},
+		{"default_bind in global options", "{\n\tdefault_bind 37.187.24.219\n}\nbox.example.com {\n}\n", false, true},
+		{"both", "{\n\tdefault_bind 1.2.3.4\n}\nbox.example.com {\n\tbind 1.2.3.4\n}\n", true, true},
+		{"neither", "box.example.com {\n\treverse_proxy :8080\n}\n", false, false},
+		{"commented out", "box.example.com {\n\t# bind 1.2.3.4\n}\n", false, false},
+		{"bind as an argument, not a directive", "box.example.com {\n\trespond \"bind me\"\n}\n", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			site, deflt := BindUsage(tc.content)
+			if site != tc.site || deflt != tc.deflt {
+				t.Errorf("BindUsage = (%v, %v), want (%v, %v)", site, deflt, tc.site, tc.deflt)
+			}
+		})
+	}
+}

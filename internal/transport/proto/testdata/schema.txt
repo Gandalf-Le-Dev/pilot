@@ -35,7 +35,10 @@ fleet.defaults.rollout.strategy string
 fleet.defaults.user string
 fleet.hosts map[string]*struct
 fleet.hosts.address string
+fleet.hosts.caddy struct
+fleet.hosts.caddy.bind []string
 fleet.hosts.port int
+fleet.hosts.public_address []string
 fleet.hosts.ssh struct
 fleet.hosts.ssh.identity_file string
 fleet.hosts.ssh.proxy_jump string
@@ -54,6 +57,7 @@ fleetconfig.alerts.cooldown int64
 fleetconfig.alerts.for int64
 fleetconfig.alerts.notify []string
 fleetconfig.alerts.when string
+fleetconfig.caddy_bind []string
 fleetconfig.notifiers map[string]struct
 fleetconfig.notifiers.command []string
 fleetconfig.notifiers.type string

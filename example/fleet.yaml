@@ -18,11 +18,37 @@ hosts:
     # as root directly. `pilot doctor` checks this before a deploy discovers it.
     sudo: true
 
+    # The host's public face, as distinct from `address` (how Pilot reaches
+    # it — often a private or tailnet name). Optional; when set,
+    # `pilot doctor` verifies that exposed domains actually resolve *here*,
+    # not merely that they resolve somewhere. A single address can also be
+    # written without the list brackets.
+    public_address: 203.0.113.7
+
   web-2:
     address: web-2.example.com
     user: deploy
     tags: [web, us]
     sudo: true
+    public_address: 203.0.113.8
+
+  box-1:
+    address: box-1.example.com
+    user: deploy
+    sudo: true
+    public_address: [203.0.113.50, "2001:db8::50"]
+
+    # Only needed when this host's own Caddyfile binds sites to explicit
+    # addresses. Caddy groups sites into servers by listen address, so a
+    # generated route without the same `bind` would land in a server public
+    # traffic never reaches — deploys refuse rather than ship that. Declaring
+    # the addresses here puts generated routes in the same server.
+    #
+    # Bind addresses are host-local, so this only works for services exposed
+    # on a single host; a service spanning hosts that bind explicitly needs
+    # `default_bind` in each host's Caddyfile instead.
+    caddy:
+      bind: [203.0.113.50, "2001:db8::50"]
 
 caddy:
   # Pilot owns everything under snippet_dir and nothing outside it. The single

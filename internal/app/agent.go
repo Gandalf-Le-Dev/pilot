@@ -106,7 +106,7 @@ func (a *App) SyncAgent(ctx context.Context, host string, s AgentSync) (*AgentSy
 	// Push the host-wide half of the configuration. Without it the agent can
 	// evaluate rules but has nowhere to send them, and alerting silently does
 	// nothing — which is the worst possible failure mode for alerting.
-	spec, err := a.FleetConfigSpec()
+	spec, err := a.FleetConfigSpec(host)
 	if err != nil {
 		return nil, err
 	}
@@ -122,18 +122,25 @@ func (a *App) SyncAgent(ctx context.Context, host string, s AgentSync) (*AgentSy
 }
 
 // FleetConfigSpec renders the host-wide configuration the agent needs in order
-// to alert on its own: notifiers and host-scoped rules.
-func (a *App) FleetConfigSpec() (string, error) {
+// to act on its own: notifiers and host-scoped rules for alerting, and the
+// host's caddy.bind so a route the agent re-renders (a blue/green flip) keeps
+// the same listener addresses as the one the CLI deployed.
+func (a *App) FleetConfigSpec(host string) (string, error) {
 	notifiers, err := resolveNotifiers(a.Fleet.Notifiers)
 	if err != nil {
 		return "", err
 	}
 
-	body, err := yaml.Marshal(config.FleetConfig{
+	fc := config.FleetConfig{
 		Notifiers:     notifiers,
 		Alerts:        a.Fleet.Alerts,
 		NotifyDeploys: a.Fleet.NotifyDeploys,
-	})
+	}
+	if h, ok := a.Fleet.Hosts[host]; ok {
+		fc.CaddyBind = h.Caddy.Bind
+	}
+
+	body, err := yaml.Marshal(fc)
 	if err != nil {
 		return "", err
 	}

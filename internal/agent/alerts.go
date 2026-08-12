@@ -74,6 +74,17 @@ func (a *Agent) loadFleetConfig() error {
 	return nil
 }
 
+// CaddyBind returns the bind addresses pushed with the host-wide config, for
+// routes the agent renders itself.
+func (a *Agent) CaddyBind() []string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.fleet == nil {
+		return nil
+	}
+	return a.fleet.CaddyBind
+}
+
 // rebuildNotifiers refreshes the delivery registry from the cached config.
 func (a *Agent) rebuildNotifiers() {
 	a.mu.RLock()

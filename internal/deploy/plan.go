@@ -93,7 +93,7 @@ func Compute(ctx context.Context, in Input) (*Plan, error) {
 			"deploy it explicitly with --force if you really mean to", s.Name)
 	}
 
-	snippet, err := renderRoute(s, in.Layout)
+	snippet, err := renderRoute(s, in.Fleet, in.Layout)
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +261,7 @@ func describeEnvChange(before, after []string) string {
 }
 
 // renderRoute produces the Caddy snippet for a service, if it is exposed.
-func renderRoute(s *config.Service, layout release.Layout) (string, error) {
+func renderRoute(s *config.Service, f *config.Fleet, layout release.Layout) (string, error) {
 	if s.Expose == nil {
 		return "", nil
 	}
@@ -269,6 +269,7 @@ func renderRoute(s *config.Service, layout release.Layout) (string, error) {
 		Service: s.Name,
 		Expose:  s.Expose,
 		Root:    layout.Current(s.Name),
+		Bind:    f.CaddyBindFor(s.Hosts),
 	})
 }
 

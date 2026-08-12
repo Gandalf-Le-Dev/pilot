@@ -227,3 +227,30 @@ func countDiffLines(a, b string) int {
 	}
 	return n
 }
+
+// A flip re-renders the route on the host, so it must keep the bind pushed
+// with the host-wide config — dropping it would move the site into a Caddy
+// server public traffic never reaches.
+func TestRenderColorRouteCarriesBind(t *testing.T) {
+	a := newAgent(t)
+	a.fleet = &FleetConfig{CaddyBind: []string{"37.187.24.219"}}
+
+	svc := &config.Service{
+		Name:    "api",
+		Runtime: config.RuntimeCompose,
+		Expose:  &config.Expose{Domains: []string{"api.example.com"}, Upstream: 8080},
+		Rollout: &config.Rollout{
+			Strategy: config.StrategyBlueGreen,
+			Service:  "web",
+			Ports:    []int{18080, 18081},
+		},
+	}
+
+	green, err := a.renderColorRoute(svc, config.ColorGreen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(green, "bind 37.187.24.219") {
+		t.Errorf("flipped route lost the bind:\n%s", green)
+	}
+}

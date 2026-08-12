@@ -142,6 +142,33 @@ func scanLine(raw string) (line string, delta int) {
 	return b.String(), delta
 }
 
+// BindUsage reports how a Caddyfile (or snippet) uses listener addresses:
+// whether any site binds explicitly, and whether a global default_bind covers
+// the sites that do not.
+//
+// The distinction matters because the two directives have opposite
+// consequences for generated routes. A site-level `bind` splits Caddy into
+// servers by listen address, and a specific address wins that address's
+// traffic over the :443 wildcard — so a generated block without the same bind
+// is unreachable from outside. A global `default_bind` instead applies to
+// every site that doesn't bind, generated ones included, and closes the gap.
+func BindUsage(content string) (siteBind, defaultBind bool) {
+	for raw := range strings.SplitSeq(content, "\n") {
+		line, _ := scanLine(raw)
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "bind":
+			siteBind = true
+		case "default_bind":
+			defaultBind = true
+		}
+	}
+	return siteBind, defaultBind
+}
+
 // AppendImport returns content with the import directive appended. It is the
 // caller's job to have checked Inspect first; appending to an ImportUnsafe file
 // is refused here as a backstop.

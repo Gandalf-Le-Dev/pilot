@@ -44,7 +44,13 @@ import (
 // unit against whatever a deploy last saw, so a unit wrong from the first
 // deploy is drift from nothing. The field is operator-side, but it travels in
 // the service spec, so an older agent would reject it.
-const Version = 7
+//
+// Version 8 added `caddy_bind` to the host-wide config, mirroring the new
+// hosts.<name>.caddy.bind: on a host whose Caddyfile binds sites to explicit
+// addresses, generated routes must bind the same way or they land in a server
+// public traffic never reaches. The agent needs the value because a
+// blue/green flip re-renders the route itself.
+const Version = 8
 
 // SchemaDigest pins the configuration schema this protocol version speaks.
 //
@@ -58,7 +64,7 @@ const Version = 7
 //     decodes): update this digest alone.
 //
 // The choice is deliberately yours. What is not optional is making it.
-const SchemaDigest = "64b24efb48460a69"
+const SchemaDigest = "9473ec986c56dc1a"
 
 const (
 	// DefaultSocket is where the daemon listens. A Unix socket rather than a

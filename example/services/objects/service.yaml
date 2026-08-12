@@ -7,7 +7,7 @@
 # is how a routine restart starts losing data. Something else installs the unit;
 # Pilot owns the release.
 runtime: systemd
-hosts: [web-1]
+hosts: [box-1]
 
 build:
   # Built on your machine or in CI, never on the target host. Cross-compiling

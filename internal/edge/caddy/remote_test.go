@@ -445,3 +445,38 @@ func TestInstallSnippetUndoesAFailedWrite(t *testing.T) {
 		t.Errorf("previous route not restored:\n%q", got)
 	}
 }
+
+// A bind-less route on a host whose Caddyfile binds explicitly would install,
+// validate, obtain a certificate, and serve an empty 200 forever — refusing at
+// install time is the only reliable moment to catch it.
+func TestInstallSnippetRefusesBindlessRouteOnBindingHost(t *testing.T) {
+	bindingCaddyfile := "box.example.com {\n\tbind 37.187.24.219\n}\nimport pilot.d/*.caddy\n"
+	fake := newFake(map[string]string{testPaths.Caddyfile: bindingCaddyfile})
+
+	_, err := InstallSnippet(context.Background(), fake, testPaths, "docs",
+		"docs.example.com {\n\tfile_server\n}\n")
+	if err == nil || !strings.Contains(err.Error(), "caddy.bind") {
+		t.Fatalf("want a refusal naming the fix, got: %v", err)
+	}
+	if _, ok := fake.files["/etc/caddy/pilot.d/docs.caddy"]; ok {
+		t.Error("the dead route must not be installed")
+	}
+
+	// A route carrying its own bind joins the same server and is fine.
+	if _, err := InstallSnippet(context.Background(), fake, testPaths, "docs",
+		"docs.example.com {\n\tbind 37.187.24.219\n\tfile_server\n}\n"); err != nil {
+		t.Fatalf("a bound route should install: %v", err)
+	}
+}
+
+// default_bind in the global options applies to generated sites too, so it
+// closes the gap without any per-route bind.
+func TestInstallSnippetAcceptsBindlessRouteUnderDefaultBind(t *testing.T) {
+	fake := newFake(map[string]string{
+		testPaths.Caddyfile: "{\n\tdefault_bind 37.187.24.219\n}\nbox.example.com {\n\tbind 37.187.24.219\n}\n",
+	})
+	if _, err := InstallSnippet(context.Background(), fake, testPaths, "docs",
+		"docs.example.com {\n\tfile_server\n}\n"); err != nil {
+		t.Fatalf("default_bind should make a bind-less route safe: %v", err)
+	}
+}
