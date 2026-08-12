@@ -117,6 +117,23 @@ type Observation struct {
 
 	// Detail explains a non-running state in one line.
 	Detail string `json:"detail,omitempty"`
+
+	// AwaitingRun marks a state that is a verdict on a run rather than on the
+	// release now on disk: a scheduled job that has never run, or whose last
+	// success is older than its freshness bound.
+	//
+	// It exists for the deploy gate, and it exists because of a real failure.
+	// A oneshot's health after a deploy is unknowable until it next runs, so
+	// verifying a release against the previous run's age is meaningless — and
+	// worse than meaningless, because the gate then rolls back every fix
+	// pushed to a service that was already stale. Including the fix for
+	// whatever stopped it running.
+	//
+	// Alerting still treats these as degraded, which is correct: the operator
+	// does want to hear that a backup stopped succeeding. Only the deploy
+	// gate ignores it, because only the deploy gate is asking a question the
+	// state cannot answer.
+	AwaitingRun bool `json:"awaiting_run,omitempty"`
 }
 
 // Instance is one container or process backing a service.

@@ -298,6 +298,7 @@ func (r *Runtime) observeOneshot(ctx context.Context, t *runtime.Target, u *conf
 	verdict := classifyOneshot(u, props, time.Now().UTC())
 
 	obs.State, obs.Detail, obs.Since = verdict.state, verdict.detail, verdict.last
+	obs.AwaitingRun = verdict.awaitingRun
 	inst := runtime.Instance{Name: u.Name, State: verdict.instance, Since: verdict.last}
 
 	// The next scheduled run is decoration on an otherwise bare line, so it is
@@ -323,6 +324,10 @@ type oneshotVerdict struct {
 	// wantNext asks the caller to append the timer's next firing, which needs
 	// a second round trip and so cannot happen in here.
 	wantNext bool
+
+	// awaitingRun marks a verdict about a past run rather than about the
+	// release on disk. See runtime.Observation.AwaitingRun.
+	awaitingRun bool
 }
 
 // classifyOneshot decides whether a scheduled job is actually working.
@@ -339,10 +344,11 @@ type oneshotVerdict struct {
 func classifyOneshot(u *config.Unit, props map[string]string, now time.Time) oneshotVerdict {
 	if strings.TrimSpace(props["ExecMainStartTimestamp"]) == "" {
 		return oneshotVerdict{
-			state:    runtime.StateStopped,
-			detail:   fmt.Sprintf("%s has never run", u.Name),
-			instance: "never run",
-			wantNext: true,
+			state:       runtime.StateStopped,
+			detail:      fmt.Sprintf("%s has never run", u.Name),
+			instance:    "never run",
+			wantNext:    true,
+			awaitingRun: true,
 		}
 	}
 
@@ -381,6 +387,7 @@ func classifyOneshot(u *config.Unit, props map[string]string, now time.Time) one
 			v.detail = fmt.Sprintf("last succeeded %s ago, past the %s freshness bound",
 				humanDuration(age), humanDuration(fresh))
 			v.wantNext = false
+			v.awaitingRun = true
 		}
 	}
 	return v

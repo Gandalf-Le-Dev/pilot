@@ -419,3 +419,55 @@ func TestNotificationFormatting(t *testing.T) {
 		t.Errorf("a host-level alert should not name a service: %q", n.Title())
 	}
 }
+
+// The alert that wakes somebody has to say what is wrong, not restate the rule
+// they already wrote. `service.degraded` plus "the service is running but not
+// fully healthy" was strictly less than `pilot status` showed — and for a
+// scheduled job it was false as well, since a timer is never running.
+func TestNotificationCarriesTheRuntimeExplanation(t *testing.T) {
+	e, cap, clk := newEngine(t)
+	r := rule(t, "backup", "service.degraded", 0)
+
+	stale := map[string]Reading{"backup": {
+		ServiceDegraded: true,
+		Detail:          "last succeeded 60d ago, past the 48h freshness bound",
+	}}
+
+	e.Evaluate(context.Background(), []Rule{r}, stale)
+	clk.add(time.Minute)
+	e.Evaluate(context.Background(), []Rule{r}, stale)
+	e.Flush()
+
+	sent := cap.all()
+	if len(sent) == 0 {
+		t.Fatal("no notification was sent")
+	}
+	if !strings.Contains(sent[0].Detail, "past the 48h freshness bound") {
+		t.Errorf("Detail = %q, want the runtime's own explanation", sent[0].Detail)
+	}
+}
+
+// A numeric rule must keep its measurement. The value answers "how bad" and the
+// explanation answers "what is wrong"; carrying only the second would have
+// traded one missing fact for another.
+func TestNotificationKeepsMeasuredValueAlongsideDetail(t *testing.T) {
+	e, cap, clk := newEngine(t)
+	r := rule(t, "api", "service.restarts > 3", 0)
+
+	flapping := map[string]Reading{"api": {Restarts: 9, Detail: "container restarting"}}
+
+	e.Evaluate(context.Background(), []Rule{r}, flapping)
+	clk.add(time.Minute)
+	e.Evaluate(context.Background(), []Rule{r}, flapping)
+	e.Flush()
+
+	sent := cap.all()
+	if len(sent) == 0 {
+		t.Fatal("no notification was sent")
+	}
+	for _, want := range []string{"currently 9", "container restarting"} {
+		if !strings.Contains(sent[0].Detail, want) {
+			t.Errorf("Detail = %q, want it to contain %q", sent[0].Detail, want)
+		}
+	}
+}

@@ -177,6 +177,17 @@ type Reading struct {
 	DeployFailed    bool
 	DriftDetected   bool
 	DiskUsedPct     int
+
+	// Detail is the runtime's own one-line explanation of the state, e.g.
+	// "last succeeded 60d ago, past the 48h freshness bound".
+	//
+	// It exists because the message that wakes somebody at 3am carried strictly
+	// less information than the dashboard they were not looking at: the rule
+	// name says `service.degraded`, and the generic description says "running
+	// but not fully healthy", which for a scheduled job is not even true — it
+	// is a timer, it is never running. The runtime already knows the real
+	// reason; this carries it through.
+	Detail string
 }
 
 // Eval reports whether the condition holds for a reading.
