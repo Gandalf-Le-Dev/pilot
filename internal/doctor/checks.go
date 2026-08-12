@@ -5,7 +5,9 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/netip"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -470,7 +472,19 @@ func checkEdge(ctx context.Context, env *Env) []Finding {
 			// implies a relationship it has not checked — a domain can resolve
 			// to a different provider entirely and still get this far.
 			dnsStatus, dns := StatusOK, "DNS resolves"
-			if len(declared) > 0 {
+			switch {
+			case s.Expose.Restricted() && insideAllow(addrs, s.Expose.Allow):
+				// A restricted route whose records resolve entirely inside its
+				// own allow networks is private by design: DNS steers clients
+				// into exactly the network the route admits, which is how a
+				// tailnet-only service avoids advertising itself. That is a
+				// different claim than "points at the host's public face", so
+				// it gets different words and public_address is not consulted
+				// — declaring private addresses there just to quiet this check
+				// would let a public domain mispointed into the same network
+				// pass as "DNS ok".
+				dns = "DNS private (inside allow)"
+			case len(declared) > 0:
 				matched, strays := matchAddresses(addrs, declared)
 				switch {
 				case matched == 0:
@@ -492,6 +506,13 @@ func checkEdge(ctx context.Context, env *Env) []Finding {
 			var tlsStatus Status
 			var tls string
 			switch {
+			case err != nil && s.Expose.Restricted():
+				// The probe runs from wherever the operator is. A restricted
+				// route legitimately refuses machines outside its allow
+				// networks, so an unreachable handshake here may be the
+				// restriction working rather than TLS being broken.
+				tlsStatus = StatusWarn
+				tls = fmt.Sprintf("TLS unreachable from here (restricted route; %s)", firstLine(err.Error()))
 			case err != nil:
 				tlsStatus = StatusWarn
 				tls = fmt.Sprintf("TLS unavailable (%s)", firstLine(err.Error()))
@@ -524,6 +545,45 @@ func publicAddresses(f *config.Fleet, hostNames []string) []string {
 		}
 	}
 	return out
+}
+
+// insideAllow reports whether every resolved address falls inside one of the
+// route's allow networks — the shape of a deliberately private service, where
+// the DNS record and the allow list are two halves of one decision.
+//
+// Containment must be total. A domain half inside the allow networks and half
+// outside serves some clients from somewhere the route would refuse, which
+// means either the DNS or the allow list is wrong — so a partial fit falls
+// through to the ordinary public_address comparison and gets flagged there.
+func insideAllow(resolved, allow []string) bool {
+	if len(resolved) == 0 || len(allow) == 0 {
+		return false
+	}
+
+	var nets []netip.Prefix
+	for _, a := range allow {
+		if p, err := netip.ParsePrefix(a); err == nil {
+			nets = append(nets, p.Masked())
+			continue
+		}
+		// `remote_ip` accepts bare IPs too; a single address is a full-length
+		// prefix. An entry that parses as neither admits nothing — validation
+		// has already flagged it.
+		if ip, err := netip.ParseAddr(a); err == nil {
+			nets = append(nets, netip.PrefixFrom(ip, ip.BitLen()))
+		}
+	}
+
+	for _, r := range resolved {
+		ip, err := netip.ParseAddr(r)
+		if err != nil {
+			return false
+		}
+		if !slices.ContainsFunc(nets, func(p netip.Prefix) bool { return p.Contains(ip) }) {
+			return false
+		}
+	}
+	return true
 }
 
 // matchAddresses compares where a domain resolves against the addresses its

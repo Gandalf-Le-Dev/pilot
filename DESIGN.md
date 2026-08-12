@@ -868,6 +868,15 @@ pilot doctor
 check can only say `DNS resolves` — a domain still parked on its old provider
 resolves fine and would otherwise look healthy right up until ACME fails.
 
+A restricted route whose records resolve entirely *inside its own
+`expose.allow` networks* reports `DNS private (inside allow)` instead: the DNS
+record and the allow list are two halves of one decision (a tailnet-only
+service that never advertises publicly), and `public_address` is deliberately
+not consulted — declaring private addresses there just to quiet the check
+would let a mispointed public domain pass as verified. Partial containment
+still falls through to the ordinary comparison: half in, half out means either
+the DNS or the allow list is wrong.
+
 - `--offline` skips everything needing network, so config validation alone runs in CI.
 - `--fix` applies only the unambiguously safe repairs: append a missing import line, prune
   orphaned routes, re-bootstrap a version-skewed agent. It never touches a service.

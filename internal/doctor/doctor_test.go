@@ -263,3 +263,43 @@ func TestMatchAddresses(t *testing.T) {
 		t.Errorf("matched=%d strays=%v, want the AAAA flagged", m, strays)
 	}
 }
+
+// insideAllow decides when a domain is private by design rather than
+// mispointed — the paperless shape: allow lists the tailnet, DNS resolves
+// into it.
+func TestInsideAllow(t *testing.T) {
+	tailnet := []string{"100.64.0.0/10", "fd7a:115c:a1e0::/48"}
+
+	// The deliberate arrangement: both records inside the allow networks.
+	if !insideAllow([]string{"100.92.63.75", "fd7a:115c:a1e0::4801:3f5f"}, tailnet) {
+		t.Error("a domain resolving entirely inside its allow networks is private by design")
+	}
+
+	// Half in, half out serves some clients from an address the route would
+	// refuse — that must fall through to the ordinary comparison, not pass.
+	if insideAllow([]string{"100.92.63.75", "51.38.50.59"}, tailnet) {
+		t.Error("partial containment is a misconfiguration, not privacy")
+	}
+
+	// A restricted route whose DNS points at the host's public address is the
+	// common case — allow restricts clients, not where DNS points — and must
+	// not be treated as private.
+	if insideAllow([]string{"51.38.50.59"}, []string{"192.168.1.0/24"}) {
+		t.Error("a public record outside the allow networks is not private")
+	}
+
+	// `remote_ip` accepts bare IPs; so does the containment check.
+	if !insideAllow([]string{"100.92.63.75"}, []string{"100.92.63.75"}) {
+		t.Error("a bare-IP allow entry should admit exactly that address")
+	}
+
+	// An unparseable entry admits nothing rather than everything.
+	if insideAllow([]string{"51.38.50.59"}, []string{"not-a-network"}) {
+		t.Error("garbage in the allow list must not turn the check off")
+	}
+
+	// No allow list means nothing to be inside of.
+	if insideAllow([]string{"100.92.63.75"}, nil) {
+		t.Error("an unrestricted route has no private shape")
+	}
+}
