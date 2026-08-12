@@ -1,13 +1,20 @@
-# Bound to loopback deliberately. Publishing on 0.0.0.0 makes a service
-# reachable on its own port regardless of any Caddy rule — which is how a
-# tailnet-only service on this project's own server turned out to be answering
-# the public internet.
+# No `ports:` here, and that is what makes blue-green possible.
+#
+# A blue-green deploy runs both colours at once, so any fixed host port is
+# already held by the colour still serving traffic and the new one cannot bind
+# it. Pilot assigns the ports it flips (rollout.ports below) and points Caddy at
+# whichever colour is live — so the stack never names a host port itself.
+#
+# For a `recreate` service you would publish here, and bind to loopback
+# explicitly: publishing on 0.0.0.0 makes a service reachable on its own port
+# regardless of any Caddy rule, which is how a tailnet-only service on this
+# project's own server turned out to be answering the public internet.
 services:
   api:
     image: ghcr.io/example/api:1.4.2
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:8080:8080"
+    expose:
+      - "8080"
     environment:
       LOG_LEVEL: ${LOG_LEVEL}
       DATABASE_URL: ${DATABASE_URL}
