@@ -18,9 +18,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
-	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/compose"
-	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/static"
-	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/systemd"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/registry"
 	"github.com/Gandalf-Le-Dev/pilot/internal/secrets"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/ssh"
 )
@@ -242,15 +240,7 @@ func (a *App) CaddyPaths() caddy.Paths {
 // This switch is the only place that knows the full set of runtimes; adding one
 // means implementing the interface and adding a case here.
 func RuntimeFor(s *config.Service) (runtime.Runtime, error) {
-	switch s.Runtime {
-	case config.RuntimeCompose:
-		return compose.New(), nil
-	case config.RuntimeStatic:
-		return static.New(), nil
-	case config.RuntimeSystemd:
-		return systemd.New(), nil
-	}
-	return nil, fmt.Errorf("service %q has unknown runtime %q", s.Name, s.Runtime)
+	return registry.For(s)
 }
 
 // Target builds the (service, host) pair a runtime acts on.

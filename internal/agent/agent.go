@@ -21,8 +21,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
-	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/compose"
-	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/static"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/registry"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/local"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
@@ -255,16 +254,12 @@ func (a *Agent) Target(s *config.Service, releaseID string) *runtime.Target {
 }
 
 // RuntimeFor selects the adapter for a service.
+//
+// Delegated so the agent and the CLI cannot disagree about which runtimes
+// exist. They used to keep separate copies of this switch, and the copies
+// diverged.
 func RuntimeFor(s *config.Service) (runtime.Runtime, error) {
-	switch s.Runtime {
-	case config.RuntimeCompose:
-		return compose.New(), nil
-	case config.RuntimeStatic:
-		return static.New(), nil
-	case config.RuntimeSystemd:
-		return nil, fmt.Errorf("the systemd runtime is not implemented in this build (service %q)", s.Name)
-	}
-	return nil, fmt.Errorf("service %q has unknown runtime %q", s.Name, s.Runtime)
+	return registry.For(s)
 }
 
 // Observe reports what one service is actually doing.

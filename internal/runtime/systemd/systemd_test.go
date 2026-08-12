@@ -250,8 +250,14 @@ func TestLinkScriptPointsThroughCurrent(t *testing.T) {
 	if strings.Contains(script, "/releases/") {
 		t.Errorf("link is baked to a release directory, so rollback would not repoint it:\n%s", script)
 	}
-	if !strings.Contains(script, "refusing to replace it") {
+	if !strings.Contains(script, "will not replace it") {
 		t.Errorf("script must refuse to clobber a real file:\n%s", script)
+	}
+	// Refusing is only half of it. This fires on the most ordinary case there
+	// is — adopting a service whose binary someone installed by hand — so the
+	// message has to say what to do next.
+	if !strings.Contains(script, ".pre-pilot") {
+		t.Errorf("refusal must name the remedy, not just the problem:\n%s", script)
 	}
 	if !strings.Contains(script, "mv -Tf") {
 		t.Errorf("relink must be atomic, not a bare ln -sfn:\n%s", script)

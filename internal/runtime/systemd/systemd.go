@@ -161,7 +161,13 @@ func linkScript(u *config.Unit, currentDir string) string {
 			// is how two tools end up fighting over one path, with the loser
 			// being whichever ran last.
 			fmt.Sprintf("if [ -e %s ] && [ ! -L %s ]; then", transport.Quote(dst), transport.Quote(dst)),
-			fmt.Sprintf("  echo %s >&2", transport.Quote(dst+" exists and is not a symlink; refusing to replace it")),
+			// Name the remedy. Refusing is right, but this fires on the most
+			// ordinary path there is — adopting a service whose binary someone
+			// installed by hand — and "refusing to replace it" with no next
+			// step reads as a wall rather than a decision to make.
+			fmt.Sprintf("  echo %s >&2", transport.Quote(dst+" exists and is not a symlink, so Pilot will not replace it")),
+			fmt.Sprintf("  echo %s >&2", transport.Quote(
+				"    if Pilot should own this path, move the existing file aside first: sudo mv "+dst+" "+dst+".pre-pilot")),
 			"  exit 1",
 			"fi",
 			fmt.Sprintf("mkdir -p %s", transport.Quote(path.Dir(dst))),
