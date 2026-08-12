@@ -76,7 +76,7 @@ func probe(ctx context.Context, rt runtime.Runtime, t *runtime.Target, h *config
 	case h.Docker:
 		return probeDocker(ctx, rt, t)
 	case h.Systemd:
-		return fmt.Errorf("systemd health checks are not implemented in this build")
+		return probeUnit(ctx, rt, t)
 	}
 	return nil
 }
@@ -137,6 +137,28 @@ func probeExec(ctx context.Context, t *runtime.Target, p *config.ExecProbe) erro
 	}
 	if !res.OK() {
 		return fmt.Errorf("%s exited %d: %s", p.Cmd[0], res.ExitCode, firstLine(res.Stderr))
+	}
+	return nil
+}
+
+// probeUnit asks systemd, via the runtime's Observe.
+//
+// Delegating rather than running `systemctl is-active` here is what makes this
+// probe mean the right thing for both unit kinds. A oneshot is never "active" —
+// it runs and exits — so is-active would report every backup job as unhealthy
+// forever. Observe already knows that a oneshot's health is whether its last
+// run succeeded and how recently, and this inherits that for free.
+func probeUnit(ctx context.Context, rt runtime.Runtime, t *runtime.Target) error {
+	obs, err := rt.Observe(ctx, t)
+	if err != nil {
+		return err
+	}
+	if obs.State != runtime.StateRunning {
+		detail := obs.Detail
+		if detail == "" {
+			detail = string(obs.State)
+		}
+		return fmt.Errorf("unit not healthy: %s", detail)
 	}
 	return nil
 }

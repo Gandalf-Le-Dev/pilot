@@ -22,6 +22,7 @@ const goldenPath = "testdata/schema.txt"
 func TestSchemaDigestMatchesConfig(t *testing.T) {
 	got := config.SchemaFingerprint()
 	if got == SchemaDigest {
+		assertGoldenCurrent(t, config.SchemaFields())
 		return
 	}
 
@@ -50,6 +51,32 @@ func TestSchemaDigestMatchesConfig(t *testing.T) {
 	b.WriteString("      go test ./internal/transport/proto -run SchemaDigest -update\n")
 
 	t.Fatal(b.String())
+}
+
+// assertGoldenCurrent keeps the record honest while the digest is passing.
+//
+// Without this the golden file is only ever read on failure, so it can drift
+// silently — and it did: it went stale during the notifier work, and the next
+// schema change (the systemd unit block) came with a diff listing somebody
+// else's fields alongside its own. A diff you have to second-guess is worse
+// than no diff, because the whole point is to say "you added expose.allow"
+// rather than "something moved".
+func assertGoldenCurrent(t *testing.T, current []string) {
+	t.Helper()
+
+	if updateGolden {
+		writeGolden(t, current)
+		return
+	}
+	added, removed := diffAgainstGolden(t, current)
+	if len(added) == 0 && len(removed) == 0 {
+		return
+	}
+	t.Errorf("the digest matches but %s does not describe the current schema:\n"+
+		"    + %s\n    - %s\n\n"+
+		"refresh it so the next schema change gets a clean diff:\n"+
+		"      go test ./internal/transport/proto -run SchemaDigest -update",
+		goldenPath, strings.Join(added, "\n    + "), strings.Join(removed, "\n    - "))
 }
 
 // diffAgainstGolden reports how the current schema differs from the recorded

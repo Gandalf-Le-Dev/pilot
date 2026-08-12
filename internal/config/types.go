@@ -192,13 +192,92 @@ type Compose struct {
 	Project string `yaml:"project"`
 }
 
+// UnitKind distinguishes a long-running daemon from a task that runs and exits.
+//
+// The two differ in every method a runtime implements: a oneshot has no
+// "running" state to observe, restarting it means running the job right now
+// rather than picking up a new release, and health is "the last run succeeded
+// recently" instead of "the process is up".
+type UnitKind string
+
+const (
+	UnitService UnitKind = "service"
+	UnitOneshot UnitKind = "oneshot"
+)
+
+var AllUnitKinds = []UnitKind{UnitService, UnitOneshot}
+
+// Unit names the systemd unit that runs a service.
+//
+// Pilot adopts an existing unit; it does not write one. systemd's surface is
+// enormous — KillMode, TimeoutStopSec, the sandboxing options — and modelling
+// it in a second schema only produces a worse systemd. More practically, the
+// unit file is where an operator records what their service needs in order to
+// shut down safely, and a deploy tool that overwrites that is how a routine
+// restart starts losing data.
+//
+// So the split is: something else writes the unit, Pilot ships releases and
+// drives systemctl. It is the same bargain Pilot already makes with Docker —
+// it expects a host that has it and never installs it.
+//
+// The cost is that the unit is not part of the release, so a rollback does not
+// restore a hand-edited unit. Fingerprint hashes the unit file to compensate:
+// Pilot detects the edit rather than owning the file.
 type Unit struct {
-	ExecStart string   `yaml:"exec_start"`
-	User      string   `yaml:"user"`
-	Group     string   `yaml:"group"`
-	Restart   string   `yaml:"restart"`
-	After     []string `yaml:"after"`
-	Wants     []string `yaml:"wants"`
+	// Name is the unit systemctl acts on, e.g. "hopboxd.service".
+	Name string `yaml:"name"`
+
+	// Kind defaults to UnitService.
+	Kind UnitKind `yaml:"kind"`
+
+	// Timer schedules a oneshot, e.g. "backup.timer". Restarting the service
+	// unit of a oneshot would run the job immediately, which a deploy did not
+	// ask for, so the timer is what gets restarted instead.
+	Timer string `yaml:"timer"`
+
+	// Fresh bounds how old a oneshot's last success may be before the service
+	// is reported degraded. A backup that quietly stopped running two months
+	// ago is the exact failure this exists to catch.
+	Fresh Duration `yaml:"fresh"`
+
+	// Links are absolute paths on the host that should resolve into the live
+	// release, e.g. "/usr/local/bin/hopboxd": "hopboxd".
+	//
+	// They point through `current`, never at a release directory, so the
+	// symlink swap alone changes what they mean — and a rollback restores them
+	// with no extra step and nothing to get wrong.
+	Links map[string]string `yaml:"links"`
+
+	// Precheck validates the staged release before anything swaps. It runs
+	// with the release directory as its working directory, so `./hopboxd
+	// --check` names the incoming binary rather than the live one.
+	//
+	// This is what separates "the deploy failed and nothing changed" from
+	// "the deploy failed and the daemon is down".
+	Precheck []string `yaml:"precheck"`
+}
+
+// IsOneshot reports whether the unit runs and exits rather than staying up.
+func (u *Unit) IsOneshot() bool { return u.Kind == UnitOneshot }
+
+// RestartTarget is the unit to restart so a new release takes effect, or ""
+// when there is nothing to restart and the swap is the whole deploy.
+func (u *Unit) RestartTarget() string {
+	if u.IsOneshot() {
+		return u.Timer
+	}
+	return u.Name
+}
+
+// LinkPaths returns the link destinations in sorted order, so scripts and
+// fingerprints are byte-stable across runs.
+func (u *Unit) LinkPaths() []string {
+	paths := make([]string, 0, len(u.Links))
+	for p := range u.Links {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // Expose declares the service's front door. Pilot renders it into a Caddy

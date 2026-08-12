@@ -57,6 +57,8 @@ func TestExampleCoversEveryFeature(t *testing.T) {
 		restricted, rawRoute, spa, overlay  bool
 		gitSource, impliedSource            bool
 		health, svcAlerts, secretRefs       bool
+		systemdSvc, systemdOneshot          bool
+		unitLinks, unitPrecheck             bool
 	)
 
 	for _, s := range f.Services {
@@ -65,6 +67,16 @@ func TestExampleCoversEveryFeature(t *testing.T) {
 			compose = true
 		case RuntimeStatic:
 			static = true
+		case RuntimeSystemd:
+			if s.Unit != nil && s.Unit.IsOneshot() {
+				systemdOneshot = true
+			} else {
+				systemdSvc = true
+			}
+		}
+		if s.Unit != nil {
+			unitLinks = unitLinks || len(s.Unit.Links) > 0
+			unitPrecheck = unitPrecheck || len(s.Unit.Precheck) > 0
 		}
 		if !s.Deployable() {
 			observe = true
@@ -111,6 +123,18 @@ func TestExampleCoversEveryFeature(t *testing.T) {
 	}{
 		{compose, "the compose runtime"},
 		{static, "the static runtime"},
+
+		// Both systemd shapes, and neither modelled on the service that
+		// prompted the runtime. A daemon alone would have let a daemon-only
+		// adapter pass for a general one — a oneshot has no "running" state to
+		// observe, is restarted through its timer rather than directly, and is
+		// judged on when it last succeeded. If the schema ever stops being able
+		// to express the second, this stops compiling a service that does.
+		{systemdSvc, "a systemd daemon"},
+		{systemdOneshot, "a systemd oneshot behind a timer"},
+		{unitLinks, "unit links into the live release"},
+		{unitPrecheck, "a unit precheck"},
+
 		{observe, "manage: observe"},
 		{blueGreen, "a blue-green rollout"},
 		{health, "a health check"},

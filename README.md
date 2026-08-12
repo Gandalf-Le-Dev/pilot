@@ -30,13 +30,20 @@ See [DESIGN.md](DESIGN.md) for the full design and the reasoning behind it.
 
 Working: compose and static runtimes, Caddy route generation with per-route
 network restrictions, the agent with health verification and automatic rollback,
-blue-green deploys for compose, drift detection, a local alert engine, deploy
-notifications, credential redaction in logs, machine-readable output on every
-command, and an embedded skill for AI agents.
+blue-green deploys for compose, the systemd runtime for adopted units — both
+long-running daemons and oneshots behind a timer — drift detection, a local
+alert engine, deploy notifications, credential redaction in logs,
+machine-readable output on every command, and an embedded skill for AI agents.
 
-Not implemented, and erroring clearly when used: the systemd runtime,
-`${sops:}` and `${op:}` secret schemes, rollout concurrency (serial only),
-multi-host `logs --follow`, and authenticated notifier endpoints.
+Not implemented, and erroring clearly when used: `${sops:}` and `${op:}` secret
+schemes, rollout concurrency (serial only), multi-host `logs --follow`, and
+authenticated notifier endpoints.
+
+Pilot adopts systemd units rather than generating them: it ships releases,
+relinks binaries, and drives `systemctl`, but something else installs the unit
+file. That split is deliberate — the unit is where you record what your service
+needs in order to shut down safely, and a deploy tool that overwrote it is how a
+routine restart starts losing data.
 
 ## Quick look
 

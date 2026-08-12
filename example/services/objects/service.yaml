@@ -1,0 +1,63 @@
+# A systemd daemon: a binary Pilot builds, ships, and restarts behind a health
+# gate.
+#
+# Pilot adopts a unit that already exists here; it never writes one. systemd's
+# surface is enormous, and the unit file is where an operator records what their
+# service needs in order to shut down safely — a deploy tool that overwrote that
+# is how a routine restart starts losing data. Something else installs the unit;
+# Pilot owns the release.
+runtime: systemd
+hosts: [web-1]
+
+build:
+  # Built on your machine or in CI, never on the target host. Cross-compiling
+  # is the point: a production server should not need a Go toolchain, a source
+  # checkout, or the spare CPU to use them.
+  command: "make dist"
+  output: ["dist/objectstore", "dist/objectstore-admin"]
+
+unit:
+  # The unit to restart. Must exist on the host already — `pilot doctor` says so
+  # before a deploy discovers it at the restart, with the swap already done.
+  name: objectstore.service
+
+  # Paths that should resolve into the live release.
+  #
+  # These point through `current`, never at a release directory, which is what
+  # makes rollback free: the symlink swap alone changes what every link
+  # resolves to, so the binary and the release can never disagree.
+  links:
+    /usr/local/bin/objectstore: objectstore
+    /usr/local/bin/objectstore-admin: objectstore-admin
+
+  # Run against the staged release before anything swaps, with the release
+  # directory as the working directory — so `./objectstore` is the incoming
+  # binary, not the live one.
+  #
+  # This is what separates "the deploy failed and nothing changed" from "the
+  # deploy failed and the daemon is down". A bad config caught here costs
+  # nothing; the same one caught after the swap costs an outage.
+  precheck: ["./objectstore", "--config", "/etc/objectstore/config.yaml", "--check"]
+
+env:
+  OBJECTSTORE_ROOT: /var/lib/objectstore
+  OBJECTSTORE_ADMIN_PASSWORD: ${env:OBJECTSTORE_ADMIN_PASSWORD}
+
+health:
+  http:
+    url: "http://127.0.0.1:9000/health/live"
+
+  # Must exceed the unit's TimeoutStopSec. If the gate expires first, a slow but
+  # entirely correct shutdown reads as a failed deploy — and the rollback then
+  # restarts the unit a second time while it was still draining. `pilot doctor`
+  # compares the two and fails if this is the shorter.
+  timeout: 120s
+
+alerts:
+  - when: service.down
+    for: 2m
+    notify: [chat]
+
+expose:
+  domains: [objects.example.com]
+  upstream: 9000

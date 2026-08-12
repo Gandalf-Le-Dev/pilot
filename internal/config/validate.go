@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 
@@ -99,6 +100,7 @@ func validateService(f *Fleet, s *Service, ds *Diagnostics) {
 	}
 
 	validateRuntimeShape(s, ds)
+	validateUnit(s, ds)
 	validateBuild(s, ds)
 	validateExpose(s, ds)
 	validateHealth(s, ds)
@@ -151,9 +153,9 @@ func validateRuntimeShape(s *Service, ds *Diagnostics) {
 				"path to the compose file, relative to the service repo")
 		}
 	case RuntimeSystemd:
-		if s.Unit == nil || s.Unit.ExecStart == "" {
-			ds.ErrorHint(file, "unit.exec_start", "missing",
-				"the command to run, relative to the release directory")
+		if s.Unit == nil || s.Unit.Name == "" {
+			ds.ErrorHint(file, "unit.name", "missing",
+				"the systemd unit Pilot should drive, e.g. `hopboxd.service` — Pilot adopts an existing unit rather than writing one")
 		}
 	case RuntimeStatic:
 		if s.Build == nil || (s.Build.Command == "" && len(s.Build.Output) == 0) {
@@ -161,6 +163,84 @@ func validateRuntimeShape(s *Service, ds *Diagnostics) {
 				"a static service needs a built directory to ship")
 		}
 	}
+}
+
+// validateUnit checks the systemd block.
+//
+// Everything here is a mistake that would otherwise surface halfway through a
+// deploy, on the host, with the service already stopped.
+func validateUnit(s *Service, ds *Diagnostics) {
+	if s.Unit == nil {
+		return
+	}
+	file, u := s.File, s.Unit
+
+	// A bare name is almost always meant as a service. systemd would resolve
+	// `hopboxd` to `hopboxd.service` itself, but Pilot compares unit names in
+	// fingerprints and output, so an unqualified name would read as a
+	// different unit from one deploy to the next.
+	if u.Name != "" && !strings.Contains(u.Name, ".") {
+		ds.ErrorHint(file, "unit.name", fmt.Sprintf("%q has no unit suffix", u.Name),
+			fmt.Sprintf("write it in full, e.g. %q", u.Name+".service"))
+	}
+
+	if u.Kind != "" && !slices.Contains(AllUnitKinds, u.Kind) {
+		ds.Errorf(file, "unit.kind", "unknown kind %q, want one of: %s", u.Kind, joinKinds(AllUnitKinds))
+	}
+
+	if !u.IsOneshot() {
+		if u.Timer != "" {
+			ds.ErrorHint(file, "unit.timer", "only valid for `kind: oneshot`",
+				"a long-running service is started by systemd, not scheduled")
+		}
+		if u.Fresh.Duration() != 0 {
+			ds.Errorf(file, "unit.fresh", "only valid for `kind: oneshot`")
+		}
+	} else {
+		// A oneshot with no timer is never run by anything. Pilot would ship
+		// releases for it forever and report it healthy the whole time.
+		if u.Timer == "" {
+			ds.WarnHint(file, "unit.timer", "a oneshot with no timer is never scheduled",
+				"name the timer that runs it, e.g. `timer: backup.timer`")
+		}
+		if u.Fresh.Duration() == 0 {
+			ds.WarnHint(file, "unit.fresh", "without it, a job that stopped running still reports healthy",
+				"set the longest gap you would consider normal, e.g. `fresh: 48h`")
+		}
+	}
+
+	for _, dst := range u.LinkPaths() {
+		src := u.Links[dst]
+		field := "unit.links[" + dst + "]"
+
+		if !strings.HasPrefix(dst, "/") {
+			ds.ErrorHint(file, field, "link destination must be an absolute path",
+				"e.g. /usr/local/bin/"+s.Name)
+		}
+		switch {
+		case src == "":
+			ds.Errorf(file, field, "missing the path within the release")
+		case strings.HasPrefix(src, "/"):
+			ds.ErrorHint(file, field, fmt.Sprintf("%q must be relative to the release directory", src),
+				"drop the leading slash")
+		case src == ".." || strings.HasPrefix(src, "../") || strings.Contains(src, "/../"):
+			ds.Errorf(file, field, "%q escapes the release directory", src)
+		}
+	}
+
+	for i, arg := range u.Precheck {
+		if strings.TrimSpace(arg) == "" {
+			ds.Errorf(file, fmt.Sprintf("unit.precheck[%d]", i), "empty argument")
+		}
+	}
+}
+
+func joinKinds(kinds []UnitKind) string {
+	out := make([]string, len(kinds))
+	for i, k := range kinds {
+		out[i] = string(k)
+	}
+	return strings.Join(out, ", ")
 }
 
 func validateBuild(s *Service, ds *Diagnostics) {

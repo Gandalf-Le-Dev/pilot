@@ -20,6 +20,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/compose"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/static"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/systemd"
 	"github.com/Gandalf-Le-Dev/pilot/internal/secrets"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/ssh"
 )
@@ -247,7 +248,7 @@ func RuntimeFor(s *config.Service) (runtime.Runtime, error) {
 	case config.RuntimeStatic:
 		return static.New(), nil
 	case config.RuntimeSystemd:
-		return nil, fmt.Errorf("the systemd runtime is not implemented in this build (service %q)", s.Name)
+		return systemd.New(), nil
 	}
 	return nil, fmt.Errorf("service %q has unknown runtime %q", s.Name, s.Runtime)
 }
