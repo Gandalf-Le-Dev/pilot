@@ -1,0 +1,53 @@
+# A scheduled job: runs, exits, and is judged on whether it succeeded recently.
+#
+# This is the second shape of systemd unit, and it behaves differently from a
+# daemon in every respect. There is no process to observe as "up". Restarting
+# the service unit would run the job right now, which a deploy never asked for
+# and which for a backup could mean hours of work. And its health is not "is it
+# running" but "did the last run succeed, and how long ago".
+runtime: systemd
+hosts: [web-1]
+
+build:
+  command: "make dist"
+  output: ["dist/backup"]
+
+unit:
+  name: backup.service
+  kind: oneshot
+
+  # The timer is what gets restarted on a deploy, precisely so that shipping a
+  # new release does not trigger a run.
+  timer: backup.timer
+
+  # How stale a success may be before the service is reported degraded.
+  #
+  # Without this, the last success stands forever: a job that quietly stopped
+  # running two months ago still reports healthy, which is the single most
+  # common way backup systems fail. systemd is no help here — it initialises
+  # Result=success, so a unit that has *never run* reports exactly the same
+  # result as one that just succeeded.
+  fresh: 48h
+
+  links:
+    /usr/local/bin/backup: backup
+
+  precheck: ["./backup", "--config", "/etc/backup/config.yaml", "--check"]
+
+env:
+  BACKUP_PASSPHRASE: ${file:/etc/backup/passphrase}
+  BACKUP_DESTINATION: s3://backups.example.com/web-1
+
+health:
+  # Asks the runtime, which knows a oneshot is healthy when its last run
+  # succeeded within `fresh`. A plain `systemctl is-active` would report every
+  # scheduled job as unhealthy forever, because a oneshot is inactive by design
+  # the moment it finishes.
+  systemd: true
+
+alerts:
+  # The alert that matters for a backup is not that it is down — it is never
+  # "up" — but that it has stopped succeeding.
+  - when: service.degraded
+    for: 1h
+    notify: [chat]

@@ -22,6 +22,14 @@ const probeTimeout = 10 * time.Second
 // Running inside the agent means these are real in-process checks rather than
 // shelled-out curl invocations: fewer moving parts, no dependency on which
 // utilities happen to be installed, and honest error messages.
+//
+// The probe *implementations* differ from deploy.Verify's deliberately, for
+// that reason. The dispatch below does not: it must handle exactly the same set
+// of kinds, or a health check silently means something different depending on
+// whether an agent happened to be present. Adding `systemd` to config and only
+// to the CLI's copy produced precisely that — a deploy that planned, staged and
+// activated, then failed verification on the host alone. The test alongside
+// this file asserts every kind reaches a real branch here.
 func Probe(ctx context.Context, rt runtime.Runtime, t *runtime.Target) error {
 	h := t.Service.Health
 	if h == nil {
@@ -38,10 +46,12 @@ func Probe(ctx context.Context, rt runtime.Runtime, t *runtime.Target) error {
 		return probeTCP(ctx, h.TCP)
 	case h.Exec != nil:
 		return probeExec(ctx, h.Exec)
-	case h.Docker:
+	case h.Docker, h.Systemd:
+		// Both defer to the runtime's own Observe. For systemd that is what
+		// makes the probe mean the right thing for a oneshot: `systemctl
+		// is-active` would report every scheduled job as unhealthy forever,
+		// since a oneshot is inactive by design the moment it finishes.
 		return probeRuntime(ctx, rt, t)
-	case h.Systemd:
-		return fmt.Errorf("systemd health checks are not implemented in this build")
 	}
 	return nil
 }

@@ -221,9 +221,9 @@ func TestValidateRuntimeAndHostRefs(t *testing.T) {
 		{"unknown host", "name: x\nruntime: compose\nhosts: [nope]\ncompose: {file: c.yaml}\n", "hosts[0]", "no such host"},
 		{"no hosts", "name: x\nruntime: compose\ncompose: {file: c.yaml}\n", "hosts", "missing"},
 		{"compose without file", "name: x\nruntime: compose\nhosts: [web-1]\n", "compose.file", "missing"},
-		{"systemd without exec", "name: x\nruntime: systemd\nhosts: [web-1]\n", "unit.exec_start", "missing"},
+		{"systemd without unit name", "name: x\nruntime: systemd\nhosts: [web-1]\n", "unit.name", "missing"},
 		{"static without build", "name: x\nruntime: static\nhosts: [web-1]\n", "build.output", "missing"},
-		{"unit on compose", "name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nunit: {exec_start: ./x}\n", "unit", "only valid for runtime"},
+		{"unit on compose", "name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nunit: {name: x.service}\n", "unit", "only valid for runtime"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -564,5 +564,63 @@ func TestMissingFleetFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "pilot init") {
 		t.Errorf("error should point at the fix, got: %v", err)
+	}
+}
+
+// TestValidateUnit covers the systemd block. Every case here is a mistake that
+// would otherwise surface mid-deploy, on the host, with the service stopped.
+func TestValidateUnit(t *testing.T) {
+	svc := func(unit string) string {
+		return "name: x\nruntime: systemd\nhosts: [web-1]\nunit:\n" + unit
+	}
+
+	tests := []struct {
+		name  string
+		unit  string
+		field string
+		want  string
+	}{
+		{"bare unit name", "  name: hopboxd\n", "unit.name", "no unit suffix"},
+		{"unknown kind", "  name: x.service\n  kind: timer\n", "unit.kind", "unknown kind"},
+		{"timer on a service", "  name: x.service\n  timer: x.timer\n", "unit.timer", "only valid for `kind: oneshot`"},
+		{"fresh on a service", "  name: x.service\n  fresh: 1h\n", "unit.fresh", "only valid for `kind: oneshot`"},
+		{"relative link destination", "  name: x.service\n  links:\n    bin/x: x\n", "unit.links[bin/x]", "must be an absolute path"},
+		{"absolute link source", "  name: x.service\n  links:\n    /usr/local/bin/x: /opt/x\n", "unit.links[/usr/local/bin/x]", "must be relative"},
+		{"escaping link source", "  name: x.service\n  links:\n    /usr/local/bin/x: ../../etc/passwd\n", "unit.links[/usr/local/bin/x]", "escapes the release directory"},
+		{"empty link source", "  name: x.service\n  links:\n    /usr/local/bin/x: \"\"\n", "unit.links[/usr/local/bin/x]", "missing the path"},
+		{"empty precheck arg", "  name: x.service\n  precheck: [\"./x\", \"  \"]\n", "unit.precheck[1]", "empty argument"},
+
+		// A oneshot with no timer is run by nothing, and one with no
+		// freshness bound reports healthy forever after it stops working.
+		// Both are warnings rather than errors: the config is legal, it just
+		// silently does not do what the author meant.
+		{"oneshot without timer", "  name: x.service\n  kind: oneshot\n  fresh: 48h\n", "unit.timer", "never scheduled"},
+		{"oneshot without fresh", "  name: x.service\n  kind: oneshot\n  timer: x.timer\n", "unit.fresh", "still reports healthy"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ds := load(t, baseFleet, map[string]string{"x.yaml": svc(tc.unit)})
+			if findDiag(ds, tc.field, tc.want) == nil {
+				t.Errorf("want %s: %q; got:\n%v", tc.field, tc.want, ds.Sorted())
+			}
+		})
+	}
+}
+
+// TestValidateUnitAccepted is the other half: a well-formed unit of each kind
+// must produce no errors at all. Without this, a validator that rejected
+// everything would pass every test above.
+func TestValidateUnitAccepted(t *testing.T) {
+	for name, unit := range map[string]string{
+		"daemon":  "  name: hopboxd.service\n  links:\n    /usr/local/bin/hopboxd: hopboxd\n  precheck: [\"./hopboxd\", \"--check\"]\n",
+		"oneshot": "  name: backup.service\n  kind: oneshot\n  timer: backup.timer\n  fresh: 48h\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, ds := load(t, baseFleet, map[string]string{
+				"x.yaml": "name: x\nruntime: systemd\nhosts: [web-1]\nunit:\n" + unit,
+			})
+			assertNoErrors(t, ds)
+		})
 	}
 }

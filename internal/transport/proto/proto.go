@@ -31,7 +31,13 @@ import (
 //
 // Version 5 added PUT /v1/services/{name}, so a no-op deploy can still refresh
 // the spec an agent observes, probes and alerts with.
-const Version = 5
+//
+// Version 6 reshaped the systemd `unit` block. It used to describe a unit for
+// Pilot to write (exec_start, user, restart); it now names one to adopt, plus
+// the links, precheck and freshness bound the runtime needs. Every old field is
+// gone rather than deprecated — the runtime was never implemented, so no
+// working configuration could reference them.
+const Version = 6
 
 // SchemaDigest pins the configuration schema this protocol version speaks.
 //
@@ -45,7 +51,7 @@ const Version = 5
 //     decodes): update this digest alone.
 //
 // The choice is deliberately yours. What is not optional is making it.
-const SchemaDigest = "d76b902bf0f159e9"
+const SchemaDigest = "02ca1c2e449d50c4"
 
 const (
 	// DefaultSocket is where the daemon listens. A Unix socket rather than a
