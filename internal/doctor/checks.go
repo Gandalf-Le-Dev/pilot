@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ func Standard() []Check {
 		{Name: "log-secrets", Scope: ScopeHost, NeedsNetwork: true, Run: checkLogSecrets},
 		{Name: "caddy-import", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyImport},
 		{Name: "caddy-routes", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyRoutes},
+		{Name: "caddy-bind", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyBind},
 		{Name: "disk", Scope: ScopeHost, NeedsNetwork: true, Run: checkDisk},
 		{Name: "dns-tls", Scope: ScopeEdge, NeedsNetwork: true, Run: checkEdge},
 	}
@@ -319,6 +321,64 @@ func checkCaddyRoutes(ctx context.Context, env *Env) []Finding {
 	return out
 }
 
+// checkCaddyBind finds installed routes sitting in a Caddy server public
+// traffic never reaches.
+//
+// Caddy groups sites into servers by listen address, and a socket bound to a
+// specific IP wins that IP's traffic over the :443 wildcard. So on a host
+// whose own Caddyfile binds sites explicitly, a generated route without the
+// same bind is invisible from outside — while validating, holding a valid
+// certificate, and answering every request with an empty 200. Nothing else
+// surfaces that; this check exists because it once cost an afternoon.
+func checkCaddyBind(ctx context.Context, env *Env) []Finding {
+	var out []Finding
+	paths := hostPaths(env.Fleet)
+
+	for _, name := range env.Fleet.HostNames() {
+		client := env.Client(name)
+		if client == nil || !hostHasExposedService(env, name) {
+			continue
+		}
+
+		raw, err := client.ReadFile(ctx, paths.Caddyfile)
+		if err != nil {
+			continue // caddy-import already reports an unreadable Caddyfile
+		}
+		siteBind, defaultBind := caddy.BindUsage(string(raw))
+		if !siteBind || defaultBind {
+			continue // no split servers, or default_bind already covers ours
+		}
+
+		dead := false
+		for _, s := range env.ServicesOn(name) {
+			if s.Expose == nil {
+				continue
+			}
+			snippet, err := client.ReadFile(ctx, path.Join(paths.SnippetDir, caddy.SnippetName(s.Name)))
+			if err != nil {
+				continue // not installed yet; InstallSnippet refuses at deploy time
+			}
+			if hasBind, _ := caddy.BindUsage(string(snippet)); hasBind {
+				continue
+			}
+			dead = true
+			out = append(out, Finding{
+				Status: StatusFail, Scope: ScopeHost, Host: name,
+				Title:  "route for " + s.Name + " is unreachable",
+				Detail: paths.Caddyfile + " binds sites to explicit addresses, but this route has no `bind` — it sits in a server public traffic never reaches, serving an empty 200",
+				Hint:   "set hosts." + name + ".caddy.bind to the same addresses, then redeploy " + s.Name,
+			})
+		}
+		if !dead {
+			out = append(out, Finding{
+				Status: StatusOK, Scope: ScopeHost, Host: name,
+				Title: "routes carry the Caddyfile's explicit bind",
+			})
+		}
+	}
+	return out
+}
+
 // checkDisk warns before releases and images fill the volume, since that
 // failure mode arrives without warning and takes everything down at once.
 func checkDisk(ctx context.Context, env *Env) []Finding {
@@ -374,8 +434,8 @@ func parseDiskUsed(out string) (int, bool) {
 	return 0, false
 }
 
-// checkEdge verifies that exposed domains resolve and that their certificates
-// are current.
+// checkEdge verifies that exposed domains resolve — to the right place, when
+// the hosts declare a public_address — and that their certificates are current.
 //
 // It runs from the operator's machine rather than the host, because what
 // matters is whether the site works from outside — and a first deploy of a new
@@ -390,6 +450,8 @@ func checkEdge(ctx context.Context, env *Env) []Finding {
 			continue
 		}
 
+		declared := publicAddresses(env.Fleet, s.Hosts)
+
 		for _, domain := range s.Expose.Domains {
 			hosts := strings.Join(s.Hosts, ", ")
 			f := Finding{Scope: ScopeEdge, Title: domain}
@@ -403,25 +465,92 @@ func checkEdge(ctx context.Context, env *Env) []Finding {
 				continue
 			}
 
+			// "DNS resolves" is all that resolution alone proves. The stronger
+			// "DNS ok" is reserved for the compared case, so the report never
+			// implies a relationship it has not checked — a domain can resolve
+			// to a different provider entirely and still get this far.
+			dnsStatus, dns := StatusOK, "DNS resolves"
+			if len(declared) > 0 {
+				matched, strays := matchAddresses(addrs, declared)
+				switch {
+				case matched == 0:
+					f.Status = StatusFail
+					f.Detail = fmt.Sprintf("resolves to %s — not to %s (public_address %s)",
+						strings.Join(addrs, ", "), hosts, strings.Join(declared, ", "))
+					f.Hint = "point the DNS record at " + hosts + ", or correct hosts." + s.Hosts[0] + ".public_address"
+					out = append(out, f)
+					continue
+				case len(strays) > 0:
+					dnsStatus = StatusWarn
+					dns = fmt.Sprintf("DNS split (also resolves to %s)", strings.Join(strays, ", "))
+				default:
+					dns = "DNS ok"
+				}
+			}
+
 			expiry, err := certExpiry(ctx, domain)
+			var tlsStatus Status
+			var tls string
 			switch {
 			case err != nil:
-				f.Status = StatusWarn
-				f.Detail = fmt.Sprintf("→ %s  DNS ok  TLS unavailable (%s)", hosts, firstLine(err.Error()))
+				tlsStatus = StatusWarn
+				tls = fmt.Sprintf("TLS unavailable (%s)", firstLine(err.Error()))
 			case time.Until(expiry) < 0:
-				f.Status = StatusFail
-				f.Detail = fmt.Sprintf("→ %s  DNS ok  TLS expired", hosts)
+				tlsStatus = StatusFail
+				tls = "TLS expired"
 			case time.Until(expiry) < 14*24*time.Hour:
-				f.Status = StatusWarn
-				f.Detail = fmt.Sprintf("→ %s  DNS ok  TLS valid %dd (renewal window)", hosts, int(time.Until(expiry).Hours()/24))
+				tlsStatus = StatusWarn
+				tls = fmt.Sprintf("TLS valid %dd (renewal window)", int(time.Until(expiry).Hours()/24))
 			default:
-				f.Status = StatusOK
-				f.Detail = fmt.Sprintf("→ %s  DNS ok  TLS valid %dd", hosts, int(time.Until(expiry).Hours()/24))
+				tlsStatus = StatusOK
+				tls = fmt.Sprintf("TLS valid %dd", int(time.Until(expiry).Hours()/24))
 			}
+
+			f.Status = max(dnsStatus, tlsStatus)
+			f.Detail = fmt.Sprintf("→ %s  %s  %s", hosts, dns, tls)
 			out = append(out, f)
 		}
 	}
 	return out
+}
+
+// publicAddresses collects every public_address declared by the named hosts.
+// A service spread across hosts legitimately resolves to any of them.
+func publicAddresses(f *config.Fleet, hostNames []string) []string {
+	var out []string
+	for _, hn := range hostNames {
+		if h, ok := f.Hosts[hn]; ok {
+			out = append(out, h.PublicAddress...)
+		}
+	}
+	return out
+}
+
+// matchAddresses compares where a domain resolves against the addresses its
+// hosts declare. It counts resolved addresses found in the declared set and
+// returns the strays — addresses pointing somewhere else entirely, which
+// serve some clients from the wrong machine even when others match (a stale
+// AAAA record does exactly this).
+func matchAddresses(resolved, declared []string) (matched int, strays []string) {
+	canon := func(s string) string {
+		if ip := net.ParseIP(s); ip != nil {
+			return ip.String()
+		}
+		return s
+	}
+
+	want := map[string]bool{}
+	for _, d := range declared {
+		want[canon(d)] = true
+	}
+	for _, r := range resolved {
+		if want[canon(r)] {
+			matched++
+		} else {
+			strays = append(strays, r)
+		}
+	}
+	return matched, strays
 }
 
 func certExpiry(ctx context.Context, domain string) (time.Time, error) {

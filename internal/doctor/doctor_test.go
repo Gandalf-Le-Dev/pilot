@@ -235,3 +235,31 @@ func TestStatusSymbols(t *testing.T) {
 		}
 	}
 }
+
+// matchAddresses is the comparison behind the edge check's verdicts; it must
+// canonicalise before comparing, or an IPv6 written long-form would never
+// match its declared short form.
+func TestMatchAddresses(t *testing.T) {
+	// Fully pointed, with the declared IPv6 in a different textual form.
+	m, strays := matchAddresses(
+		[]string{"37.187.24.219", "2001:41d0:a:18db:0:0:0:1"},
+		[]string{"37.187.24.219", "2001:41d0:a:18db::1"})
+	if m != 2 || len(strays) != 0 {
+		t.Errorf("matched=%d strays=%v, want 2 and none", m, strays)
+	}
+
+	// Pointed somewhere else entirely — the domain still parked on the old
+	// provider. This must be a zero-match, not a pass.
+	m, strays = matchAddresses([]string{"185.199.108.153"}, []string{"37.187.24.219"})
+	if m != 0 || len(strays) != 1 {
+		t.Errorf("matched=%d strays=%v, want 0 and the stray", m, strays)
+	}
+
+	// A stale AAAA: IPv4 points right, IPv6 still serves from the old host.
+	m, strays = matchAddresses(
+		[]string{"37.187.24.219", "2606:50c0:8000::153"},
+		[]string{"37.187.24.219"})
+	if m != 1 || len(strays) != 1 || strays[0] != "2606:50c0:8000::153" {
+		t.Errorf("matched=%d strays=%v, want the AAAA flagged", m, strays)
+	}
+}

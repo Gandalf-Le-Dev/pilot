@@ -35,6 +35,14 @@ type Input struct {
 	// point at the service's `current` symlink so that a release swap is picked
 	// up without touching Caddy at all.
 	Root string
+
+	// Bind lists the addresses the site block binds to, from the host's
+	// caddy.bind. Caddy groups sites into servers by listen address, so on a
+	// host whose own Caddyfile binds sites explicitly, a generated block
+	// without the same bind would land in a server public traffic never
+	// reaches. Empty means no bind line, which is right for hosts that don't
+	// bind explicitly.
+	Bind []string
 }
 
 // Render produces the complete contents of <snippet_dir>/<service>.caddy.
@@ -58,6 +66,9 @@ func Render(in Input) (string, error) {
 	fmt.Fprintf(&b, "# edits are reverted on the next deploy; change services/%s.yaml instead\n", in.Service)
 
 	fmt.Fprintf(&b, "%s {\n", siteAddress(e))
+	if len(in.Bind) > 0 {
+		fmt.Fprintf(&b, "\tbind %s\n", strings.Join(in.Bind, " "))
+	}
 	b.WriteString("\tencode gzip zstd\n")
 
 	// A restricted route wraps its body so anything outside the allowed

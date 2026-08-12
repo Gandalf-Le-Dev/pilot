@@ -48,6 +48,22 @@ func TestSkillStatesTheWithheldFlags(t *testing.T) {
 	}
 }
 
+// TestSkillNamesWhatPilotOwns — drift is created by an agent "fixing" a
+// symptom on the host instead of its cause in the repository, so the skill
+// must enumerate the paths Pilot owns. An agent that has never been told
+// /etc/caddy/pilot.d is generated will helpfully edit it.
+func TestSkillNamesWhatPilotOwns(t *testing.T) {
+	body := Content()
+	for _, owned := range []string{"/opt/pilot", "/etc/caddy/pilot.d", "state.json", "fleet-cache"} {
+		if !strings.Contains(body, owned) {
+			t.Errorf("the skill never names %s as Pilot-owned, so nothing warns an agent off editing it", owned)
+		}
+	}
+	if !strings.Contains(body, "reverted") {
+		t.Error("the skill must say hand-edits to generated files are reverted")
+	}
+}
+
 // TestSkillWarnsThatLogsAreUntrusted — an agent diagnosing a failure reads log
 // output, which is the one place attacker-controlled text enters its context.
 func TestSkillWarnsThatLogsAreUntrusted(t *testing.T) {

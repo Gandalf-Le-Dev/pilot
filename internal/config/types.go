@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/goccy/go-yaml"
 )
 
 // Runtime selects the adapter that knows how to stage and activate a service.
@@ -112,6 +114,20 @@ type Host struct {
 	Tags    []string `yaml:"tags"`
 	SSH     SSH      `yaml:"ssh"`
 
+	// PublicAddress lists the IPs this host's exposed domains should resolve
+	// to — its public face, as distinct from Address, which is how the
+	// operator reaches it and is often a private or tailnet name.
+	//
+	// Optional. When set, `pilot doctor` verifies that each exposed domain's
+	// DNS actually points here rather than merely resolving somewhere. When
+	// unset the check stays quiet: comparing against Address instead would
+	// flag every working service reached over a private network.
+	PublicAddress StringList `yaml:"public_address"`
+
+	// Caddy holds this host's Caddy behaviour, as distinct from the
+	// fleet-wide `caddy:` block that locates the files.
+	Caddy HostCaddy `yaml:"caddy"`
+
 	// Sudo runs every remote command through `sudo -n`.
 	//
 	// Pilot writes to /opt/pilot and /etc/caddy and drives systemd, none of
@@ -119,6 +135,32 @@ type Host struct {
 	// often not an option — and is worse anyway — so the normal arrangement is
 	// an unprivileged user with passwordless sudo.
 	Sudo bool `yaml:"sudo"`
+}
+
+// HostCaddy is per-host Caddy behaviour.
+type HostCaddy struct {
+	// Bind lists the addresses generated site blocks bind to.
+	//
+	// Caddy groups sites into servers by listen address, and a socket bound
+	// to a specific IP wins that IP's traffic over the :443 wildcard. On a
+	// host whose hand-written Caddyfile binds sites explicitly, a generated
+	// block with no bind therefore lands in a server public traffic never
+	// reaches — TLS still issues and every request gets an empty 200. Setting
+	// the same addresses here puts generated sites in the same server.
+	Bind StringList `yaml:"bind"`
+}
+
+// CaddyBindFor returns the bind addresses a generated route must carry on the
+// given hosts. Bind addresses are host-local, so validation rejects the
+// multi-host case outright; in the surviving single-host case the first (and
+// only) host that declares a bind is the answer.
+func (f *Fleet) CaddyBindFor(hostNames []string) []string {
+	for _, hn := range hostNames {
+		if h, ok := f.Hosts[hn]; ok && len(h.Caddy.Bind) > 0 {
+			return h.Caddy.Bind
+		}
+	}
+	return nil
 }
 
 type SSH struct {
@@ -510,6 +552,27 @@ type Alert struct {
 	Notify   []string `yaml:"notify"`
 }
 
+// StringList is a []string that also accepts a single YAML scalar, so both
+// forms of a one-element list read naturally:
+//
+//	public_address: 37.187.24.219
+//	public_address: [37.187.24.219, "2001:41d0:a:18db::1"]
+type StringList []string
+
+func (l *StringList) UnmarshalYAML(b []byte) error {
+	var many []string
+	if err := yaml.Unmarshal(b, &many); err == nil {
+		*l = many
+		return nil
+	}
+	var one string
+	if err := yaml.Unmarshal(b, &one); err != nil {
+		return fmt.Errorf("want a string or a list of strings")
+	}
+	*l = StringList{one}
+	return nil
+}
+
 // Duration is a time.Duration that unmarshals from YAML scalars like "90s".
 type Duration time.Duration
 
@@ -549,6 +612,13 @@ func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 type FleetConfig struct {
 	Notifiers map[string]Notifier `yaml:"notifiers"`
 	Alerts    []Alert             `yaml:"alerts"`
+
+	// CaddyBind mirrors hosts.<this host>.caddy.bind, so a route the agent
+	// renders itself — a blue/green flip re-renders the snippet with the
+	// other color's port — carries the same bind as the one the CLI rendered
+	// at deploy time. Without it a flip would silently drop the bind and move
+	// the site into a server public traffic never reaches.
+	CaddyBind []string `yaml:"caddy_bind,omitempty"`
 
 	// NotifyDeploys sends a message through the configured notifiers whenever a
 	// deploy or rollback finishes. Nil means enabled.

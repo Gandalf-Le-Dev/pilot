@@ -222,6 +222,23 @@ func InstallSnippet(ctx context.Context, r Runner, p Paths, service, content str
 		action = ActionInstalled
 	}
 
+	// A route with no bind of its own joins the catch-all :443 server. If the
+	// host's Caddyfile binds sites to explicit addresses, that server never
+	// sees public traffic — yet the route installs, validates, gets a
+	// certificate, and serves an empty 200 to every request, so nothing
+	// downstream would ever flag it. Refusing here is the only reliable
+	// moment: this is where the operator's Caddyfile is in reach.
+	if hasBind, _ := BindUsage(content); !hasBind {
+		if raw, err := r.ReadFile(ctx, p.Caddyfile); err == nil {
+			if siteBind, defaultBind := BindUsage(string(raw)); siteBind && !defaultBind {
+				return ActionNone, fmt.Errorf(
+					"%s binds sites to explicit addresses, so a route without `bind` would sit in a server public traffic never reaches — installed, TLS-valid, and serving an empty 200\n"+
+						"declare the host's addresses as hosts.<host>.caddy.bind in fleet.yaml, or add `default_bind` to the Caddyfile's global options",
+					p.Caddyfile)
+			}
+		}
+	}
+
 	if res, err := r.Run(ctx, transport.Join("mkdir", "-p", p.SnippetDir)); err != nil {
 		return ActionNone, err
 	} else if !res.OK() {

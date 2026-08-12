@@ -217,6 +217,7 @@ func (a *Agent) renderColorRoute(svc *config.Service, c config.Color) (string, e
 		Service: svc.Name,
 		Expose:  &scoped,
 		Root:    a.Layout.Current(svc.Name),
+		Bind:    a.CaddyBind(),
 	})
 }
 

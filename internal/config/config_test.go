@@ -624,3 +624,90 @@ func TestValidateUnitAccepted(t *testing.T) {
 		})
 	}
 }
+
+// public_address takes both the scalar and the list form, because a
+// single-address host is the common case and shouldn't need list syntax.
+func TestHostPublicAddressAndBind(t *testing.T) {
+	f, ds := load(t, `
+version: 1
+hosts:
+  ks:
+    address: ks
+    public_address: 37.187.24.219
+    caddy:
+      bind: [37.187.24.219, "2001:41d0:a:18db::1"]
+`, nil)
+	assertNoErrors(t, ds)
+
+	h := f.Hosts["ks"]
+	if len(h.PublicAddress) != 1 || h.PublicAddress[0] != "37.187.24.219" {
+		t.Errorf("scalar public_address = %v, want a one-element list", h.PublicAddress)
+	}
+	if len(h.Caddy.Bind) != 2 {
+		t.Errorf("caddy.bind = %v, want both addresses", h.Caddy.Bind)
+	}
+
+	if got := f.CaddyBindFor([]string{"ks"}); len(got) != 2 {
+		t.Errorf("CaddyBindFor(ks) = %v", got)
+	}
+	if got := f.CaddyBindFor([]string{"nope"}); got != nil {
+		t.Errorf("CaddyBindFor of an unknown host = %v, want nil", got)
+	}
+}
+
+// Both fields end up compared against DNS answers or written verbatim into
+// generated Caddyfile blocks, so anything but a literal IP is an error.
+func TestHostAddressFieldsRejectNonIPs(t *testing.T) {
+	_, ds := load(t, `
+version: 1
+hosts:
+  ks:
+    address: ks
+    public_address: [ks.example.com]
+    caddy: {bind: ["not an ip"]}
+`, nil)
+
+	if findDiag(ds, "hosts.ks.public_address[0]", "not an IP") == nil {
+		t.Errorf("hostname should be rejected as public_address:\n%v", ds.Sorted())
+	}
+	if findDiag(ds, "hosts.ks.caddy.bind[0]", "not an IP") == nil {
+		t.Errorf("garbage should be rejected as caddy.bind:\n%v", ds.Sorted())
+	}
+}
+
+// Bind addresses are host-local IPs, and an exposed service shares one
+// rendered route across all its hosts — so caddy.bind on a multi-host
+// service's host can never be satisfied and is rejected outright.
+func TestExposedMultiHostServiceRejectsBind(t *testing.T) {
+	fleet := `
+version: 1
+hosts:
+  web-1:
+    address: web1.example.com
+    caddy: {bind: [203.0.113.7]}
+  web-2:
+    address: web2.example.com
+`
+	svc := `
+name: api
+runtime: compose
+hosts: [web-1, web-2]
+compose: {file: deploy/compose.yaml}
+expose:
+  domains: [api.example.com]
+  upstream: 8080
+`
+	_, ds := load(t, fleet, map[string]string{"api.yaml": svc})
+	d := findDiag(ds, "hosts", "bind addresses are host-local")
+	if d == nil {
+		t.Fatalf("want a host-local bind error:\n%v", ds.Sorted())
+	}
+	if !strings.Contains(d.Hint, "default_bind") {
+		t.Errorf("the hint should name the mechanism that does work: %s", d.Hint)
+	}
+
+	// The same service on the binding host alone is fine.
+	single := strings.ReplaceAll(svc, "hosts: [web-1, web-2]", "hosts: [web-1]")
+	_, ds = load(t, fleet, map[string]string{"api.yaml": single})
+	assertNoErrors(t, ds)
+}

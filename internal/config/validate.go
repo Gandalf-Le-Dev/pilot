@@ -52,6 +52,24 @@ func validateFleet(f *Fleet, ds *Diagnostics) {
 		if h.SSH.ProxyJump != "" && h.SSH.ProxyJump == name {
 			ds.Errorf(FleetFile, field+".ssh.proxy_jump", "host cannot proxy through itself")
 		}
+		// Both fields must hold literal IPs. public_address is compared
+		// against DNS answers, and caddy.bind is written verbatim into
+		// generated Caddyfile blocks — a stray token there would corrupt
+		// every route on the host.
+		for i, a := range h.PublicAddress {
+			if net.ParseIP(a) == nil {
+				ds.ErrorHint(FleetFile, fmt.Sprintf("%s.public_address[%d]", field, i),
+					fmt.Sprintf("%q is not an IP address", a),
+					"the IP(s) this host's domains should resolve to, e.g. 203.0.113.7")
+			}
+		}
+		for i, a := range h.Caddy.Bind {
+			if net.ParseIP(a) == nil {
+				ds.ErrorHint(FleetFile, fmt.Sprintf("%s.caddy.bind[%d]", field, i),
+					fmt.Sprintf("%q is not an IP address", a),
+					"the address(es) this host's Caddy sites bind to, e.g. 203.0.113.7")
+			}
+		}
 	}
 
 	if f.Caddy.Admin != "" {
@@ -99,6 +117,14 @@ func validateService(f *Fleet, s *Service, ds *Diagnostics) {
 		}
 	}
 
+	// An exposed service renders one route shared by every host it runs on,
+	// but bind addresses are host-local IPs — web-1 cannot bind web-2's
+	// address. A shared route can therefore never carry a correct bind for
+	// two hosts at once.
+	if s.Expose != nil && len(s.Hosts) > 1 {
+		validateBindIsSingleHost(f, s, ds)
+	}
+
 	validateRuntimeShape(s, ds)
 	validateUnit(s, ds)
 	validateBuild(s, ds)
@@ -109,6 +135,22 @@ func validateService(f *Fleet, s *Service, ds *Diagnostics) {
 
 	if s.KeepReleases < 1 {
 		ds.Errorf(file, "keep_releases", "must be at least 1, got %d", s.KeepReleases)
+	}
+}
+
+// validateBindIsSingleHost rejects an exposed multi-host service when any of
+// its hosts declares caddy.bind. The per-host mechanism that works across
+// hosts is `default_bind` in each host's own Caddyfile: it applies to every
+// site that doesn't bind, generated routes included, without Pilot having to
+// render a different route per host.
+func validateBindIsSingleHost(f *Fleet, s *Service, ds *Diagnostics) {
+	for _, hn := range s.Hosts {
+		if h, ok := f.Hosts[hn]; ok && len(h.Caddy.Bind) > 0 {
+			ds.ErrorHint(s.File, "hosts",
+				fmt.Sprintf("hosts.%s.caddy.bind is set, but this service is exposed on %d hosts sharing one rendered route — bind addresses are host-local", hn, len(s.Hosts)),
+				"place the service on one host, or drop caddy.bind and set `default_bind` in each host's Caddyfile global options")
+			return
+		}
 	}
 }
 

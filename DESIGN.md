@@ -858,10 +858,15 @@ pilot doctor
 
   edge
     ✔ api.example.com  → web-1  DNS ok  TLS valid 71d
-    ⚠ blog.example.com → web-1  DNS ok  TLS valid 9d (renewal window)
+    ⚠ blog.example.com → web-1  DNS resolves  TLS valid 9d (renewal window)
 
   2 errors, 3 warnings
 ```
+
+`DNS ok` is earned, not implied: it appears only when the host declares a
+`public_address` and the domain's records actually point there. Without one the
+check can only say `DNS resolves` — a domain still parked on its old provider
+resolves fine and would otherwise look healthy right up until ACME fails.
 
 - `--offline` skips everything needing network, so config validation alone runs in CI.
 - `--fix` applies only the unambiguously safe repairs: append a missing import line, prune
