@@ -111,6 +111,48 @@ The repository has a complete example under `example/`, covering blue-green,
 static sites, `manage: observe`, secret references, and alerts. Read it before
 inventing field names — a test loads it, so it is accurate, which prose is not.
 
+## What Pilot owns on the hosts — never edit it
+
+Fixing a symptom on the host instead of its cause in the repository is how
+drift is *created*. Everything below is regenerated or replaced by the next
+deploy, so a hand-edit does not fix anything — it schedules a regression and
+raises a drift alert in the meantime.
+
+```
+/opt/pilot/services/<svc>/releases/   immutable releases — never edit, chmod, or chown one
+/opt/pilot/services/<svc>/current     the activation symlink — swap with `pilot rollback`, not `ln`
+/opt/pilot/services/<svc>/state.json  the agent's record — never write it
+/opt/pilot/fleet-cache/               definitions the CLI pushed — never edit, they re-push
+/etc/caddy/pilot.d/<svc>.caddy        generated routes — edits are reverted on the next deploy
+```
+
+The mapping runs one way. To change what runs, edit `services/<svc>/…` and
+`pilot deploy <svc>`. To change routing — domains, upstream port, headers, IP
+allow-lists — edit the service's `expose:` block; never the generated snippet,
+whose own header says the same. The one file on a host that *is* yours to edit
+(with the human's blessing) is the global Caddyfile: Pilot adds exactly one
+`import` line there and owns nothing else in it.
+
+The same discipline applies to runtimes: do not `docker compose up`, restart
+units, or prune images for a Pilot-managed service by hand. `pilot deploy`,
+`pilot rollback`, and the agent do those with the health gate attached.
+
+## Two host fields worth knowing when routing misbehaves
+
+- `hosts.<name>.public_address` — the IPs the host's domains should resolve
+  to, as distinct from `address` (often a private or tailnet name). When set,
+  `pilot doctor` verifies DNS actually points at the host instead of merely
+  resolving. A domain still parked on its old provider is otherwise invisible
+  until ACME fails.
+- `hosts.<name>.caddy.bind` — needed only when the host's own Caddyfile binds
+  sites to explicit addresses. Without it a generated route lands in a Caddy
+  server public traffic never reaches: **TLS valid, deploy green, and every
+  request answered with an empty 200**. If you see that exact symptom, run
+  `pilot doctor` and look for the `caddy-bind` finding rather than debugging
+  the service. Deploys refuse to install such a route; the error names this
+  field. It is host-local, so it only works for single-host services —
+  multi-host fleets use `default_bind` in each host's Caddyfile instead.
+
 ## Diagnosing, in order
 
 Every command takes `--json`. Use it — the human tables are for humans and are
