@@ -31,9 +31,11 @@ func newStub(t *testing.T, exitCode int, stdout, stderr string) *stub {
 		stdinLog: filepath.Join(dir, "stdin"),
 	}
 
+	// Both logs append, because one client call can invoke ssh more than once
+	// — an upload streams the archive, then normalizes permissions.
 	script := "#!/bin/sh\n" +
 		"for a in \"$@\"; do printf '%s\\n' \"$a\" >> " + s.argsLog + "; done\n" +
-		"cat > " + s.stdinLog + "\n"
+		"cat >> " + s.stdinLog + "\n"
 	if stdout != "" {
 		script += "printf '%s' " + transport.Quote(stdout) + "\n"
 	}
@@ -414,6 +416,94 @@ func TestUploadDirStreamsTar(t *testing.T) {
 	}
 	if !strings.Contains(s.stdin(t), "index.html") {
 		t.Error("archive should have been streamed on stdin")
+	}
+}
+
+// The transfer preserves the staging directory's owner and 0700 mode, which
+// are meaningless on the host; without the normalize pass a static release
+// arrives unreadable by the web server.
+func TestUploadDirNormalizesPermissions(t *testing.T) {
+	s := newStub(t, 0, "", "")
+	cfg := s.client(t).Config()
+	cfg.RsyncBinary = filepath.Join(t.TempDir(), "no-such-rsync")
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "index.html"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.UploadDir(context.Background(), src, "/opt/pilot/services/blog/releases/0042-abc1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := strings.Join(s.args(t), " ")
+	if !strings.Contains(joined, "chmod -R u=rwX,go=rX") {
+		t.Errorf("uploaded tree should be made world-readable: %v", joined)
+	}
+	// A plain deploy user cannot chown; the files already belong to it.
+	if strings.Contains(joined, "chown") {
+		t.Errorf("chown should be reserved for hosts where commands run as root: %v", joined)
+	}
+}
+
+func TestUploadDirNormalizesOwnershipWithSudo(t *testing.T) {
+	s := newStub(t, 0, "", "")
+	cfg := s.client(t).Config()
+	cfg.Sudo = true
+	cfg.RsyncBinary = filepath.Join(t.TempDir(), "no-such-rsync")
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "index.html"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.UploadDir(context.Background(), src, "/opt/pilot/services/blog/releases/0042-abc1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := strings.Join(s.args(t), " ")
+	if !strings.Contains(joined, "chown -R root:root") {
+		t.Errorf("root transport should re-own the release: %v", joined)
+	}
+}
+
+// The rsync path is where the bug lived: --archive received by root recreates
+// the operator's uid and mode on the host, so the normalize pass must follow
+// rsync too, not just tar.
+func TestUploadDirNormalizesAfterRsync(t *testing.T) {
+	s := newStub(t, 0, "", "")
+	cfg := s.client(t).Config()
+
+	fakeRsync := filepath.Join(t.TempDir(), "fake-rsync")
+	if err := os.WriteFile(fakeRsync, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg.RsyncBinary = fakeRsync
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "index.html"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.UploadDir(context.Background(), src, "/opt/pilot/services/blog/releases/0042-abc1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := strings.Join(s.args(t), " ")
+	if !strings.Contains(joined, "chmod -R u=rwX,go=rX") {
+		t.Errorf("normalize should run after an rsync transfer: %v", joined)
 	}
 }
 

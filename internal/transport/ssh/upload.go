@@ -22,6 +22,9 @@ import (
 // repeatedly is mostly unchanged bytes. Otherwise Pilot streams an in-process
 // tar over the existing ssh connection — which needs no local tar binary and so
 // behaves identically when the operator is on macOS.
+//
+// After either transfer the tree's ownership and permissions are normalized on
+// the host; see normalizeTree.
 func (c *Client) UploadDir(ctx context.Context, localDir, remoteDir string) error {
 	fi, err := os.Stat(localDir)
 	if err != nil {
@@ -32,9 +35,45 @@ func (c *Client) UploadDir(ctx context.Context, localDir, remoteDir string) erro
 	}
 
 	if c.canRsync(ctx) {
-		return c.rsyncDir(ctx, localDir, remoteDir)
+		if err := c.rsyncDir(ctx, localDir, remoteDir); err != nil {
+			return err
+		}
+	} else if err := c.tarDir(ctx, localDir, remoteDir); err != nil {
+		return err
 	}
-	return c.tarDir(ctx, localDir, remoteDir)
+	return c.normalizeTree(ctx, remoteDir)
+}
+
+// normalizeTree resets ownership and permissions on an uploaded tree.
+//
+// The transfer would otherwise preserve attributes that are only meaningful on
+// the operator's machine: rsync --archive received by root recreates the
+// operator's uid and the staging directory's 0700 mode verbatim, producing a
+// release owned by a uid that does not exist on the host, in a directory
+// nobody else may traverse — invisible to the process that has to serve it,
+// such as Caddy's file_server reading a static site as the caddy user.
+//
+// Normalizing host-side rather than with rsync's --chown/--chmod keeps the
+// policy in one place for both transfer forms, and asks nothing of the
+// operator's local rsync — macOS ships openrsync, which does not support all
+// of upstream's flags. Ownership goes to root only when commands run as root;
+// otherwise files already belong to the connecting user, which is the
+// equivalent statement of "the deploy identity owns the release". u=rwX,go=rX
+// makes the tree world-readable while keeping execute bits intact for staged
+// binaries.
+func (c *Client) normalizeTree(ctx context.Context, remoteDir string) error {
+	cmd := "chmod -R u=rwX,go=rX " + transport.Quote(remoteDir)
+	if c.cfg.Sudo || c.cfg.User == "root" {
+		cmd = "chown -R root:root " + transport.Quote(remoteDir) + " && " + cmd
+	}
+	res, err := c.Run(ctx, cmd)
+	if err != nil {
+		return err
+	}
+	if !res.OK() {
+		return fmt.Errorf("normalizing %s:%s: %w", c.Label(), remoteDir, res.Err())
+	}
+	return nil
 }
 
 // canRsync reports whether rsync exists on both ends. Either side missing it

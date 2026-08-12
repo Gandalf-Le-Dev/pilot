@@ -191,6 +191,44 @@ func TestUploadDirCopiesTreePreservingSymlinks(t *testing.T) {
 	}
 }
 
+// Staging permissions describe the builder's machine, not the release: a
+// 0700 directory straight from os.MkdirTemp would be unreadable by the web
+// server that has to serve it.
+func TestUploadDirNormalizesModes(t *testing.T) {
+	e := New("")
+	src, dst := t.TempDir(), filepath.Join(t.TempDir(), "target")
+
+	if err := os.MkdirAll(filepath.Join(src, "private"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "private", "index.html"), []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "run.sh"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.UploadDir(ctx(), src, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]os.FileMode{
+		".":                  0o755,
+		"private":            0o755,
+		"private/index.html": 0o644,
+		"run.sh":             0o755, // execute bits survive for staged binaries
+	}
+	for rel, mode := range want {
+		fi, err := os.Stat(filepath.Join(dst, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fi.Mode().Perm(); got != mode {
+			t.Errorf("%s mode = %o, want %o", rel, got, mode)
+		}
+	}
+}
+
 func TestUploadDirRejectsNonDirectory(t *testing.T) {
 	e := New("")
 	f := filepath.Join(t.TempDir(), "file")
