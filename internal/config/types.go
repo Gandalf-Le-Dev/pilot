@@ -255,6 +255,20 @@ type Unit struct {
 	// This is what separates "the deploy failed and nothing changed" from
 	// "the deploy failed and the daemon is down".
 	Precheck []string `yaml:"precheck"`
+
+	// Reference names a file holding the unit definition this service expects,
+	// relative to the service's own directory.
+	//
+	// Pilot does not install it — see the type comment for why the unit stays
+	// out of Pilot's hands. What this buys is the other half of that bargain:
+	// `pilot doctor` compares the host's effective unit against this file and
+	// reports the difference.
+	//
+	// Without it, Fingerprint only notices a unit changing *after* a deploy
+	// recorded it, so a unit that was wrong from the very first deploy is drift
+	// from nothing and nobody is told. Recording the definition turns "this
+	// host changed" into "this host does not match what we wrote down".
+	Reference string `yaml:"reference"`
 }
 
 // IsOneshot reports whether the unit runs and exits rather than staying up.

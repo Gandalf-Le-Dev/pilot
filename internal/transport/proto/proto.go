@@ -37,7 +37,14 @@ import (
 // the links, precheck and freshness bound the runtime needs. Every old field is
 // gone rather than deprecated — the runtime was never implemented, so no
 // working configuration could reference them.
-const Version = 6
+//
+// Version 7 added `unit.reference`, naming the recorded definition a unit is
+// expected to match. Pilot never installs units, so without this the only
+// record of one is the host itself, and Fingerprint cannot help: it compares a
+// unit against whatever a deploy last saw, so a unit wrong from the first
+// deploy is drift from nothing. The field is operator-side, but it travels in
+// the service spec, so an older agent would reject it.
+const Version = 7
 
 // SchemaDigest pins the configuration schema this protocol version speaks.
 //
@@ -51,7 +58,7 @@ const Version = 6
 //     decodes): update this digest alone.
 //
 // The choice is deliberately yours. What is not optional is making it.
-const SchemaDigest = "02ca1c2e449d50c4"
+const SchemaDigest = "64b24efb48460a69"
 
 const (
 	// DefaultSocket is where the daemon listens. A Unix socket rather than a

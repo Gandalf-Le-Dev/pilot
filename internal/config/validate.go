@@ -233,6 +233,15 @@ func validateUnit(s *Service, ds *Diagnostics) {
 			ds.Errorf(file, fmt.Sprintf("unit.precheck[%d]", i), "empty argument")
 		}
 	}
+
+	switch {
+	case u.Reference == "":
+	case strings.HasPrefix(u.Reference, "/"):
+		ds.ErrorHint(file, "unit.reference", "must be relative to the service directory",
+			"e.g. units/"+u.Name)
+	case u.Reference == ".." || strings.HasPrefix(u.Reference, "../") || strings.Contains(u.Reference, "/../"):
+		ds.Errorf(file, "unit.reference", "%q escapes the service directory", u.Reference)
+	}
 }
 
 func joinKinds(kinds []UnitKind) string {

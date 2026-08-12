@@ -126,4 +126,5 @@ service.unit.kind string
 service.unit.links map[string]string
 service.unit.name string
 service.unit.precheck []string
+service.unit.reference string
 service.unit.timer string
