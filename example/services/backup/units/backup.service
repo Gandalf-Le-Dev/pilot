@@ -1,0 +1,14 @@
+# Reference copy. Pilot compares this against the host but never installs it —
+# see `unit.reference` in ../service.yaml.
+[Unit]
+Description=Nightly off-site backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/backup
+# A backup that hangs forever looks identical to one still working.
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=idle

@@ -34,6 +34,15 @@ unit:
 
   precheck: ["./backup", "--config", "/etc/backup/config.yaml", "--check"]
 
+  # The definition this unit is expected to match, kept in the fleet repo and
+  # compared by `pilot doctor`.
+  #
+  # Pilot never installs it. That is the whole point of adopting units — but it
+  # means the only record of one would otherwise be the server itself, and
+  # Fingerprint is no help: it compares a unit against whatever the last deploy
+  # saw, so a unit that was wrong from the first deploy is drift from nothing.
+  reference: units/backup.service
+
 env:
   BACKUP_PASSPHRASE: ${file:/etc/backup/passphrase}
   BACKUP_DESTINATION: s3://backups.example.com/web-1

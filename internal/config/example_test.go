@@ -58,7 +58,7 @@ func TestExampleCoversEveryFeature(t *testing.T) {
 		gitSource, impliedSource            bool
 		health, svcAlerts, secretRefs       bool
 		systemdSvc, systemdOneshot          bool
-		unitLinks, unitPrecheck             bool
+		unitLinks, unitPrecheck, unitRef    bool
 	)
 
 	for _, s := range f.Services {
@@ -77,6 +77,7 @@ func TestExampleCoversEveryFeature(t *testing.T) {
 		if s.Unit != nil {
 			unitLinks = unitLinks || len(s.Unit.Links) > 0
 			unitPrecheck = unitPrecheck || len(s.Unit.Precheck) > 0
+			unitRef = unitRef || s.Unit.Reference != ""
 		}
 		if !s.Deployable() {
 			observe = true
@@ -134,6 +135,7 @@ func TestExampleCoversEveryFeature(t *testing.T) {
 		{systemdOneshot, "a systemd oneshot behind a timer"},
 		{unitLinks, "unit links into the live release"},
 		{unitPrecheck, "a unit precheck"},
+		{unitRef, "a recorded unit reference"},
 
 		{observe, "manage: observe"},
 		{blueGreen, "a blue-green rollout"},
