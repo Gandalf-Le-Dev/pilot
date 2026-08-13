@@ -129,9 +129,11 @@ func (a *Agent) checkServiceDrift(ctx context.Context, name string) {
 // fingerprintPath is where the baseline for a release is cached.
 //
 // It lives beside the release rather than in memory so that a daemon restart
-// does not re-baseline and thereby forget drift it had already found.
+// does not re-baseline and thereby forget drift it had already found. The
+// name is the shared constant because the static runtime fingerprints the
+// release tree and has to know to exclude this file from it.
 func (a *Agent) fingerprintPath(service, releaseID string) string {
-	return a.Layout.Release(service, releaseID) + "/.fingerprint"
+	return a.Layout.Release(service, releaseID) + "/" + release.FingerprintFile
 }
 
 func (a *Agent) readFingerprint(service, releaseID string) (string, error) {

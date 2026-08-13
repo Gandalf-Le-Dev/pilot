@@ -28,6 +28,13 @@ const (
 	EnvFile      = ".env"
 	SnippetFile  = "caddy.snippet"
 	ArtifactsDir = "artifacts"
+
+	// FingerprintFile caches a release's drift baseline, written by the agent
+	// into the release directory itself. Shared here because the static
+	// runtime fingerprints that directory's tree and must exclude this file
+	// from its own measurement — writing the baseline would otherwise change
+	// the tree and every static deploy would drift against itself.
+	FingerprintFile = ".fingerprint"
 )
 
 // Layout resolves paths under a Pilot root. Paths are always slash-separated:

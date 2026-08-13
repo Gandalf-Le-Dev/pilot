@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
 func svc(static *config.StaticExpose) *config.Service {
@@ -97,5 +99,39 @@ func TestDeactivateIsANoOp(t *testing.T) {
 func TestKind(t *testing.T) {
 	if New().Kind() != config.RuntimeStatic {
 		t.Error("wrong runtime kind")
+	}
+}
+
+// fakeExec records the script Fingerprint runs, satisfying the rest of the
+// Executor interface by embedding it — any other call would panic, which is
+// the point: Fingerprint needs exactly one round-trip.
+type fakeExec struct {
+	transport.Executor
+	script string
+}
+
+func (f *fakeExec) RunScript(ctx context.Context, body string) (transport.Result, error) {
+	f.script = body
+	return transport.Result{Stdout: "index.html 120\n"}, nil
+}
+
+// The agent caches each release's drift baseline inside the release directory
+// itself, so the measurement must exclude it by name — otherwise recording
+// the baseline changes the tree, and every static deploy drifts against
+// itself one check-interval after activating.
+func TestFingerprintExcludesItsOwnBaseline(t *testing.T) {
+	fe := &fakeExec{}
+	tg := &runtime.Target{
+		Service: svc(&config.StaticExpose{}),
+		Host:    &config.Host{Name: "web-1"},
+		Layout:  release.NewLayout(""),
+		Client:  fe,
+	}
+
+	if _, err := New().Fingerprint(context.Background(), tg); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fe.script, "-not -name "+transport.Quote(release.FingerprintFile)) {
+		t.Errorf("the find must ignore the baseline the agent writes into the tree:\n%s", fe.script)
 	}
 }
