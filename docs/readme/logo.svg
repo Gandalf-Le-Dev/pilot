@@ -5,8 +5,12 @@
   <path d="M116 12 L34 56 L58 68 Z"/>
   <!-- fold band, hatched; its tail is the keel and pokes out past the wing -->
   <path d="M116 12 L58 68 L62 94 Z"/>
-  <path d="M80 50 L82 64"/>
-  <path d="M71 58 L74 76"/>
+  <path d="M94 33 L95 43"/>
+  <path d="M88 39 L90 51"/>
+  <path d="M82 44 L85 60"/>
+  <path d="M77 50 L79 68"/>
+  <path d="M71 56 L74 76"/>
+  <path d="M65 61 L68 84"/>
   <!-- near wing, attached partway up the fold so the keel stays its own point -->
   <path d="M116 12 L96 86 L73 78 Z"/>
 </svg>
