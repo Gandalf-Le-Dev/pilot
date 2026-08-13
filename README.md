@@ -13,8 +13,6 @@ systemd units, and static sites — with Caddy as the front door.
 [![CI](https://github.com/Gandalf-Le-Dev/pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Gandalf-Le-Dev/pilot/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/Gandalf-Le-Dev/pilot?color=8a8f98)](LICENSE)
 
-<table><tr><td><code>brew install Gandalf-Le-Dev/tap/pilot</code></td></tr></table>
-
 <img src="docs/readme/deploy.png" alt="pilot deploy: the plan, staging, activation, route update, health verification, and the release going live" width="760">
 
 </div>
@@ -22,6 +20,19 @@ systemd units, and static sites — with Caddy as the front door.
 Pilot is a CLI (`pilot`) plus a per-host agent (`pilotd`). Deploys are pushed
 over SSH; the agent owns everything after the commit point, so closing your
 laptop mid-deploy cannot leave a service activated with nobody to roll it back.
+
+## Installation
+
+```sh
+brew install Gandalf-Le-Dev/tap/pilot
+```
+
+Or [build from source](#building-from-source). You do not install the agent
+yourself: `pilot bootstrap <host>` fetches the `pilotd` published alongside
+your CLI's own release, verifies it against the release checksums, and
+installs it under systemd. Because the agent comes from the same release as
+the CLI that fetched it, protocol skew between them is impossible rather than
+merely unlikely.
 
 ## The idea
 
@@ -311,18 +322,6 @@ It removes what it can **identify**, which makes logs safer to share rather than
 safe. A secret logged without a recognisable label survives, which is why
 `pilot doctor` also reports credentials it finds — hiding one from a single
 reader does not stop the service writing it to disk on every request.
-
-## Installing
-
-```
-brew install Gandalf-Le-Dev/tap/pilot
-```
-
-You do not install the agent yourself. `pilot bootstrap <host>` fetches the
-`pilotd` published alongside your CLI's own release, verifies it against the
-release checksums, and installs it under systemd. Because the agent comes from
-the same release as the CLI that fetched it, protocol skew between them is
-impossible rather than merely unlikely.
 
 ## Upgrading
 
