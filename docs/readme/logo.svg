@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 128 128"
+<svg xmlns="http://www.w3.org/2000/svg" width="88" height="88" viewBox="27 5 96 96"
      fill="none" stroke="#5a7de0" stroke-width="4.5"
      stroke-linecap="round" stroke-linejoin="round">
   <!-- far wing -->
@@ -11,7 +11,4 @@
   <!-- near wing, with a fold crease -->
   <path d="M116 12 L96 86 L64 92 Z"/>
   <path d="M103 46 L99 61"/>
-  <!-- the trail, looping once -->
-  <path d="M58 100 C 52 108, 46 112, 42 112 C 34 124, 18 124, 18 112 C 18 102, 32 100, 34 110 C 35 118, 24 126, 10 122"
-        stroke-width="4.5" stroke-dasharray="0.1 9"/>
 </svg>

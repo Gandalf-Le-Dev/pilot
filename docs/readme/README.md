@@ -21,5 +21,5 @@ it always produces:
 ffmpeg -sseof -0.5 -i vhs-scratch-<name>.gif -frames:v 1 docs/readme/<name>.png
 ```
 
-The logo is an original drawing; the trail-and-fold style nods to the classic
+The logo is an original drawing; the fold style nods to the classic
 hand-drawn paper-plane icons.
