@@ -33,12 +33,12 @@ container stack, a systemd unit, and a folder of HTML — which is why
 
 ```mermaid
 flowchart LR
-    deploy["pilot deploy api"] --> build["build<br/>locally"]
-    build -- ssh --> rel["releases/<br/>0042-9f3ac1b"]
+    deploy["pilot deploy api"] --> build["build\nlocally"]
+    build -- ssh --> rel["releases/0042-9f3ac1b"]
     subgraph host ["on the host"]
         rel -- "atomic swap" --> cur(["current"])
         cur --> caddy["Caddy route"]
-        agent["pilotd<br/>verifies health"] -. "failure → swap back" .-> cur
+        agent["pilotd\nverifies health"] -. "failure → swap back" .-> cur
     end
 ```
 
