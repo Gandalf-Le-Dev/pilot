@@ -13,6 +13,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/app"
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/render"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
@@ -158,7 +159,7 @@ func computeConfigDrift(ctx context.Context, a *app.App, s *config.Service, t *r
 	if err != nil {
 		return false
 	}
-	recorded, err := t.Client.ReadFile(ctx, path.Join(a.Layout.Release(s.Name, current), ".fingerprint"))
+	recorded, err := t.Client.ReadFile(ctx, path.Join(a.Layout.Release(s.Name, current), release.FingerprintFile))
 	if err != nil {
 		return false // no baseline yet; nothing to compare against
 	}
