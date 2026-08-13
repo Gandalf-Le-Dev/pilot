@@ -13,7 +13,7 @@ systemd units, and static sites — with Caddy as the front door.
 [![CI](https://github.com/Gandalf-Le-Dev/pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Gandalf-Le-Dev/pilot/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/Gandalf-Le-Dev/pilot?color=8a8f98)](LICENSE)
 
-### `brew install Gandalf-Le-Dev/tap/pilot`
+<table><tr><td><code>brew install Gandalf-Le-Dev/tap/pilot</code></td></tr></table>
 
 <img src="docs/readme/deploy.png" alt="pilot deploy: the plan, staging, activation, route update, health verification, and the release going live" width="760">
 
