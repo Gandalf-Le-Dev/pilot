@@ -2,11 +2,11 @@
      fill="none" stroke="#5a7de0" stroke-width="4.5"
      stroke-linecap="round" stroke-linejoin="round">
   <!-- far wing -->
-  <path d="M116 12 L34 56 L60 70 Z"/>
-  <!-- fold band, hatched -->
-  <path d="M116 12 L60 70 L64 92 Z"/>
+  <path d="M116 12 L34 56 L58 68 Z"/>
+  <!-- fold band, hatched; its tail is the keel and pokes out past the wing -->
+  <path d="M116 12 L58 68 L62 94 Z"/>
   <path d="M80 50 L82 64"/>
   <path d="M71 58 L74 76"/>
-  <!-- near wing -->
-  <path d="M116 12 L96 86 L64 92 Z"/>
+  <!-- near wing, attached partway up the fold so the keel stays its own point -->
+  <path d="M116 12 L96 86 L73 78 Z"/>
 </svg>
