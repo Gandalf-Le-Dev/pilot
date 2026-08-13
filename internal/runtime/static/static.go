@@ -180,9 +180,16 @@ func (r *Runtime) Logs(ctx context.Context, t *runtime.Target, opts runtime.LogO
 // Names and sizes rather than contents: hashing every byte of a site on every
 // drift check would be slow enough that operators would turn it off, and any
 // hand-edit large enough to matter changes a size or a filename.
+//
+// The agent caches the baseline as a file inside this very tree, so the
+// measurement excludes it by name — the first check after a deploy would
+// otherwise create the file it is about to be compared against, and every
+// static service would report drift forever, starting one check-interval
+// after activating.
 func (r *Runtime) Fingerprint(ctx context.Context, t *runtime.Target) (string, error) {
 	root := t.CurrentDir()
-	script := fmt.Sprintf("find -L %s -type f -printf '%%P %%s\\n' 2>/dev/null | LC_ALL=C sort", transport.Quote(root))
+	script := fmt.Sprintf("find -L %s -type f -not -name %s -printf '%%P %%s\\n' 2>/dev/null | LC_ALL=C sort",
+		transport.Quote(root), transport.Quote(release.FingerprintFile))
 
 	res, err := t.Client.RunScript(ctx, script)
 	if err != nil {
