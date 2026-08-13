@@ -1,12 +1,27 @@
+<div align="center">
+
 # Pilot
 
-A single-operator control plane for a small fleet of servers: monitor, deploy,
-and update every service you run — docker compose stacks, systemd units, and
-static sites — with Caddy as the front door.
+**A single-operator control plane for a small fleet of servers.**
+
+Monitor, deploy, and update every service you run — docker compose stacks,
+systemd units, and static sites — with Caddy as the front door.
+
+[![Release](https://img.shields.io/github/v/release/Gandalf-Le-Dev/pilot?color=5a7de0&label=release)](https://github.com/Gandalf-Le-Dev/pilot/releases/latest)
+[![CI](https://github.com/Gandalf-Le-Dev/pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Gandalf-Le-Dev/pilot/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/Gandalf-Le-Dev/pilot?color=8a8f98)](LICENSE)
+
+<img src="docs/readme/deploy.png" alt="pilot deploy: staging, activating, route update, health verification, and the release going live" width="760">
+
+</div>
 
 Pilot is a CLI (`pilot`) plus a per-host agent (`pilotd`). Deploys are pushed
 over SSH; the agent owns everything after the commit point, so closing your
 laptop mid-deploy cannot leave a service activated with nobody to roll it back.
+
+```
+brew install Gandalf-Le-Dev/tap/pilot
+```
 
 ## The idea
 
@@ -15,6 +30,17 @@ Going live is one atomic symlink swap plus a single activation verb. Rollback
 is the same swap in reverse. That one mechanism works identically for a
 container stack, a systemd unit, and a folder of HTML — which is why
 `pilot rollback` means the same thing for all three.
+
+```mermaid
+flowchart LR
+    deploy["pilot deploy api"] --> build["build<br/>locally"]
+    build -- ssh --> rel["releases/<br/>0042-9f3ac1b"]
+    subgraph host ["on the host"]
+        rel -- "atomic swap" --> cur(["current"])
+        cur --> caddy["Caddy route"]
+        agent["pilotd<br/>verifies health"] -. "failure → swap back" .-> cur
+    end
+```
 
 - **Git is desired state; the hosts are actual state.** There is no state file
   to corrupt or lose. Divergence is reported as drift.
@@ -25,26 +51,6 @@ container stack, a systemd unit, and a folder of HTML — which is why
 - **No always-on server.** Alert rules are evaluated by each agent locally.
 
 See [DESIGN.md](DESIGN.md) for the full design and the reasoning behind it.
-
-## Status
-
-Working: compose and static runtimes, Caddy route generation with per-route
-network restrictions, the agent with health verification and automatic rollback,
-blue-green deploys for compose, the systemd runtime for adopted units — both
-long-running daemons and oneshots behind a timer — drift detection, a local
-alert engine, deploy notifications, `pilot updates` reporting newer upstream
-image versions, credential redaction in logs, machine-readable output on every
-command, and an embedded skill for AI agents.
-
-Not implemented, and erroring clearly when used: `${sops:}` and `${op:}` secret
-schemes, rollout concurrency (serial only), multi-host `logs --follow`, and
-authenticated notifier endpoints.
-
-Pilot adopts systemd units rather than generating them: it ships releases,
-relinks binaries, and drives `systemctl`, but something else installs the unit
-file. That split is deliberate — the unit is where you record what your service
-needs in order to shut down safely, and a deploy tool that overwrote it is how a
-routine restart starts losing data.
 
 ## Quick look
 
@@ -75,6 +81,30 @@ pilot status            what is running, and what has drifted
 pilot rollback api      return to the previous release
 ```
 
+<p align="center">
+<img src="docs/readme/status.png" alt="pilot status: every service, its host, state, and release at a glance" width="760">
+</p>
+
+## Status
+
+Working: compose and static runtimes, Caddy route generation with per-route
+network restrictions, the agent with health verification and automatic rollback,
+blue-green deploys for compose, the systemd runtime for adopted units — both
+long-running daemons and oneshots behind a timer — drift detection, a local
+alert engine, deploy notifications, `pilot updates` reporting newer upstream
+image versions, credential redaction in logs, machine-readable output on every
+command, and an embedded skill for AI agents.
+
+Not implemented, and erroring clearly when used: `${sops:}` and `${op:}` secret
+schemes, rollout concurrency (serial only), multi-host `logs --follow`, and
+authenticated notifier endpoints.
+
+Pilot adopts systemd units rather than generating them: it ships releases,
+relinks binaries, and drives `systemctl`, but something else installs the unit
+file. That split is deliberate — the unit is where you record what your service
+needs in order to shut down safely, and a deploy tool that overwrote it is how a
+routine restart starts losing data.
+
 ## Commands
 
 ```
@@ -103,6 +133,10 @@ pilot upgrade              replace this binary with the latest release
 
 Selectors work where they make sense: `pilot deploy @web` deploys every service
 on hosts tagged `web`, and `pilot status api` narrows to one service.
+
+<p align="center">
+<img src="docs/readme/top.gif" alt="pilot top: a live fleet view that refreshes in place" width="760">
+</p>
 
 ## Routing
 
@@ -134,6 +168,18 @@ headers, and a scoped `overlay:` for directories that survive a release.
 for binding the service to loopback — a container published on `0.0.0.0` is
 reachable on its own port whatever Caddy says, which is how a tailnet-only
 service on this project's own server turned out to be answering the internet.
+
+`pilot doctor` verifies the edge from outside: that each domain's DNS actually
+points at the host that serves it (declare `public_address` on the host), and
+that its certificate is current. `DNS ok` is earned, not implied — a domain
+still parked on its old provider resolves fine, and would otherwise look
+healthy right up until ACME fails. A restricted route whose records resolve
+inside its own `allow` networks reports `DNS private` instead: deliberately
+different words for a deliberately different arrangement.
+
+<p align="center">
+<img src="docs/readme/doctor.png" alt="pilot doctor's edge checks: DNS verified against each host's declared public address, TLS expiry, and a tailnet-only route recognised as private" width="760">
+</p>
 
 ## Secrets
 
@@ -332,11 +378,12 @@ so unlike a README it cannot quietly go stale.
 ## Using it with an AI agent
 
 Pilot ships instructions for an agent operating a fleet — the concepts that are
-not guessable from the command names, and the handful of flags an agent must
-never use.
+not guessable from the command names, the paths on a host it must never edit by
+hand, and the handful of flags it must never use.
 
 ```bash
-pilot skill --install     # writes .claude/skills/pilot/SKILL.md
+pilot skill --install     # writes .claude/skills/pilot/SKILL.md in the fleet
+pilot skill -g            # or user-wide, for every project on this machine
 pilot skill               # or print it, to pipe anywhere
 ```
 
@@ -352,7 +399,7 @@ announced through your notifiers with the command that reverses it. If you point
 an AI at your infrastructure, you own what it does — the design assumes that
 rather than pretending otherwise.
 
-See **Credentials in logs** below before you point one at a real fleet.
+See **Credentials in logs** above before you point one at a real fleet.
 
 ## Building from source
 
@@ -368,14 +415,15 @@ pilot binary is trusted only for a released build, where the two shipped in the
 same tarball, because otherwise the filename is the only thing tying them
 together.
 
-Agents are tied to the CLI release that installed them, but keeping them in
-step is not your job: a deploy that meets a stale agent upgrades it and carries
-on. `pilot agent status` shows what each host runs, `pilot agent upgrade` brings
-them up to date on demand, and `pilot doctor --fix` repairs one it finds behind.
-
 There is deliberately no flag to install an agent from an arbitrary path. An
 agent whose protocol and config schema nobody has checked, installed as root,
 is worth less than a clear error — and the flag's one real use was hiding a CLI
 that had outrun its agent, which is now caught by a failing test instead.
 
 The agent targets Linux; the CLI runs wherever Go does.
+
+---
+
+<sub>The screenshots above are real output from the fleet this project deploys
+itself with — captured with [vhs](https://github.com/charmbracelet/vhs), tapes
+in [docs/readme/](docs/readme/).</sub>
