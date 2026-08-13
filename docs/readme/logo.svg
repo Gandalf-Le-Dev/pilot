@@ -7,8 +7,6 @@
   <path d="M116 12 L60 70 L64 92 Z"/>
   <path d="M80 50 L82 64"/>
   <path d="M71 58 L74 76"/>
-  <path d="M63 67 L67 88"/>
-  <!-- near wing, with a fold crease -->
+  <!-- near wing -->
   <path d="M116 12 L96 86 L64 92 Z"/>
-  <path d="M103 46 L99 61"/>
 </svg>
