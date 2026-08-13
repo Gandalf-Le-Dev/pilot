@@ -1,7 +1,17 @@
-<!-- Paper plane from Lucide (https://lucide.dev), ISC license. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="88" height="88" viewBox="0 0 24 24"
-     fill="none" stroke="#5a7de0" stroke-width="1.75"
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 128 128"
+     fill="none" stroke="#5a7de0" stroke-width="4.5"
      stroke-linecap="round" stroke-linejoin="round">
-  <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" />
-  <path d="m21.854 2.147-10.94 10.939" />
+  <!-- far wing -->
+  <path d="M116 12 L34 56 L60 70 Z"/>
+  <!-- fold band, hatched -->
+  <path d="M116 12 L60 70 L64 92 Z"/>
+  <path d="M80 50 L82 64"/>
+  <path d="M71 58 L74 76"/>
+  <path d="M63 67 L67 88"/>
+  <!-- near wing, with a fold crease -->
+  <path d="M116 12 L96 86 L64 92 Z"/>
+  <path d="M103 46 L99 61"/>
+  <!-- the trail, looping once -->
+  <path d="M58 100 C 52 108, 46 112, 42 112 C 34 124, 18 124, 18 112 C 18 102, 32 100, 34 110 C 35 118, 24 126, 10 122"
+        stroke-width="4.5" stroke-dasharray="0.1 9"/>
 </svg>

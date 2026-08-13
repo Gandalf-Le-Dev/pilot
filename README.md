@@ -417,11 +417,3 @@ is worth less than a clear error — and the flag's one real use was hiding a CL
 that had outrun its agent, which is now caught by a failing test instead.
 
 The agent targets Linux; the CLI runs wherever Go does.
-
----
-
-<sub>The captures above are rendered by Pilot's own terminal renderer, fed
-with the example fleet's vocabulary — see [docs/readme/demo](docs/readme/demo),
-which the build compiles so the captures cannot drift from the real output
-code. Regenerate them with [vhs](https://github.com/charmbracelet/vhs) from the
-tapes in [docs/readme/](docs/readme/).</sub>
