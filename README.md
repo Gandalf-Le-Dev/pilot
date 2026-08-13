@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/readme/logo.svg" width="88" alt="">
+
 # Pilot
 
 **A single-operator control plane for a small fleet of servers.**
@@ -11,17 +13,15 @@ systemd units, and static sites — with Caddy as the front door.
 [![CI](https://github.com/Gandalf-Le-Dev/pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Gandalf-Le-Dev/pilot/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/Gandalf-Le-Dev/pilot?color=8a8f98)](LICENSE)
 
-<img src="docs/readme/deploy.png" alt="pilot deploy: staging, activating, route update, health verification, and the release going live" width="760">
+### `brew install Gandalf-Le-Dev/tap/pilot`
+
+<img src="docs/readme/deploy.png" alt="pilot deploy: the plan, staging, activation, route update, health verification, and the release going live" width="760">
 
 </div>
 
 Pilot is a CLI (`pilot`) plus a per-host agent (`pilotd`). Deploys are pushed
 over SSH; the agent owns everything after the commit point, so closing your
 laptop mid-deploy cannot leave a service activated with nobody to roll it back.
-
-```
-brew install Gandalf-Le-Dev/tap/pilot
-```
 
 ## The idea
 
@@ -133,10 +133,6 @@ pilot upgrade              replace this binary with the latest release
 
 Selectors work where they make sense: `pilot deploy @web` deploys every service
 on hosts tagged `web`, and `pilot status api` narrows to one service.
-
-<p align="center">
-<img src="docs/readme/top.gif" alt="pilot top: a live fleet view that refreshes in place" width="760">
-</p>
 
 ## Routing
 
@@ -424,6 +420,8 @@ The agent targets Linux; the CLI runs wherever Go does.
 
 ---
 
-<sub>The screenshots above are real output from the fleet this project deploys
-itself with — captured with [vhs](https://github.com/charmbracelet/vhs), tapes
-in [docs/readme/](docs/readme/).</sub>
+<sub>The captures above are rendered by Pilot's own terminal renderer, fed
+with the example fleet's vocabulary — see [docs/readme/demo](docs/readme/demo),
+which the build compiles so the captures cannot drift from the real output
+code. Regenerate them with [vhs](https://github.com/charmbracelet/vhs) from the
+tapes in [docs/readme/](docs/readme/).</sub>

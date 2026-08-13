@@ -1,6 +1,5 @@
-# Regenerate from the fleet directory (expects a service with something
-# to activate — a preceding rollback makes the deploy real):
-#   cd <fleet> && vhs <pilot>/docs/readme/deploy.tape
+# Regenerate from the repo root:  vhs docs/readme/deploy.tape
+# `pilot` is aliased to the demo renderer — real output code, example data.
 Output vhs-scratch-deploy.gif
 
 Set Shell "bash"
@@ -12,10 +11,10 @@ Set Padding 20
 Set WindowBar Colorful
 
 Hide
-Type "clear"
+Type "alias pilot='go run ./docs/readme/demo' && go run ./docs/readme/demo status >/dev/null 2>&1 && clear"
 Enter
 Show
-Type "pilot deploy hopbox-docs"
+Type "pilot deploy api"
 Enter
-Sleep 150s
+Sleep 6s
 Screenshot shots/deploy.png

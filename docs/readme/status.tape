@@ -1,20 +1,20 @@
-# Regenerate from the fleet directory:
-#   cd <fleet> && vhs <pilot>/docs/readme/status.tape
+# Regenerate from the repo root:  vhs docs/readme/status.tape
+# `pilot` is aliased to the demo renderer — real output code, example data.
 Output vhs-scratch-status.gif
 
 Set Shell "bash"
 Set FontSize 15
 Set FontFamily "Maple Mono NF"
 Set Width 1000
-Set Height 385
+Set Height 340
 Set Padding 20
 Set WindowBar Colorful
 
 Hide
-Type "clear"
+Type "alias pilot='go run ./docs/readme/demo' && go run ./docs/readme/demo status >/dev/null 2>&1 && clear"
 Enter
 Show
 Type "pilot status"
 Enter
-Sleep 8s
+Sleep 6s
 Screenshot shots/status.png
