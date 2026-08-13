@@ -8,7 +8,7 @@ Set Shell "bash"
 Set FontSize 15
 Set FontFamily "Maple Mono NF"
 Set Width 1000
-Set Height 360
+Set Height 320
 Set Padding 20
 Set WindowBar Colorful
 
