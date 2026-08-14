@@ -14,7 +14,7 @@ Hide
 Type "alias pilot='go run ./docs/readme/demo' && go run ./docs/readme/demo status >/dev/null 2>&1 && clear"
 Enter
 Show
-Type "pilot deploy api"
+Type "pilot deploy my-app"
 Enter
 Sleep 6s
 Screenshot shots/deploy.png

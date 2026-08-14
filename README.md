@@ -6,8 +6,9 @@
 
 **A single-operator control plane for a small fleet of servers.**
 
-Monitor, deploy, and update every service you run — docker compose stacks,
-systemd units, and static sites — with Caddy as the front door.
+One command deploys — routing, TLS, secrets, health-gated rollback, drift
+detection, and alerting are already wired. Docker compose stacks, systemd
+units, and static sites, with Caddy as the front door.
 
 [![Release](https://img.shields.io/github/v/release/Gandalf-Le-Dev/pilot?color=5a7de0&label=release)](https://github.com/Gandalf-Le-Dev/pilot/releases/latest)
 [![CI](https://github.com/Gandalf-Le-Dev/pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Gandalf-Le-Dev/pilot/actions/workflows/ci.yml)
@@ -44,12 +45,16 @@ container stack, a systemd unit, and a folder of HTML — which is why
 
 ```mermaid
 flowchart LR
-    deploy["pilot deploy api"] --> build["build\nlocally"]
-    build -- ssh --> rel["releases/0042-9f3ac1b"]
-    subgraph host ["on the host"]
-        rel -- "atomic swap" --> cur(["current"])
-        cur --> caddy["Caddy route"]
-        agent["pilotd\nverifies health"] -. "failure → swap back" .-> cur
+    deploy["pilot deploy my-app"] --> build["build\nlocally"]
+    build -- ssh --> rel1
+    build -- ssh --> rel2
+    subgraph web1 ["web-1"]
+        rel1["releases/0042-9f3ac1b"] -- "atomic swap" --> cur1(["current"])
+        cur1 --> caddy1["Caddy route"]
+        agent1["pilotd\nverifies health"] -. "failure → swap back" .-> cur1
+    end
+    subgraph web2 ["web-2"]
+        rel2["releases/0042-9f3ac1b"] -- "atomic swap" --> cur2(["current"])
     end
 ```
 
@@ -75,11 +80,11 @@ hosts:
 ```
 
 ```yaml
-# services/api/service.yaml — the directory is the source, so no `source:` line
+# services/my-app/service.yaml — the directory is the source, so no `source:` line
 runtime: compose
 hosts: [web-1]
 compose: {file: compose.yaml}
-expose:  {domains: [api.example.com], upstream: 8080}
+expose:  {domains: [my-app.example.com], upstream: 8080}
 health:  {http: {url: "http://127.0.0.1:8080/healthz"}}
 ```
 
@@ -87,9 +92,9 @@ health:  {http: {url: "http://127.0.0.1:8080/healthz"}}
 pilot init              create a fleet configuration to start from
 pilot doctor            is this setup sound?
 pilot bootstrap web-1   prepare the host, install the agent
-pilot deploy api        build, ship, activate, verify
+pilot deploy my-app     build, ship, activate, verify
 pilot status            what is running, and what has drifted
-pilot rollback api      return to the previous release
+pilot rollback my-app   return to the previous release
 ```
 
 <p align="center">
@@ -301,6 +306,44 @@ pilot logs api --json      newline-delimited, one object per line
 `logs` is NDJSON because a followed stream never ends and a document that never
 closes cannot be parsed. `top` refuses `--json` rather than ignoring it, and
 names `status --json` instead.
+
+## In CI
+
+A deploy needs three things — the fleet repository, the `pilot` binary, and
+SSH to the hosts — which is exactly what a CI job has. Build and deploy from
+CI; keep the laptop for `pilot status` and the occasional rollback:
+
+```yaml
+# .github/workflows/deploy.yml
+name: deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+      - run: ssh-keyscan web1.example.com >> ~/.ssh/known_hosts
+      - run: brew install Gandalf-Le-Dev/tap/pilot
+      - run: pilot deploy my-app
+```
+
+The same three ingredients make the GitLab job: install pilot, load the key in
+`before_script`, `pilot deploy` in `script`.
+
+Two things to know before wiring it up:
+
+- **Reference secrets as `${env:…}` in CI.** A `${cmd:security …}` reference
+  reads a macOS keychain that does not exist on a runner; `${env:}` resolves
+  from the job's environment, which is where CI secrets already land.
+- **A failed deploy still rolls itself back.** The agent on the host owns
+  verification, so a cancelled job or a dead runner cannot leave a service
+  half-activated — and the deploy notification fires whoever ran it, naming
+  the command that reverses it.
 
 ## Credentials in logs
 

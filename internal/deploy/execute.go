@@ -40,6 +40,11 @@ type Executor struct {
 
 // Outcome records what happened on one host.
 type Outcome struct {
+	// Service names what was deployed. The reader of a summary line knows it
+	// from context, but the line is also the one thing people screenshot and
+	// paste — and "web-1 now running 0042" without the service is a riddle to
+	// anyone who wasn't holding the terminal.
+	Service    string `json:"service,omitempty"`
 	Host       string `json:"host"`
 	Release    string `json:"release"`
 	From       string `json:"from,omitempty"`
@@ -87,7 +92,7 @@ func (e *Executor) Run(ctx context.Context, p *Plan) ([]Outcome, error) {
 			}
 
 			outcomes = append(outcomes, Outcome{
-				Host: hp.Host, Release: hp.To, From: hp.From,
+				Service: p.Service.Name, Host: hp.Host, Release: hp.To, From: hp.From,
 				Succeeded: true, Message: "unchanged",
 			})
 			continue
@@ -122,7 +127,7 @@ func (e *Executor) Run(ctx context.Context, p *Plan) ([]Outcome, error) {
 // deployHost runs the pipeline for one host: stage, activate, verify, and roll
 // back if verification fails.
 func (e *Executor) deployHost(ctx context.Context, p *Plan, hp HostPlan) Outcome {
-	out := Outcome{Host: hp.Host, Release: hp.To, From: hp.From}
+	out := Outcome{Service: p.Service.Name, Host: hp.Host, Release: hp.To, From: hp.From}
 
 	t, ok := e.Targets[hp.Host]
 	if !ok {

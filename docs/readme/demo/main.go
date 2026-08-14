@@ -83,11 +83,14 @@ func doctorReport() *doctor.Report {
 
 func printDeploy() {
 	w := os.Stdout
+	// "my-app" rather than "api": a first-time reader doesn't yet know
+	// whether "api" is theirs or Pilot's, and the hero image is where they
+	// meet the tool.
 	svc := &config.Service{
-		Name:    "api",
+		Name:    "my-app",
 		Runtime: config.RuntimeCompose,
 		Hosts:   []string{"web-1"},
-		Expose:  &config.Expose{Domains: []string{"api.example.com"}, Upstream: 8080},
+		Expose:  &config.Expose{Domains: []string{"my-app.example.com"}, Upstream: 8080},
 	}
 	plan := &deploy.Plan{
 		Service: svc,
@@ -102,7 +105,7 @@ func printDeploy() {
 		}},
 	}
 
-	fmt.Fprintln(w, "building api")
+	fmt.Fprintln(w, "building my-app")
 	fmt.Fprintln(w)
 	render.Plan(w, plan)
 	fmt.Fprintln(w)
@@ -112,7 +115,7 @@ func printDeploy() {
 	// re-run a real deploy and update these lines to match.
 	for _, line := range []string{
 		"staging 0042-9f3ac1b",
-		"job j7-api running on the host",
+		"job j7-my-app running on the host",
 		"activating 0042-9f3ac1b",
 		"verifying health",
 		"healthy",
@@ -123,5 +126,5 @@ func printDeploy() {
 	}
 	fmt.Fprintln(w)
 
-	render.Outcomes(w, []deploy.Outcome{{Host: "web-1", Succeeded: true, Release: "0042-9f3ac1b"}})
+	render.Outcomes(w, []deploy.Outcome{{Service: "my-app", Host: "web-1", Succeeded: true, Release: "0042-9f3ac1b"}})
 }

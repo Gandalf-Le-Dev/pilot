@@ -91,19 +91,26 @@ func Outcomes(w io.Writer, outcomes []deploy.Outcome) {
 	st := newStyler(w)
 
 	for _, o := range outcomes {
+		// The summary line names the service, not just the host: it is the
+		// line that gets screenshotted and pasted, and "web-1 now running
+		// 0042" is a riddle to anyone who wasn't holding the terminal.
+		who := o.Host
+		if o.Service != "" {
+			who = o.Service + " on " + o.Host
+		}
 		switch {
 		case o.Succeeded && o.Message == "unchanged":
-			fmt.Fprintf(w, "  %s\n", st.muted(fmt.Sprintf("✔ %s  unchanged", o.Host)))
+			fmt.Fprintf(w, "  %s\n", st.muted(fmt.Sprintf("✔ %s  unchanged", who)))
 		case o.Succeeded:
 			fmt.Fprintf(w, "  %s  now running %s\n",
-				st.ok_("✔ "+o.Host), st.ok_(o.Release))
+				st.ok_("✔ "+who), st.ok_(o.Release))
 		case o.RolledBack:
 			// Rolled back is a failure that repaired itself, so it is not
 			// coloured the same as one that left a service broken.
-			fmt.Fprintf(w, "  %s\n", st.warn(fmt.Sprintf("✖ %s  failed, rolled back to %s", o.Host, o.From)))
+			fmt.Fprintf(w, "  %s\n", st.warn(fmt.Sprintf("✖ %s  failed, rolled back to %s", who, o.From)))
 			fmt.Fprintf(w, "      %s\n", st.muted(firstLine(errText(o))))
 		default:
-			fmt.Fprintf(w, "  %s\n", st.fail(fmt.Sprintf("✖ %s  failed", o.Host)))
+			fmt.Fprintf(w, "  %s\n", st.fail(fmt.Sprintf("✖ %s  failed", who)))
 			fmt.Fprintf(w, "      %s\n", st.muted(firstLine(errText(o))))
 		}
 	}
