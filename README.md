@@ -137,6 +137,7 @@ pilot releases <svc>       release history, and the rollback targets
 pilot status               what is running across the fleet, and what has drifted
 pilot ps                   the containers and processes behind each service
 pilot top                  the same as a live view; q to quit, r to refresh
+pilot dashboard            a read-only web view: fleet, resources, alerts, deploys
 pilot diff                 where a host no longer matches what was deployed
 pilot logs <svc>           stream logs, with credentials redacted
 pilot routes               the Caddy routes Pilot manages, and any orphans

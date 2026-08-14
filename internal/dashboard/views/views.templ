@@ -1,0 +1,405 @@
+package views
+
+import (
+	"fmt"
+	"github.com/Gandalf-Le-Dev/pilot/internal/dashboard/components/badge"
+	"github.com/Gandalf-Le-Dev/pilot/internal/dashboard/components/card"
+	"github.com/Gandalf-Le-Dev/pilot/internal/dashboard/components/chart"
+	"github.com/Gandalf-Le-Dev/pilot/internal/dashboard/components/table"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
+)
+
+// Page is the full document. The main region re-fetches itself every five
+// seconds; everything inside it must therefore render from the snapshot
+// alone, with no state hiding in the browser.
+templ Page(f Fleet) {
+	<!DOCTYPE html>
+	<html lang="en" class="dark">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>pilot — fleet</title>
+			<link rel="icon" href="data:,"/>
+			<link rel="stylesheet" href="/assets/output.css"/>
+			<script src="/assets/htmx.min.js"></script>
+			<script src="/assets/chart.js" defer></script>
+			<script>
+				// Theme follows the toggle; dark is the default because the
+				// terminal this replaces is dark.
+				if (localStorage.getItem("pilot-theme") === "light") {
+					document.documentElement.classList.remove("dark");
+				}
+				function pilotToggleTheme() {
+					const el = document.documentElement;
+					el.classList.toggle("dark");
+					localStorage.setItem("pilot-theme", el.classList.contains("dark") ? "dark" : "light");
+				}
+			</script>
+		</head>
+		<body class="bg-background text-foreground min-h-screen antialiased">
+			<div class="mx-auto max-w-6xl px-6 py-8">
+				<header class="flex items-center justify-between pb-8">
+					<div>
+						<h1 class="text-xl font-semibold tracking-tight">pilot</h1>
+						<p class="text-sm text-muted-foreground">
+							read-only fleet view · refreshes every 5s · resource history since each agent started
+						</p>
+					</div>
+					<button
+						class="rounded-md border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground"
+						onclick="pilotToggleTheme()"
+					>theme</button>
+				</header>
+				<main hx-get="/fleet" hx-trigger="every 5s" hx-swap="innerHTML">
+					@Panels(f)
+				</main>
+			</div>
+		</body>
+	</html>
+}
+
+// Panels is the swap target: all four cards, drawn purely from the snapshot.
+templ Panels(f Fleet) {
+	<div class="flex flex-col gap-6">
+		@statusPanel(f)
+		@resourcesPanel(f)
+		<div class="grid gap-6 lg:grid-cols-2">
+			@alertsPanel(f)
+			@deploysPanel(f)
+		</div>
+	</div>
+}
+
+templ statusPanel(f Fleet) {
+	@card.Card() {
+		@card.Header() {
+			@card.Title() {
+				Fleet
+			}
+			@card.Description() {
+				every service, its state, and the release it runs
+			}
+		}
+		@card.Content() {
+			@table.Table() {
+				@table.Header() {
+					@table.Row() {
+						@table.Head() {
+							Service
+						}
+						@table.Head() {
+							Host
+						}
+						@table.Head() {
+							State
+						}
+						@table.Head() {
+							Release
+						}
+						@table.Head() {
+							Detail
+						}
+					}
+				}
+				@table.Body() {
+					for _, h := range f.Hosts {
+						if h.Err != "" {
+							@table.Row() {
+								@table.Cell() {
+									<span class="text-muted-foreground">—</span>
+								}
+								@table.Cell() {
+									{ h.Name }
+								}
+								@table.Cell(table.CellProps{Class: "text-destructive", Attributes: templ.Attributes{"colspan": "3"}}) {
+									{ h.Err }
+								}
+							}
+						}
+						for _, s := range h.Services {
+							@table.Row() {
+								@table.Cell(table.CellProps{Class: "font-medium"}) {
+									{ s.Name }
+								}
+								@table.Cell(table.CellProps{Class: "text-muted-foreground"}) {
+									{ h.Name }
+								}
+								@table.Cell() {
+									@stateBadge(s.State)
+									if s.Drift {
+										@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: "ml-1 text-amber-500 border-amber-500/40"}) {
+											drift
+										}
+									}
+								}
+								@table.Cell(table.CellProps{Class: "font-mono text-xs text-muted-foreground"}) {
+									{ s.Release }
+								}
+								@table.Cell(table.CellProps{Class: "text-muted-foreground"}) {
+									{ s.Detail }
+									if s.Manage == "observe" {
+										<span class="text-xs">observe only</span>
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+templ stateBadge(state string) {
+	switch state {
+		case "running":
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: "text-emerald-500 border-emerald-500/40"}) {
+				running
+			}
+		case "degraded":
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: "text-amber-500 border-amber-500/40"}) {
+				degraded
+			}
+		case "stopped", "failed":
+			@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+				{ state }
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				{ state }
+			}
+	}
+}
+
+templ resourcesPanel(f Fleet) {
+	@card.Card() {
+		@card.Header() {
+			@card.Title() {
+				Resources
+			}
+			@card.Description() {
+				CPU and memory as a share of each host — 100% is the whole machine
+			}
+		}
+		@card.Content() {
+			<div class="flex flex-col gap-8">
+				for _, h := range f.Hosts {
+					if h.Err == "" {
+						@hostResources(h)
+					}
+				}
+			</div>
+		}
+	}
+}
+
+templ hostResources(h Host) {
+	<div>
+		<div class="flex items-baseline justify-between pb-3">
+			<div class="text-sm font-medium">{ h.Name }</div>
+			<div class="text-xs text-muted-foreground">
+				{ fmt.Sprintf("%d cores · %s", h.Capacity.Cores, FmtBytes(h.Capacity.MemTotal)) }
+				if h.DiskUsed > 0 {
+					{ fmt.Sprintf(" · disk %d%%", h.DiskUsed) }
+				}
+			</div>
+		</div>
+		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+			if len(h.HostSeries) > 0 {
+				@resourceCard("host-"+h.Name, h.Name+" (host)", h.HostSeries, h.Capacity)
+			}
+			for _, s := range h.Services {
+				if len(s.Series) > 0 {
+					@resourceCard(h.Name+"-"+s.Name, s.Name, s.Series, h.Capacity)
+				} else if s.Runtime == "static" {
+					@staticNote(s.Name)
+				}
+			}
+		</div>
+	</div>
+}
+
+// staticNote is honesty in a box: a static site has no process, so the panel
+// says so instead of charting zeros.
+templ staticNote(name string) {
+	<div class="rounded-lg border border-dashed p-3 text-sm text-muted-foreground flex flex-col justify-center">
+		<div class="font-medium text-foreground">{ name }</div>
+		<div class="text-xs">static — served by Caddy, nothing to measure</div>
+	</div>
+}
+
+// resourceCard is one small chart: cpu and memory as shares of the host,
+// with the current absolutes beside the name so the denominator is never a
+// mystery.
+templ resourceCard(id, label string, series []proto.MetricSample, capacity proto.Capacity) {
+	{{ last, hasLast := Latest(series) }}
+	<div class="rounded-lg border p-3">
+		<div class="flex items-baseline justify-between pb-2 gap-2">
+			<div class="truncate text-sm font-medium">{ label }</div>
+			if hasLast {
+				<div class="shrink-0 text-xs text-muted-foreground">
+					{ FmtPct(last.CPUPct) } cpu · { FmtBytes(last.MemBytes) }
+				</div>
+			}
+		</div>
+		<div class="h-24">
+			@chart.Container(chart.ContainerProps{ID: id, Class: "h-24 w-full", Config: chart.Config{
+				{Key: "cpu", Label: "CPU %", Color: "var(--chart-1)"},
+				{Key: "mem", Label: "Mem %", Color: "var(--chart-2)"},
+			}}) {
+				@chart.AreaChart(chart.AreaChartProps{Data: SeriesData(series, capacity)}) {
+					@chart.XAxis(chart.XAxisProps{DataKey: "t", Hide: true})
+					@chart.Tooltip()
+					@chart.Area(chart.AreaProps{DataKey: "cpu", Type: "natural", FillOpacity: 0.3})
+					@chart.Area(chart.AreaProps{DataKey: "mem", Type: "natural", FillOpacity: 0.15})
+				}
+			}
+		</div>
+	</div>
+}
+
+templ alertsPanel(f Fleet) {
+	@card.Card() {
+		@card.Header() {
+			@card.Title() {
+				Alerts
+			}
+			@card.Description() {
+				firing episodes since each agent started
+			}
+		}
+		@card.Content() {
+			if !anyAlerts(f) {
+				<p class="text-sm text-muted-foreground">nothing has fired</p>
+			} else {
+				@table.Table() {
+					@table.Header() {
+						@table.Row() {
+							@table.Head() {
+								Rule
+							}
+							@table.Head() {
+								Host
+							}
+							@table.Head() {
+								Fired
+							}
+							@table.Head() {
+								Status
+							}
+						}
+					}
+					@table.Body() {
+						for _, h := range f.Hosts {
+							for _, ev := range h.Alerts {
+								@table.Row() {
+									@table.Cell(table.CellProps{Class: "font-mono text-xs"}) {
+										if ev.Subject != "" {
+											{ ev.Subject }:
+										}
+										{ ev.Rule }
+									}
+									@table.Cell(table.CellProps{Class: "text-muted-foreground"}) {
+										{ h.Name }
+									}
+									@table.Cell(table.CellProps{Class: "text-muted-foreground"}) {
+										{ FmtAgo(ev.FiredAt) }
+									}
+									@table.Cell() {
+										if ev.ResolvedAt.IsZero() {
+											@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+												firing
+											}
+										} else {
+											@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: "text-emerald-500 border-emerald-500/40"}) {
+												resolved { FmtAgo(ev.ResolvedAt) }
+											}
+										}
+										if ev.DeliveryFailed {
+											@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: "ml-1 text-amber-500 border-amber-500/40"}) {
+												notify failed
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+templ deploysPanel(f Fleet) {
+	@card.Card() {
+		@card.Header() {
+			@card.Title() {
+				Deploys
+			}
+			@card.Description() {
+				recent history from each host's state
+			}
+		}
+		@card.Content() {
+			if !anyDeploys(f) {
+				<p class="text-sm text-muted-foreground">no history recorded</p>
+			} else {
+				@table.Table() {
+					@table.Header() {
+						@table.Row() {
+							@table.Head() {
+								Service
+							}
+							@table.Head() {
+								Release
+							}
+							@table.Head() {
+								When
+							}
+							@table.Head() {
+								Outcome
+							}
+						}
+					}
+					@table.Body() {
+						for _, d := range RecentDeploys(f, 12) {
+							@table.Row() {
+								@table.Cell(table.CellProps{Class: "font-medium"}) {
+									{ d.Service }
+									<span class="text-xs text-muted-foreground"> on { d.Host }</span>
+								}
+								@table.Cell(table.CellProps{Class: "font-mono text-xs text-muted-foreground"}) {
+									{ d.Release }
+								}
+								@table.Cell(table.CellProps{Class: "text-muted-foreground"}) {
+									{ FmtAgo(d.FinishedAt) }
+								}
+								@table.Cell() {
+									@outcomeBadge(d.Outcome)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+templ outcomeBadge(outcome string) {
+	switch outcome {
+		case "ok":
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: "text-emerald-500 border-emerald-500/40"}) {
+				ok
+			}
+		case "rolled-back", "rolled_back":
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: "text-amber-500 border-amber-500/40"}) {
+				rolled back
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+				{ outcome }
+			}
+	}
+}
