@@ -27,6 +27,7 @@ func (a *Agent) StartLoops(ctx context.Context) {
 	go a.driftLoop(ctx)
 	go a.observeLoop(ctx)
 	go a.alertLoop(ctx)
+	go a.metricsLoop(ctx)
 }
 
 // driftLoop periodically compares what is running against what should be.

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://shadcn-templ.com/schema/components.json",
+  "style": "base-nova",
+  "tailwind": {
+    "css": "internal/dashboard/assets/css/globals.css",
+    "baseColor": "neutral",
+    "cssVariables": true
+  },
+  "rtl": false,
+  "iconLibrary": "lucide",
+  "menuColor": "default",
+  "menuAccent": "subtle",
+  "aliases": {
+    "components": "github.com/Gandalf-Le-Dev/pilot/internal/dashboard/components",
+    "utils": "github.com/Gandalf-Le-Dev/pilot/internal/dashboard/shadcnutils"
+  }
+}

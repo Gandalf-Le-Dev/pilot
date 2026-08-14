@@ -48,6 +48,11 @@ type Agent struct {
 	samples  map[string][]Sample
 	fleet    *FleetConfig
 
+	// Resource series for the dashboard, bounded rings, in-memory only.
+	serviceMetrics map[string][]proto.MetricSample
+	hostMetrics    []proto.MetricSample
+	capacity       proto.Capacity
+
 	jobs   *JobStore
 	alerts *alert.Engine
 }

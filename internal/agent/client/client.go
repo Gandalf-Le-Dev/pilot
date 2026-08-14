@@ -168,6 +168,21 @@ func (c *Client) Status(ctx context.Context) (*proto.StatusResponse, error) {
 	return &out, nil
 }
 
+// Dashboard fetches the one-round-trip view: status, resource samples newer
+// than since (unix seconds; zero means everything held), alert episodes, and
+// deploy history.
+func (c *Client) Dashboard(ctx context.Context, since int64) (*proto.DashboardResponse, error) {
+	path := proto.PathDashboard
+	if since > 0 {
+		path += "?since=" + strconv.FormatInt(since, 10)
+	}
+	var out proto.DashboardResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) Service(ctx context.Context, name string) (*proto.ServiceStatus, error) {
 	var out proto.ServiceStatus
 	if err := c.do(ctx, http.MethodGet, proto.PathServices+name, nil, &out); err != nil {

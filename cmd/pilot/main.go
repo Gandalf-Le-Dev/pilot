@@ -130,6 +130,7 @@ func buildRoot(g *globals) *cobra.Command {
 		annotate(newDiffCmd(g), jsonStructured),
 		annotate(newPsCmd(g), jsonStructured),
 		annotate(newTopCmd(g), jsonRefused),
+		annotate(newDashboardCmd(g), jsonRefused),
 		annotate(newReleasesCmd(g), jsonStructured),
 		annotate(newLogsCmd(g), jsonNDJSON),
 		annotate(newRoutesCmd(g), jsonStructured),

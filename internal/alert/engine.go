@@ -44,6 +44,28 @@ type state struct {
 	lastNotified time.Time
 }
 
+// Event is one firing episode: opened when a rule starts firing, closed when
+// it resolves. Episodes live in a bounded in-memory ring and die with the
+// agent — deliberately, matching the sampling buffers: the host keeps no
+// history files, and the dashboard labels the panel "since agent start".
+type Event struct {
+	Rule    string    `json:"rule"`
+	Subject string    `json:"subject,omitempty"`
+	FiredAt time.Time `json:"fired_at"`
+
+	// ResolvedAt is zero while the episode is still firing.
+	ResolvedAt time.Time `json:"resolved_at,omitzero"`
+
+	// DeliveryFailed records that at least one notifier could not be reached
+	// for this episode. The operator saw nothing; the dashboard should not
+	// pretend they did.
+	DeliveryFailed bool `json:"delivery_failed,omitempty"`
+}
+
+// MaxEvents bounds the episode ring. Months of history on a healthy fleet;
+// on an unhealthy one the tail is noise anyway.
+const MaxEvents = 200
+
 // Sender delivers a notification. The engine takes an interface so tests can
 // observe delivery without a network.
 type Sender interface {
@@ -67,8 +89,9 @@ type Engine struct {
 	// should be, and silently dropping is worse than saying so.
 	OnError func(rule string, notifier string, err error)
 
-	mu   sync.Mutex
-	seen map[string]*state
+	mu     sync.Mutex
+	seen   map[string]*state
+	events []Event
 
 	workerOnce sync.Once
 	queue      chan delivery
@@ -134,6 +157,7 @@ func (e *Engine) step(r Rule, reading Reading) (*Notification, []string) {
 		if st.firing {
 			st.firing = false
 			st.pendingSince = time.Time{}
+			e.closeEvent(r, now)
 			return e.build(r, reading, SevResolved, time.Time{}), r.Notify
 		}
 		st.pendingSince = time.Time{}
@@ -152,9 +176,58 @@ func (e *Engine) step(r Rule, reading Reading) (*Notification, []string) {
 	}
 
 	since := st.pendingSince
+	// A cooldown repeat is the same episode still going, not a new one.
+	if !st.firing {
+		e.appendEvent(Event{Rule: r.Cond.Raw, Subject: r.Subject, FiredAt: now})
+	}
 	st.firing = true
 	st.lastNotified = now
 	return e.build(r, reading, SevFiring, since), r.Notify
+}
+
+// appendEvent records a new firing episode. Callers hold e.mu.
+func (e *Engine) appendEvent(ev Event) {
+	e.events = append(e.events, ev)
+	if len(e.events) > MaxEvents {
+		e.events = e.events[len(e.events)-MaxEvents:]
+	}
+}
+
+// closeEvent stamps the open episode for a rule. Callers hold e.mu.
+func (e *Engine) closeEvent(r Rule, at time.Time) {
+	for i := len(e.events) - 1; i >= 0; i-- {
+		ev := &e.events[i]
+		if ev.Rule == r.Cond.Raw && ev.Subject == r.Subject && ev.ResolvedAt.IsZero() {
+			ev.ResolvedAt = at
+			return
+		}
+	}
+}
+
+// markDeliveryFailed flags the newest episode for a rule, so the dashboard
+// can say the operator was not actually told.
+func (e *Engine) markDeliveryFailed(rule, subject string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i := len(e.events) - 1; i >= 0; i-- {
+		ev := &e.events[i]
+		if ev.Rule == rule && ev.Subject == subject {
+			ev.DeliveryFailed = true
+			return
+		}
+	}
+}
+
+// Events returns the recorded episodes, newest first.
+func (e *Engine) Events() []Event {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	out := make([]Event, len(e.events))
+	for i, ev := range e.events {
+		out[len(e.events)-1-i] = ev
+	}
+	return out
 }
 
 func (e *Engine) build(r Rule, reading Reading, sev Severity, since time.Time) *Notification {
@@ -189,6 +262,7 @@ func (e *Engine) build(r Rule, reading Reading, sev Severity, since time.Time) *
 // delivery is one queued message.
 type delivery struct {
 	rule     string
+	subject  string
 	notifier string
 	msg      Notification
 }
@@ -214,11 +288,12 @@ func (e *Engine) dispatch(ctx context.Context, r Rule, msg Notification, notifie
 	for _, name := range notifiers {
 		e.pending.Add(1)
 		select {
-		case e.queue <- delivery{rule: r.Cond.Raw, notifier: name, msg: msg}:
+		case e.queue <- delivery{rule: r.Cond.Raw, subject: r.Subject, notifier: name, msg: msg}:
 		default:
 			// Full. Dropping and saying so beats blocking the evaluation loop
 			// and thereby suppressing every other alert on the host.
 			e.pending.Done()
+			e.markDeliveryFailed(r.Cond.Raw, r.Subject)
 			if e.OnError != nil {
 				e.OnError(r.Cond.Raw, name, errQueueFull)
 			}
@@ -234,8 +309,11 @@ func (e *Engine) startWorker() {
 		go func() {
 			for d := range e.queue {
 				err := e.Sender.Send(context.Background(), d.notifier, d.msg)
-				if err != nil && e.OnError != nil {
-					e.OnError(d.rule, d.notifier, err)
+				if err != nil {
+					e.markDeliveryFailed(d.rule, d.subject)
+					if e.OnError != nil {
+						e.OnError(d.rule, d.notifier, err)
+					}
 				}
 				e.pending.Done()
 			}

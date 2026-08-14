@@ -23,6 +23,11 @@ jobs:
           fi
 
       - run: go vet ./...
+
+      - name: dashboard templ output is committed fresh
+        run: |
+          go install github.com/a-h/templ/cmd/templ@v0.3.1020
+          templ generate -check ./internal/dashboard/...
       - run: go test -race ./...
 
       # The agent is only ever run on Linux, but it must build for both

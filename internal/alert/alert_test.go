@@ -2,6 +2,7 @@ package alert
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -469,5 +470,56 @@ func TestNotificationKeepsMeasuredValueAlongsideDetail(t *testing.T) {
 		if !strings.Contains(sent[0].Detail, want) {
 			t.Errorf("Detail = %q, want it to contain %q", sent[0].Detail, want)
 		}
+	}
+}
+
+// An episode opens when a rule fires, closes when it resolves, and a cooldown
+// repeat mid-episode must not mint a second one — the dashboard's history
+// panel counts episodes, not notifications.
+func TestEventsRecordEpisodes(t *testing.T) {
+	e, _, clk := newEngine(t)
+	r := rule(t, "api", "service.down", 0)
+	down := map[string]Reading{"api": {ServiceDown: true}}
+	up := map[string]Reading{"api": {ServiceDown: false}}
+	ctx := context.Background()
+
+	e.Evaluate(ctx, []Rule{r}, down) // fires
+	clk.add(2 * time.Hour)
+	e.Evaluate(ctx, []Rule{r}, down) // cooldown repeat, same episode
+	clk.add(10 * time.Minute)
+	e.Evaluate(ctx, []Rule{r}, up) // resolves
+	clk.add(1 * time.Minute)
+	e.Evaluate(ctx, []Rule{r}, down) // a second episode
+	e.Flush()
+
+	evs := e.Events()
+	if len(evs) != 2 {
+		t.Fatalf("got %d episodes, want 2:\n%+v", len(evs), evs)
+	}
+	// Newest first.
+	if !evs[0].ResolvedAt.IsZero() {
+		t.Errorf("the second episode is still firing, but has ResolvedAt %v", evs[0].ResolvedAt)
+	}
+	if evs[1].ResolvedAt.IsZero() {
+		t.Error("the first episode resolved, but ResolvedAt is zero")
+	}
+	if evs[1].Subject != "api" || evs[1].Rule != "service.down" {
+		t.Errorf("episode = %+v", evs[1])
+	}
+}
+
+// A notifier failure marks the episode, so the dashboard can say the operator
+// was never actually told.
+func TestEventsRecordDeliveryFailure(t *testing.T) {
+	e, cap, _ := newEngine(t)
+	cap.err = fmt.Errorf("webhook: 500")
+	r := rule(t, "api", "service.down", 0)
+
+	e.Evaluate(context.Background(), []Rule{r}, map[string]Reading{"api": {ServiceDown: true}})
+	e.Flush()
+
+	evs := e.Events()
+	if len(evs) != 1 || !evs[0].DeliveryFailed {
+		t.Fatalf("episode should be marked undelivered: %+v", evs)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
@@ -22,6 +23,7 @@ func (a *Agent) Handler() http.Handler {
 
 	mux.HandleFunc("GET "+proto.PathInfo, a.handleInfo)
 	mux.HandleFunc("GET "+proto.PathStatus, a.handleStatus)
+	mux.HandleFunc("GET "+proto.PathDashboard, a.handleDashboard)
 	mux.HandleFunc("GET "+proto.PathDrift, a.handleDrift)
 	mux.HandleFunc("GET "+proto.PathAlerts, a.handleAlerts)
 	mux.HandleFunc("PUT "+proto.PathConfig, a.handleConfig)
@@ -247,6 +249,50 @@ func (a *Agent) handleJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+// handleDashboard answers everything the dashboard shows about this host in
+// one response: current status, resource samples newer than `since` (unix
+// seconds), the alert episode ring, and each service's deploy history. One
+// fat endpoint rather than four, because every call from the operator's
+// machine is an ssh exec.
+func (a *Agent) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	var since time.Time
+	if v := r.URL.Query().Get("since"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			since = time.Unix(n, 0).UTC()
+		}
+	}
+
+	resp := proto.DashboardResponse{Host: a.Host}
+
+	resp.Status.Host = a.Host
+	for _, name := range a.ServiceNames() {
+		resp.Status.Services = append(resp.Status.Services, a.statusFor(r.Context(), name))
+	}
+	if d, err := a.diskUsage(); err == nil {
+		resp.Status.Disk = d
+	}
+
+	resp.ServiceSamples, resp.HostSamples, resp.Capacity = a.MetricsSince(since)
+
+	for _, ev := range a.alerts.Events() {
+		resp.AlertEvents = append(resp.AlertEvents, proto.AlertEvent{
+			Rule: ev.Rule, Subject: ev.Subject, FiredAt: ev.FiredAt,
+			ResolvedAt: ev.ResolvedAt, DeliveryFailed: ev.DeliveryFailed,
+		})
+	}
+
+	resp.Deploys = map[string][]release.DeployRecord{}
+	for _, name := range a.ServiceNames() {
+		st, err := release.ReadState(a.Layout.Service(name), name)
+		if err != nil || len(st.History) == 0 {
+			continue
+		}
+		resp.Deploys[name] = st.History
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // diskUsage reports headroom on the volume holding releases.
