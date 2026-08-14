@@ -338,12 +338,17 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
       - run: ssh-keyscan server1.example.com >> ~/.ssh/known_hosts
-      - run: brew install Gandalf-Le-Dev/tap/pilot
+      - run: |
+          gh release download --repo Gandalf-Le-Dev/pilot --pattern '*_linux_amd64.tar.gz' --output - \
+            | sudo tar -C /usr/local/bin -xzf - pilot
+        env:
+          GH_TOKEN: ${{ github.token }}
       - run: pilot deploy my-app
 ```
 
-The same three ingredients make the GitLab job: install pilot, load the key in
-`before_script`, `pilot deploy` in `script`.
+The same three ingredients make the GitLab job: `curl` the `linux_amd64`
+tarball from the [releases page](https://github.com/Gandalf-Le-Dev/pilot/releases)
+in `before_script` alongside the SSH key, `pilot deploy` in `script`.
 
 Two things to know before wiring it up:
 
