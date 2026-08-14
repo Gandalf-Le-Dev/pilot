@@ -9,6 +9,7 @@ package proto
 import (
 	"time"
 
+	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
 
@@ -50,7 +51,12 @@ import (
 // addresses, generated routes must bind the same way or they land in a server
 // public traffic never reaches. The agent needs the value because a
 // blue/green flip re-renders the route itself.
-const Version = 8
+//
+// Version 9 added GET /v1/dashboard — status, resource samples, alert
+// episodes, and deploy history in one response, because each call from the
+// operator's machine costs an ssh exec. The config schema is unchanged; the
+// bump is for the wire.
+const Version = 9
 
 // SchemaDigest pins the configuration schema this protocol version speaks.
 //
@@ -239,16 +245,66 @@ const (
 
 // Endpoint paths.
 const (
-	PathInfo     = "/v1/info"
-	PathStatus   = "/v1/status"
-	PathServices = "/v1/services/"
-	PathDeploy   = "/v1/deploy"
-	PathRollback = "/v1/rollback"
-	PathJobs     = "/v1/jobs/"
-	PathDrift    = "/v1/drift"
-	PathConfig   = "/v1/config"
-	PathAlerts   = "/v1/alerts"
+	PathInfo      = "/v1/info"
+	PathStatus    = "/v1/status"
+	PathServices  = "/v1/services/"
+	PathDeploy    = "/v1/deploy"
+	PathRollback  = "/v1/rollback"
+	PathJobs      = "/v1/jobs/"
+	PathDrift     = "/v1/drift"
+	PathConfig    = "/v1/config"
+	PathAlerts    = "/v1/alerts"
+	PathDashboard = "/v1/dashboard"
 )
+
+// MetricSample is one point on a resource chart.
+//
+// CPUPct is a share of the whole host — all cores together are 100 — because
+// a percentage without a denominator answers nothing. Capacity carries the
+// denominators for absolute display.
+type MetricSample struct {
+	At       time.Time `json:"at"`
+	CPUPct   float64   `json:"cpu_pct"`
+	MemBytes uint64    `json:"mem_bytes"`
+}
+
+// Capacity is a host's denominators: what 100% means there.
+type Capacity struct {
+	Cores    int    `json:"cores"`
+	MemTotal uint64 `json:"mem_total_bytes"`
+}
+
+// AlertEvent is one firing episode of a rule, open while ResolvedAt is zero.
+type AlertEvent struct {
+	Rule           string    `json:"rule"`
+	Subject        string    `json:"subject,omitempty"`
+	FiredAt        time.Time `json:"fired_at"`
+	ResolvedAt     time.Time `json:"resolved_at,omitzero"`
+	DeliveryFailed bool      `json:"delivery_failed,omitempty"`
+}
+
+// DashboardResponse is everything the dashboard needs from one host in one
+// round-trip. One fat response rather than four endpoints, because each call
+// from the operator's machine costs an ssh exec — the shape of the wire
+// follows the cost of the road.
+type DashboardResponse struct {
+	Host     string   `json:"host"`
+	Capacity Capacity `json:"capacity"`
+
+	Status StatusResponse `json:"status"`
+
+	// Samples carry only points newer than the request's `since`, so a
+	// steady-state poll moves a handful of numbers, not six hours of them.
+	ServiceSamples map[string][]MetricSample `json:"service_samples,omitempty"`
+	HostSamples    []MetricSample            `json:"host_samples,omitempty"`
+
+	// AlertEvents is the full episode ring — bounded, and small enough that
+	// windowing it is not worth a second cursor.
+	AlertEvents []AlertEvent `json:"alert_events,omitempty"`
+
+	// Deploys is each service's recorded history, newest first.
+	Deploys map[string][]release.DeployRecord `json:"deploys,omitempty"`
+}
 
 // ConfigRequest carries the host-wide half of the configuration: notifiers and
 // host-scoped alert rules, which have no service to hang off.

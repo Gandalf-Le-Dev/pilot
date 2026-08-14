@@ -9,7 +9,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
@@ -136,6 +138,20 @@ func (c *Client) Available(ctx context.Context) bool {
 func (c *Client) Status(ctx context.Context) (*proto.StatusResponse, error) {
 	var out proto.StatusResponse
 	if err := c.ctl(ctx, &out, nil, "status"); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Dashboard fetches the one-round-trip view for the web dashboard. A zero
+// since returns everything the agent holds.
+func (c *Client) Dashboard(ctx context.Context, since time.Time) (*proto.DashboardResponse, error) {
+	args := []string{"dashboard"}
+	if !since.IsZero() {
+		args = append(args, "--since", strconv.FormatInt(since.Unix(), 10))
+	}
+	var out proto.DashboardResponse
+	if err := c.ctl(ctx, &out, nil, args...); err != nil {
 		return nil, err
 	}
 	return &out, nil

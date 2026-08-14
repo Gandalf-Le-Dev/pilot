@@ -130,6 +130,24 @@ func newCtlCmd() *cobra.Command {
 		},
 	})
 
+	cmd.AddCommand(func() *cobra.Command {
+		var since int64
+		c := &cobra.Command{
+			Use:   "dashboard",
+			Short: "Report status, resource samples, alert episodes, and deploy history in one response",
+			Args:  cobra.NoArgs,
+			RunE: func(c *cobra.Command, _ []string) error {
+				out, err := client.NewUnix(socket).Dashboard(c.Context(), since)
+				if err != nil {
+					return err
+				}
+				return emit(out)
+			},
+		}
+		c.Flags().Int64Var(&since, "since", 0, "only samples newer than this unix time")
+		return c
+	}())
+
 	cmd.AddCommand(&cobra.Command{
 		Use:   "drift",
 		Short: "Report configuration that no longer matches its manifest",
