@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
@@ -32,7 +33,12 @@ func StageCommon(ctx context.Context, t *Target, in StageInput) error {
 		}
 	}
 
-	if len(in.Env) > 0 {
+	// Compose releases get the file even when empty: the compose runtime
+	// passes --env-file on every invocation and docker compose errors on a
+	// missing file, so a service with no env at all would fail validation at
+	// staging. Other runtimes skip the empty file — a static release's
+	// directory is served verbatim, and an empty .env has no business in it.
+	if len(in.Env) > 0 || t.Service.Runtime == config.RuntimeCompose {
 		body, err := RenderEnv(in.Env)
 		if err != nil {
 			return fmt.Errorf("rendering environment for %s: %w", t.Service.Name, err)

@@ -50,9 +50,10 @@ func cmd(dir, proj string, args ...string) string {
 		"--project-directory", dir,
 		"--file", path.Join(dir, composeFile),
 	}
-	if envFile := path.Join(dir, release.EnvFile); envFile != "" {
-		base = append(base, "--env-file", envFile)
-	}
+	// Unconditional: StageCommon writes the .env for every compose release,
+	// even an empty one, precisely so this flag can never point at a missing
+	// file.
+	base = append(base, "--env-file", path.Join(dir, release.EnvFile))
 	return transport.Join(append(base, args...)...)
 }
 
