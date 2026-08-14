@@ -170,6 +170,14 @@ pilot logs <svc> --json      # newline-delimited, one object per line
 Start with `status`, then `doctor`. Between them they answer almost everything;
 reach for `logs` when you need to know *why* rather than *what*.
 
+The dashboard is the human's surface, not yours. `pilot dashboard` serves a
+read-only web page of the same facts — fleet, per-service CPU and memory,
+alert history, recent deploys — on 127.0.0.1, and blocks until interrupted.
+It has no JSON form and tells you nothing `status --json` does not, so it is
+something to offer the person when they want to *watch* ("open a dashboard?"),
+not a tool to reach for when you need to *know*. If they ask for it, run it
+and leave it running; it cannot change anything.
+
 Read `manage` in `status --json`. A service marked `observe` is watched but must
 never be deployed — it is usually a database.
 
