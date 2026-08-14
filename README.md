@@ -48,12 +48,12 @@ flowchart LR
     deploy["pilot deploy my-app"] --> build["build\nlocally"]
     build -- ssh --> rel1
     build -- ssh --> rel2
-    subgraph web1 ["web-1"]
+    subgraph s1 ["server-1"]
         rel1["releases/0042-9f3ac1b"] -- "atomic swap" --> cur1(["current"])
         cur1 --> caddy1["Caddy route"]
         agent1["pilotd\nverifies health"] -. "failure → swap back" .-> cur1
     end
-    subgraph web2 ["web-2"]
+    subgraph s2 ["server-2"]
         rel2["releases/0042-9f3ac1b"] -- "atomic swap" --> cur2(["current"])
     end
 ```
@@ -74,15 +74,15 @@ See [DESIGN.md](DESIGN.md) for the full design and the reasoning behind it.
 # fleet.yaml
 version: 1
 hosts:
-  web-1:
-    address: web1.example.com
+  server-1:
+    address: server1.example.com
     sudo: true
 ```
 
 ```yaml
 # services/my-app/service.yaml — the directory is the source, so no `source:` line
 runtime: compose
-hosts: [web-1]
+hosts: [server-1]
 compose: {file: compose.yaml}
 expose:  {domains: [my-app.example.com], upstream: 8080}
 health:  {http: {url: "http://127.0.0.1:8080/healthz"}}
@@ -91,7 +91,7 @@ health:  {http: {url: "http://127.0.0.1:8080/healthz"}}
 ```
 pilot init              create a fleet configuration to start from
 pilot doctor            is this setup sound?
-pilot bootstrap web-1   prepare the host, install the agent
+pilot bootstrap server-1 prepare the host, install the agent
 pilot deploy my-app     build, ship, activate, verify
 pilot status            what is running, and what has drifted
 pilot rollback my-app   return to the previous release
@@ -147,8 +147,8 @@ pilot skill                the agent skill; --install writes it for Claude Code
 pilot upgrade              replace this binary with the latest release
 ```
 
-Selectors work where they make sense: `pilot deploy @web` deploys every service
-on hosts tagged `web`, and `pilot status api` narrows to one service.
+Selectors work where they make sense: `pilot deploy @prod` deploys every service
+on hosts tagged `prod`, and `pilot status api` narrows to one service.
 
 ## Routing
 
@@ -236,9 +236,9 @@ test delivery without sending anything anywhere.
 A deploy notification carries the command that reverses it:
 
 ```
-PILOT: api on web-1
-api deployed 0042-9f3ac1b
-undo with:  pilot rollback api
+PILOT: my-app on server-1
+my-app deployed 0042-9f3ac1b
+undo with:  pilot rollback my-app
 ```
 
 It fires whoever ran the deploy — Pilot does not detect or care. That is the
@@ -327,7 +327,7 @@ jobs:
       - uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
-      - run: ssh-keyscan web1.example.com >> ~/.ssh/known_hosts
+      - run: ssh-keyscan server1.example.com >> ~/.ssh/known_hosts
       - run: brew install Gandalf-Le-Dev/tap/pilot
       - run: pilot deploy my-app
 ```

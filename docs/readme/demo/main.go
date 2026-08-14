@@ -38,7 +38,7 @@ func main() {
 	case "status":
 		render.Status(w, statusRows())
 	case "doctor":
-		render.Doctor(w, doctorReport(), []string{"web-1", "web-2", "box-1"})
+		render.Doctor(w, doctorReport(), []string{"server-1", "server-2", "server-3"})
 	case "deploy":
 		printDeploy()
 	default:
@@ -51,13 +51,13 @@ func main() {
 
 func statusRows() []render.StatusRow {
 	return []render.StatusRow{
-		{Service: "api", Host: "web-1", State: "running", Release: "0042-9f3ac1b"},
-		{Service: "api", Host: "web-2", State: "running", Release: "0042-9f3ac1b"},
-		{Service: "backup", Host: "web-1", State: "running", Release: "0019-8eec9e0", Detail: "next Fri 00:23 UTC"},
-		{Service: "db", Host: "web-1", State: "running", Release: "0007-1fe22a1", Detail: "observe only"},
-		{Service: "objects", Host: "box-1", State: "running", Release: "0031-4c00e8d"},
-		{Service: "site", Host: "web-1", State: "running", Release: "0040-b52ffa1"},
-		{Service: "site", Host: "web-2", State: "running", Release: "0040-b52ffa1"},
+		{Service: "api", Host: "server-1", State: "running", Release: "0042-9f3ac1b"},
+		{Service: "api", Host: "server-2", State: "running", Release: "0042-9f3ac1b"},
+		{Service: "backup", Host: "server-1", State: "running", Release: "0019-8eec9e0", Detail: "next Fri 00:23 UTC"},
+		{Service: "db", Host: "server-1", State: "running", Release: "0007-1fe22a1", Detail: "observe only"},
+		{Service: "objects", Host: "server-3", State: "running", Release: "0031-4c00e8d"},
+		{Service: "site", Host: "server-1", State: "running", Release: "0040-b52ffa1"},
+		{Service: "site", Host: "server-2", State: "running", Release: "0040-b52ffa1"},
 	}
 }
 
@@ -68,16 +68,16 @@ func doctorReport() *doctor.Report {
 	return &doctor.Report{Findings: []doctor.Finding{
 		ok(doctor.ScopeConfig, "", "fleet.yaml valid (3 hosts, 5 services)", ""),
 
-		ok(doctor.ScopeHost, "web-1", "docker available", ""),
-		ok(doctor.ScopeHost, "web-1", "agent 0.11.2 (protocol 8)", ""),
-		ok(doctor.ScopeHost, "web-1", "/etc/caddy/Caddyfile imports pilot.d/*.caddy", ""),
-		ok(doctor.ScopeHost, "web-1", "disk 34% used", ""),
+		ok(doctor.ScopeHost, "server-1", "docker available", ""),
+		ok(doctor.ScopeHost, "server-1", "agent 0.11.2 (protocol 8)", ""),
+		ok(doctor.ScopeHost, "server-1", "/etc/caddy/Caddyfile imports pilot.d/*.caddy", ""),
+		ok(doctor.ScopeHost, "server-1", "disk 34% used", ""),
 
-		ok(doctor.ScopeEdge, "", "api.example.com", "→ web-1, web-2  DNS ok  TLS valid 71d"),
-		ok(doctor.ScopeEdge, "", "example.com", "→ web-1, web-2  DNS ok  TLS valid 84d"),
+		ok(doctor.ScopeEdge, "", "api.example.com", "→ server-1, server-2  DNS ok  TLS valid 71d"),
+		ok(doctor.ScopeEdge, "", "example.com", "→ server-1, server-2  DNS ok  TLS valid 84d"),
 		{Status: doctor.StatusWarn, Scope: doctor.ScopeEdge, Title: "www.example.com",
-			Detail: "→ web-1, web-2  DNS ok  TLS valid 9d (renewal window)"},
-		ok(doctor.ScopeEdge, "", "objects.example.com", "→ box-1  DNS ok  TLS valid 89d"),
+			Detail: "→ server-1, server-2  DNS ok  TLS valid 9d (renewal window)"},
+		ok(doctor.ScopeEdge, "", "objects.example.com", "→ server-3  DNS ok  TLS valid 89d"),
 	}}
 }
 
@@ -89,7 +89,7 @@ func printDeploy() {
 	svc := &config.Service{
 		Name:    "my-app",
 		Runtime: config.RuntimeCompose,
-		Hosts:   []string{"web-1"},
+		Hosts:   []string{"server-1"},
 		Expose:  &config.Expose{Domains: []string{"my-app.example.com"}, Upstream: 8080},
 	}
 	plan := &deploy.Plan{
@@ -97,7 +97,7 @@ func printDeploy() {
 		Release: "0042-9f3ac1b",
 		Commit:  "b4a19c07d21f",
 		Hosts: []deploy.HostPlan{{
-			Host: "web-1", From: "0041-c96fe11", To: "0042-9f3ac1b",
+			Host: "server-1", From: "0041-c96fe11", To: "0042-9f3ac1b",
 			Route: deploy.RouteNone,
 			Changes: []deploy.Change{
 				{Field: "compose.yaml", From: "9f217c334ab1", To: "5d90f1e02c77"},
@@ -122,9 +122,9 @@ func printDeploy() {
 		"recording state",
 		"pruned 1 old release(s)",
 	} {
-		fmt.Fprintf(w, "  web-1: %s\n", line)
+		fmt.Fprintf(w, "  server-1: %s\n", line)
 	}
 	fmt.Fprintln(w)
 
-	render.Outcomes(w, []deploy.Outcome{{Service: "my-app", Host: "web-1", Succeeded: true, Release: "0042-9f3ac1b"}})
+	render.Outcomes(w, []deploy.Outcome{{Service: "my-app", Host: "server-1", Succeeded: true, Release: "0042-9f3ac1b"}})
 }
