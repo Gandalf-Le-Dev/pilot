@@ -20,7 +20,7 @@ func TestComposeUsageNormalizesToHost(t *testing.T) {
 		"wakapi": "wakapi",
 		"docs":   "hopbox-docs",
 	}
-	out := composeUsage(ndjson, projects, 4)
+	out := composeUsage(ndjson, nil, projects, 4)
 
 	w := out["wakapi"]
 	if w.CPUPct != 30 { // 120% of one core / 4 cores
@@ -114,5 +114,41 @@ func TestMetricRingAndSince(t *testing.T) {
 	since, _, _ := a.MetricsSince(base.Add(time.Duration(maxMetricSamples+7) * time.Second))
 	if len(since["api"]) != 2 {
 		t.Errorf("since-filter returned %d samples, want 2", len(since["api"]))
+	}
+}
+
+// The fleet that found this bug: `container_name:` pins strip the project
+// prefix, and a stack's auxiliary container can be named anything at all.
+// The compose label is ground truth; the prefix guess is only a fallback.
+func TestComposeUsagePrefersLabels(t *testing.T) {
+	ndjson := `
+{"Name":"wakapi","CPUPerc":"40.00%","MemUsage":"64MiB / 8GiB"}
+{"Name":"docmost_instance","CPUPerc":"40.00%","MemUsage":"256MiB / 8GiB"}
+{"Name":"postgres_instance","CPUPerc":"40.00%","MemUsage":"128MiB / 8GiB"}
+{"Name":"docmost-redis-1","CPUPerc":"40.00%","MemUsage":"32MiB / 8GiB"}
+{"Name":"unlabeled-mystery","CPUPerc":"99.00%","MemUsage":"1GiB / 8GiB"}
+`
+	owners := containerProjects(`
+{"Names":"wakapi","Labels":"com.docker.compose.project=wakapi,com.docker.compose.service=wakapi"}
+{"Names":"docmost_instance","Labels":"com.docker.compose.project=docmost"}
+{"Names":"postgres_instance","Labels":"com.docker.compose.project=docmost"}
+{"Names":"docmost-redis-1","Labels":"com.docker.compose.project=docmost"}
+`)
+	projects := map[string]string{"wakapi": "wakapi", "docmost": "docmost"}
+	out := composeUsage(ndjson, owners, projects, 4)
+
+	if w := out["wakapi"]; w.CPUPct != 10 || w.MemBytes != 64<<20 {
+		t.Errorf("pinned container missed via label: %+v", w)
+	}
+	// docmost = instance + its anonymous postgres + redis, all by label.
+	d := out["docmost"]
+	if d.CPUPct != 30 {
+		t.Errorf("docmost cpu = %v, want 30 (three containers)", d.CPUPct)
+	}
+	if want := uint64(256+128+32) << 20; d.MemBytes != want {
+		t.Errorf("docmost mem = %d, want %d", d.MemBytes, want)
+	}
+	if _, ok := out["unlabeled-mystery"]; ok {
+		t.Error("a container with no label and no known prefix must not appear")
 	}
 }

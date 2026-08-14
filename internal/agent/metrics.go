@@ -91,9 +91,17 @@ func (a *Agent) collectMetrics(ctx context.Context, prevHost procStat, prevUnits
 	cores := runtime.NumCPU()
 
 	if len(projects) > 0 {
+		// Two reads, joined on container name: `docker ps` knows which
+		// compose project a container belongs to (its label survives
+		// `container_name:` pinning, which strips the name prefix the
+		// naive guess relied on), and `docker stats` knows what it costs.
+		var owners map[string]string
+		if res, err := a.Exec.Run(ctx, "docker ps --no-trunc --format json 2>/dev/null"); err == nil && res.OK() {
+			owners = containerProjects(res.Stdout)
+		}
 		res, err := a.Exec.Run(ctx, "docker stats --no-stream --format json 2>/dev/null")
 		if err == nil && res.OK() {
-			for svc, sample := range composeUsage(res.Stdout, projects, cores) {
+			for svc, sample := range composeUsage(res.Stdout, owners, projects, cores) {
 				sample.At = now
 				a.recordServiceMetric(svc, sample)
 			}
@@ -180,15 +188,46 @@ type dockerStat struct {
 	MemUsage string `json:"MemUsage"`
 }
 
+// containerProjects reads `docker ps --format json` into a container-name →
+// compose-project map, from the com.docker.compose.project label. The label
+// is ground truth: it survives `container_name:` pinning and names auxiliary
+// containers (a stack's postgres) that share nothing with the project name.
+func containerProjects(ndjson string) map[string]string {
+	type psEntry struct {
+		Names  string `json:"Names"`
+		Labels string `json:"Labels"`
+	}
+	out := map[string]string{}
+	for line := range strings.SplitSeq(ndjson, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var e psEntry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			continue
+		}
+		for label := range strings.SplitSeq(e.Labels, ",") {
+			if v, ok := strings.CutPrefix(label, "com.docker.compose.project="); ok {
+				out[e.Names] = v
+				break
+			}
+		}
+	}
+	return out
+}
+
 // composeUsage buckets a whole host's `docker stats` output by compose
 // project and sums each service's containers.
 //
-// Containers are matched by project-name prefix (`<project>-<service>-<n>`,
-// or `_` on legacy compose), longest project first so "hopbox-docs" claims
-// its containers before a project named "hopbox" could. Docker's CPUPerc is
+// The owners map (from container labels) decides which project a container
+// belongs to; the name-prefix guess (`<project>-<service>-<n>`, or `_` on
+// legacy compose) is only the fallback for a container the label read
+// missed, matched longest project first so "hopbox-docs" claims its
+// containers before a project named "hopbox" could. Docker's CPUPerc is
 // normalized to one core — a busy 4-core host reads 400% — so the sum is
 // divided by the core count to make it a share of the host.
-func composeUsage(ndjson string, projects map[string]string, cores int) map[string]proto.MetricSample {
+func composeUsage(ndjson string, owners, projects map[string]string, cores int) map[string]proto.MetricSample {
 	type acc struct {
 		cpu float64
 		mem uint64
@@ -204,6 +243,18 @@ func composeUsage(ndjson string, projects map[string]string, cores int) map[stri
 	}
 	sort.Slice(byLen, func(i, j int) bool { return len(byLen[i]) > len(byLen[j]) })
 
+	project := func(name string) string {
+		if p, ok := owners[name]; ok {
+			return p
+		}
+		for _, p := range byLen {
+			if strings.HasPrefix(name, p+"-") || strings.HasPrefix(name, p+"_") {
+				return p
+			}
+		}
+		return ""
+	}
+
 	byProject := map[string]*acc{}
 	for line := range strings.SplitSeq(ndjson, "\n") {
 		line = strings.TrimSpace(line)
@@ -214,25 +265,23 @@ func composeUsage(ndjson string, projects map[string]string, cores int) map[stri
 		if err := json.Unmarshal([]byte(line), &st); err != nil {
 			continue
 		}
-		for _, project := range byLen {
-			if !strings.HasPrefix(st.Name, project+"-") && !strings.HasPrefix(st.Name, project+"_") {
-				continue
-			}
-			if byProject[project] == nil {
-				byProject[project] = &acc{}
-			}
-			byProject[project].cpu += parsePercent(st.CPUPerc)
-			byProject[project].mem += parseMemUsage(st.MemUsage)
-			break
+		p := project(st.Name)
+		if p == "" {
+			continue
 		}
+		if byProject[p] == nil {
+			byProject[p] = &acc{}
+		}
+		byProject[p].cpu += parsePercent(st.CPUPerc)
+		byProject[p].mem += parseMemUsage(st.MemUsage)
 	}
 
 	if cores < 1 {
 		cores = 1
 	}
 	out := map[string]proto.MetricSample{}
-	for svc, project := range projects {
-		if u := byProject[project]; u != nil {
+	for svc, proj := range projects {
+		if u := byProject[proj]; u != nil {
 			out[svc] = proto.MetricSample{CPUPct: u.cpu / float64(cores), MemBytes: u.mem}
 		}
 	}
