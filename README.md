@@ -151,6 +151,15 @@ pilot upgrade              replace this binary with the latest release
 Selectors work where they make sense: `pilot deploy @prod` deploys every service
 on hosts tagged `prod`, and `pilot status api` narrows to one service.
 
+And when a page beats a terminal, `pilot dashboard` serves the whole fleet on
+127.0.0.1 — status, each service's CPU and memory as a share of its host, alert
+history, and recent deploys. It is read-only and dies with your terminal;
+deploying stays in the CLI, where intent is typed rather than clicked.
+
+<p align="center">
+<img src="docs/readme/dashboard.png" alt="pilot dashboard: the fleet, per-service CPU and memory as a share of each host, alert episodes, and deploy history" width="820">
+</p>
+
 ## Routing
 
 Pilot owns Caddy configuration for the services it manages, and nothing else. It
