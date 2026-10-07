@@ -5,7 +5,7 @@ A complete Pilot fleet exercising every feature, kept honest by a test in
 has drifted is worse than none, so this cannot rot without the build failing.
 
 ```
-fleet.yaml              hosts, Caddy paths, notifiers, host-wide alerts
+fleet.yaml              hosts, Caddy paths, notifiers, host-wide alerts, status page
 services/
   api/                  compose · blue-green · secrets · restricted route
     service.yaml

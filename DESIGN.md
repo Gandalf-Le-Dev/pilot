@@ -120,6 +120,15 @@ Shelling out to the system `ssh` binary (rather than `x/crypto/ssh`) buys you fo
 handshakes. The agent protocol is JSON-over-stdio, so the same code path later serves a
 direct mTLS connection from the dashboard.
 
+### pilotd still has no listener
+
+Principle 4 holds as written. The agent serves its Unix socket and nothing else. The
+status page (section 14, phase 4) did not change that: agents dial *out* to it. The one
+process that listens beyond loopback is `pilotd server`, a subcommand of the same binary
+that runs on one host as its own unit, `pilot-server.service`. It runs as a systemd
+dynamic user with no capabilities and a read-only filesystem, and it refuses to start as
+root. It shares no state with the agent on that host.
+
 ---
 
 ## 4. The Runtime interface
@@ -668,12 +677,13 @@ health:
   systemd: true       # trust ActiveState=active
 ```
 
-*As built, the prober is a deploy gate and nothing more.* `agent.Probe` runs inside a
-deploy, between activate and the decision to roll back, and nowhere else. No loop ever
-scheduled it: the background loops observe runtime state (container up, unit active) and
-alert on that, so a service whose container stays up while its `/healthz` returns 500 is
-reported healthy until the next deploy probes it. The diagram in section 3 lists the
-prober beside the collectors; read it as "available to the agent", not "running".
+*As built, the prober is a deploy gate first.* `agent.Probe` runs inside a deploy,
+between activate and the decision to roll back. Until the status page, no loop scheduled
+it: the background loops observe runtime state (container up, unit active) and alert on
+that, so a service whose container stays up while its `/healthz` returns 500 is reported
+healthy until the next deploy probes it. The status page's health ring is now the one
+background caller. It probes every 30s, but only the services listed on the page, and
+only on a fleet that has a page. Alert rules still read runtime state alone.
 
 **Alert engine** — rules evaluated locally, so alerting works with no central server:
 
@@ -1214,8 +1224,8 @@ which is the difference between "deploys blip" and "deploys are invisible."
 **Phase 2 — the agent. Built, one gap.** `pilotd` + bootstrap · collectors (state every
 10s, resource samples every 30s) · agent-side verify and auto-rollback · `status`/`ps`/`top`
 served from the agent, with direct observation over SSH where none answers · local alert
-engine · drift detection and `pilot diff`. The health prober exists but runs only as the
-deploy gate; see section 8.
+engine · drift detection and `pilot diff`. The health prober runs as the deploy gate, and
+in the background only for the status page; see section 8.
 
 **Phase 3 — completeness. Partly built.** Built: the `systemd` runtime, including oneshot
 jobs with a freshness bound · `env`, `cmd` and `file` secret resolvers · multi-host rollout
@@ -1225,6 +1235,47 @@ Not built: `sops` and `op` resolvers, TLS expiry alerts, and rollout concurrency
 **Phase 4 — the dashboard.** `pilot server`: agents dial *out* over mTLS/WebSocket
 (NAT-friendly, no inbound rules) and it serves a web UI over the same protocol the CLI
 already speaks. Nothing in phases 1–3 changes.
+
+*Slice 1, built: a public status page.* It answers one question for people outside the
+fleet: is each public service up. It also catches the failure no agent can report about
+itself. When the tailnet key on one host expired on 2026-10-05, the host dropped off the
+tailnet and nothing said so: each agent alerts about its own host, and nothing watched
+that host from outside.
+
+- Every agent with a report target samples its listed services every 30s (runtime state,
+  then `Probe` for a running service). It keeps 24 hours of five-minute buckets in memory
+  and posts the whole day to the server over the tailnet, with a bearer token.
+- `pilotd server` on `status.host` serves the page on 127.0.0.1:7380 behind Caddy
+  (`_status.caddy`) and takes reports on 127.0.0.1:7381 and the tailnet address. Its
+  state is memory only. Every report carries a full day, so a restarted server is
+  complete again after one interval.
+- A host that stops reporting for `silent_after` reads "not reporting" on the page and
+  fires `host.silent` through the usual alert engine. After a restart the server waits
+  `silent_after` before it calls any host silent.
+- The page and its JSON carry labels, enum states and times, and nothing else: no host
+  names, errors, release IDs or URLs. The report format has no field for them, the
+  server drops services it was not told to publish, and leak-guard tests check both ends.
+- SyncAgent installs the server and its route on `status.host`, and removes a server
+  left on any other host. The server is not a Pilot-managed service, because it must
+  not depend on the deploy machinery it watches.
+- Each agent reports a digest of its cached fleet config, so `pilot doctor` finds a host
+  whose config is older than `fleet.yaml`, and `--fix` pushes it without an upgrade.
+
+*From tokens to mTLS.* Slice 1 authenticates with a bearer token per host:
+HMAC-SHA256 of `status.secret` and the host name. The server stores only the token
+hashes. The tailnet encrypts the transport, which is why `status.listen` warns outside
+the tailnet ranges. The dashboard needs more than this, because it will send commands as
+well as receive reports. The path is:
+
+1. Give each agent a client certificate at bootstrap, from a fleet CA whose key stays
+   on the operator's machine. The certificate replaces the token on the same ingest
+   listener. The server checks the certificate's name against the host in the report,
+   the same check the token does now.
+2. Keep the push model. Agents still dial out and still post full snapshots, so the
+   server keeps no state on disk.
+3. Only after that, let the dashboard hold an outbound stream per agent over the same
+   mutual TLS connection, so the operator can act through it. The agent's Unix socket
+   stays the only thing that changes a host.
 
 **Phase 5 — usable by agents. Built.** Completing the existing JSON · a deploy
 notification · a versioned skill. See section 13, which is mostly a record of what was
