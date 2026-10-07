@@ -35,6 +35,7 @@ func Standard() []Check {
 		{Name: "caddy-routes", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyRoutes},
 		{Name: "caddy-bind", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyBind},
 		{Name: "disk", Scope: ScopeHost, NeedsNetwork: true, Run: checkDisk},
+		{Name: "status-server", Scope: ScopeHost, NeedsNetwork: true, Run: checkStatusServer},
 		{Name: "dns-tls", Scope: ScopeEdge, NeedsNetwork: true, Run: checkEdge},
 	}
 }
@@ -455,12 +456,7 @@ func checkEdge(ctx context.Context, env *Env) []Finding {
 	var out []Finding
 	var resolver net.Resolver
 
-	for _, svcName := range env.Fleet.ServiceNames() {
-		s := env.Fleet.Services[svcName]
-		if s.Expose == nil {
-			continue
-		}
-
+	for _, s := range edgeSites(env.Fleet) {
 		declared := publicAddresses(env.Fleet, s.Hosts)
 
 		for _, domain := range s.Expose.Domains {
@@ -540,6 +536,26 @@ func checkEdge(ctx context.Context, env *Env) []Finding {
 			f.Detail = fmt.Sprintf("→ %s  %s  %s", hosts, dns, tls)
 			out = append(out, f)
 		}
+	}
+	return out
+}
+
+// edgeSites lists everything with a public domain: each exposed service, and
+// the status page, which is a site on its host like any other and fails the
+// same ways — a record never pointed, a certificate never issued.
+func edgeSites(f *config.Fleet) []*config.Service {
+	var out []*config.Service
+	for _, name := range f.ServiceNames() {
+		if s := f.Services[name]; s.Expose != nil {
+			out = append(out, s)
+		}
+	}
+	if st := f.Status; st != nil && st.Domain != "" {
+		out = append(out, &config.Service{
+			Name:   server.SnippetName,
+			Hosts:  []string{st.Host},
+			Expose: &config.Expose{Domains: []string{st.Domain}},
+		})
 	}
 	return out
 }
