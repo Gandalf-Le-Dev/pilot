@@ -668,6 +668,13 @@ health:
   systemd: true       # trust ActiveState=active
 ```
 
+*As built, the prober is a deploy gate and nothing more.* `agent.Probe` runs inside a
+deploy, between activate and the decision to roll back, and nowhere else. No loop ever
+scheduled it: the background loops observe runtime state (container up, unit active) and
+alert on that, so a service whose container stays up while its `/healthz` returns 500 is
+reported healthy until the next deploy probes it. The diagram in section 3 lists the
+prober beside the collectors; read it as "available to the agent", not "running".
+
 **Alert engine** — rules evaluated locally, so alerting works with no central server:
 
 ```yaml
@@ -1199,41 +1206,44 @@ release and symlink machinery · `compose` **and** `static` runtimes · **Caddy 
 `rollback`, `status`, `releases`, `logs`, `routes`. No agent — the CLI drives everything
 over SSH.
 
-Known gaps carried into later phases, each deliberate rather than overlooked:
-
-| Gap | Why it's acceptable for now | Lands in |
-|---|---|---|
-| Secret references (`${sops:…}`) are passed through literally, not resolved | Resolving them half-way would silently ship the literal string as a password; better to not claim the feature | Phase 3 |
-| Health verification polls from the operator's machine | This is the one place phase 1 is weaker than the design: a laptop that disconnects mid-verify leaves nothing to complete the rollback | Phase 2 (agent) |
-| `systemd` runtime is unimplemented; `pilot deploy` errors clearly on it | Nothing web-facing depends on it, and it needs its own unit renderer and D-Bus introspection | Phase 3 |
-| Multi-host `logs -f` is refused rather than interleaved | Unlabelled interleaved output from N hosts is worse than an error telling you to narrow it | Phase 2 |
-| Rollout concurrency is serial only | Serial-with-abort is the right default for a single-operator fleet; the flag is just not wired yet | Phase 3 |
-
 *Rationale for the scope change:* Caddy ownership moved into phase 1, which pulls `static`
 in with it — once Pilot renders site blocks, a static site is a tarball plus a symlink and
 costs almost nothing extra. It also delivers `lb_try_duration` request-holding immediately,
 which is the difference between "deploys blip" and "deploys are invisible."
 
-**Phase 2 — the agent.** `pilotd` + bootstrap · collectors · health prober · agent-side
-verify and auto-rollback · `status`/`ps`/`top` served from the agent · local alert engine ·
-drift detection and `pilot diff`.
+**Phase 2 — the agent. Built, one gap.** `pilotd` + bootstrap · collectors (state every
+10s, resource samples every 30s) · agent-side verify and auto-rollback · `status`/`ps`/`top`
+served from the agent, with direct observation over SSH where none answers · local alert
+engine · drift detection and `pilot diff`. The health prober exists but runs only as the
+deploy gate; see section 8.
 
-**Phase 3 — completeness.** `systemd` runtime · secrets resolvers · multi-host rollout with
-concurrency and abort gates · `manage: observe` enforcement · TLS expiry alerts.
+**Phase 3 — completeness. Partly built.** Built: the `systemd` runtime, including oneshot
+jobs with a freshness bound · `env`, `cmd` and `file` secret resolvers · multi-host rollout
+with the `max_unhealthy` abort gate and `pause_between` · `manage: observe` enforcement.
+Not built: `sops` and `op` resolvers, TLS expiry alerts, and rollout concurrency.
 
 **Phase 4 — the dashboard.** `pilot server`: agents dial *out* over mTLS/WebSocket
 (NAT-friendly, no inbound rules) and it serves a web UI over the same protocol the CLI
 already speaks. Nothing in phases 1–3 changes.
 
-**Phase 5 — usable by agents.** Completing the existing JSON · a deploy notification ·
-a versioned skill. See section 13, which is mostly a record of what was rejected: no
-permission model, no agent identity, no `pilot mcp serve`, and no code that behaves
-differently depending on who is calling. Making state legible and mistakes recoverable
-turned out to be the whole job.
+**Phase 5 — usable by agents. Built.** Completing the existing JSON · a deploy
+notification · a versioned skill. See section 13, which is mostly a record of what was
+rejected: no permission model, no agent identity, no `pilot mcp serve`, and no code that
+behaves differently depending on who is calling. Making state legible and mistakes
+recoverable turned out to be the whole job.
 
-**Later:** blue/green for compose (start on a second port, flip the Caddy upstream via the
-admin API, drain, stop the old stack — now trivial because Pilot owns routing) · scheduled
-services · a `k3s` runtime · Prometheus remote-write.
+Known gaps, each deliberate rather than overlooked:
+
+| Gap | Why it's acceptable for now | Where |
+|---|---|---|
+| Multi-host `logs -f` is refused rather than interleaved | Unlabelled interleaved output from N hosts is worse than an error telling you to narrow it | `cmd/pilot/misc.go`, phase 2 |
+| `${sops:…}` and `${op:…}` parse but fail with a clear error | Resolving them half-way would silently ship the literal string as a password; `${cmd:…}` reaches either store meanwhile | `internal/secrets`, phase 3 |
+| `rollout.concurrency` is validated but the executor runs hosts one at a time | Serial-with-abort is the right default for a single-operator fleet; the setting is just not wired yet | `internal/deploy/execute.go`, phase 3 |
+| No `tls.expiring_in` metric | `pilot doctor` reports days left on each certificate; nothing alerts on it | `internal/alert/rule.go`, phase 3 |
+
+**Later:** a `k3s` runtime · Prometheus remote-write. Two items left this list by being
+built: blue/green for compose (`rollout.strategy: blue-green`) and scheduled services
+(systemd oneshots behind a timer).
 
 ---
 
