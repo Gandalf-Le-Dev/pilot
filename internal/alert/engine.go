@@ -166,6 +166,9 @@ func (e *Engine) step(r Rule, reading Reading) (*Notification, []string) {
 
 	if st.pendingSince.IsZero() {
 		st.pendingSince = now
+		if !reading.Since.IsZero() && reading.Since.Before(now) {
+			st.pendingSince = reading.Since
+		}
 	}
 	if now.Sub(st.pendingSince) < r.For {
 		return nil, nil // true, but not for long enough yet

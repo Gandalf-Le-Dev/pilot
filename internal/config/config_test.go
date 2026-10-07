@@ -885,3 +885,25 @@ func TestUnderscoreServiceNamesReserved(t *testing.T) {
 		t.Errorf("want _status rejected:\n%v", ds.Sorted())
 	}
 }
+
+// host.silent is the status server's to evaluate. In an agent's rule list it
+// would parse and never fire, which is worse than an error.
+func TestHostSilentRejectedInAgentRules(t *testing.T) {
+	fleet := statusFleet + "alerts:\n  - when: host.silent\n    notify: [discord]\n"
+	svcs := map[string]string{
+		"x.yaml": "name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nhealth: {docker: true}\n" +
+			"alerts:\n  - when: host.silent\n    notify: [discord]\n",
+	}
+	_, ds := load(t, fleet, svcs)
+	for _, file := range []string{FleetFile, "services/x.yaml"} {
+		found := false
+		for _, d := range ds {
+			if d.File == file && d.Field == "alerts[0].when" && strings.Contains(d.Message, "status server") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: want host.silent rejected:\n%v", file, ds.Sorted())
+		}
+	}
+}

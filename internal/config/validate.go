@@ -619,7 +619,12 @@ func validateAlertList(f *Fleet, file, prefix string, alerts []Alert, scope aler
 
 		// A host-wide metric on a service, or the reverse, would silently
 		// never fire — worth catching rather than leaving to be discovered.
-		if cond.Metric.Scope() != scope {
+		switch {
+		case cond.Metric.Scope() == alert.ScopeServer:
+			ds.ErrorHint(file, field+".when",
+				fmt.Sprintf("%s is evaluated by the status server, not by an agent", cond.Metric),
+				"set `status.silent_after` and `status.notify` in "+FleetFile+" instead")
+		case cond.Metric.Scope() != scope:
 			switch scope {
 			case alert.ScopeService:
 				ds.ErrorHint(file, field+".when",

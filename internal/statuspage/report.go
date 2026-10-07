@@ -19,6 +19,9 @@ const (
 	// full every report, which is what lets the server keep nothing on disk.
 	BucketWidth    = 5 * time.Minute
 	HistoryBuckets = 288
+
+	// ReportPath is where agents post.
+	ReportPath = "/v1/report"
 )
 
 // State is a service's condition as the public sees it.
@@ -29,30 +32,46 @@ const (
 	Degraded State = "degraded"
 	Down     State = "down"
 	Unknown  State = "unknown"
+
+	// The server's own verdicts, for a service whose host has not reported.
+	// An agent never sends them, and ingest rejects them.
+	AwaitingReport State = "awaiting_report"
+	NotReporting   State = "not_reporting"
 )
 
-// Valid reports whether s is one of the four states.
-func (s State) Valid() bool { return severity(s) >= 0 }
+// Valid reports whether s is a state an agent may report.
+func (s State) Valid() bool {
+	switch s {
+	case Up, Degraded, Down, Unknown:
+		return true
+	}
+	return false
+}
 
 func severity(s State) int {
 	switch s {
 	case Up:
 		return 0
-	case Unknown:
+	case AwaitingReport:
 		return 1
-	case Degraded:
+	case Unknown:
 		return 2
-	case Down:
+	case Degraded:
 		return 3
+	case NotReporting:
+		return 4
+	case Down:
+		return 5
 	}
 	return -1
 }
 
 // Worse returns the more serious of two states.
 //
-// Unknown ranks above up and below everything else: a bucket where one
-// sample could not be taken is not a clean bucket, but it is not evidence of
-// an outage either.
+// Unknown ranks above up and below everything else that was observed: a
+// bucket where one sample could not be taken is not a clean bucket, but it
+// is not evidence of an outage either. A silent host ranks below down only
+// because down is a fact and silence is the absence of one.
 func Worse(a, b State) State {
 	if severity(b) > severity(a) {
 		return b
