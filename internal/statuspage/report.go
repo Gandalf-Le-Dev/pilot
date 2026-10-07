@@ -22,6 +22,11 @@ const (
 
 	// ReportPath is where agents post.
 	ReportPath = "/v1/report"
+
+	// PublicPort is where Caddy reaches the page, on loopback only.
+	// IngestPort takes reports, on loopback and the tailnet address.
+	PublicPort = 7380
+	IngestPort = 7381
 )
 
 // State is a service's condition as the public sees it.

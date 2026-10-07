@@ -8,6 +8,12 @@
 // The split matters. Because a job runs in the daemon rather than in the ctl
 // process, an SSH connection dropping mid-deploy kills only the observer — the
 // deploy still completes, or still rolls back.
+//
+// `pilotd server` is a third, separate process: the status page, on one host.
+// It ships in this binary so the server host needs nothing installed beyond
+// what every host has, but it runs as its own unprivileged unit and shares no
+// state with the agent. The agent itself still listens on nothing but its
+// socket.
 package main
 
 import (
@@ -17,6 +23,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -24,6 +31,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent"
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent/client"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/server"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
@@ -46,7 +54,7 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newServeCmd(), newCtlCmd())
+	root.AddCommand(newServeCmd(), newCtlCmd(), newServerCmd(os.Geteuid))
 
 	if err := root.ExecuteContext(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "pilotd: %v\n", err)
@@ -84,6 +92,39 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&snippets, "snippet-dir", "", "directory Pilot owns for generated routes")
 	cmd.Flags().StringVar(&admin, "caddy-admin", "", "Caddy admin API base URL")
 
+	return cmd
+}
+
+// newServerCmd takes the euid as a function so a test can show the root
+// check runs before anything is read: the configuration holds notifier
+// credentials, and root should be turned away before it touches them.
+func newServerCmd(euid func() int) *cobra.Command {
+	var configPath string
+
+	cmd := &cobra.Command{
+		Use:   "server",
+		Short: "Serve the public status page and take reports from agents",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := server.RefuseRoot(euid()); err != nil {
+				return err
+			}
+			if configPath == "" {
+				dir := os.Getenv("CREDENTIALS_DIRECTORY")
+				if dir == "" {
+					return fmt.Errorf("no --config, and no $CREDENTIALS_DIRECTORY from systemd's LoadCredential=")
+				}
+				configPath = filepath.Join(dir, server.CredentialName)
+			}
+			cfg, err := server.LoadConfig(configPath)
+			if err != nil {
+				return fmt.Errorf("%s: %w", configPath, err)
+			}
+			return server.Run(cmd.Context(), cfg)
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "",
+		"configuration file (default: "+server.CredentialName+" in $CREDENTIALS_DIRECTORY)")
 	return cmd
 }
 
