@@ -13,11 +13,6 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/statuspage"
 )
 
-// MaxReportBytes bounds one report. A full day for one service is a few
-// kilobytes, so this fits a host with dozens of services and stops anyone
-// holding a token from making the server buffer whatever they like.
-const MaxReportBytes = 256 << 10
-
 // IngestHandler accepts reports from agents. It is the only handler bound to
 // a non-loopback address.
 func (s *Server) IngestHandler() http.Handler {
@@ -38,12 +33,12 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, MaxReportBytes+1))
+	body, err := io.ReadAll(io.LimitReader(r.Body, statuspage.MaxReportBytes+1))
 	if err != nil {
 		http.Error(w, "unreadable body", http.StatusBadRequest)
 		return
 	}
-	if len(body) > MaxReportBytes {
+	if len(body) > statuspage.MaxReportBytes {
 		http.Error(w, "report too large", http.StatusRequestEntityTooLarge)
 		return
 	}

@@ -85,13 +85,14 @@ func (r *healthRing) history(now time.Time) statuspage.History {
 	return h
 }
 
-// healthLoop samples the services the report target lists. With no target
-// the fleet has no status page, and probing on its behalf would be load for
-// nobody.
+// healthLoop samples the services the report target lists and reports them.
+// With no target the fleet has no status page, and probing on its behalf
+// would be load for nobody.
 func (a *Agent) healthLoop(ctx context.Context) {
 	tick := time.NewTicker(HealthInterval)
 	defer tick.Stop()
 
+	var push pushState
 	for {
 		select {
 		case <-ctx.Done():
@@ -100,6 +101,7 @@ func (a *Agent) healthLoop(ctx context.Context) {
 		}
 		if t := a.ReportTarget(); t != nil {
 			a.sampleHealth(ctx, t.Services)
+			push.record(a.pushReport(ctx, t), t.URL)
 		}
 	}
 }

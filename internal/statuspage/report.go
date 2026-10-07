@@ -23,6 +23,11 @@ const (
 	// ReportPath is where agents post.
 	ReportPath = "/v1/report"
 
+	// MaxReportBytes bounds one report. A full day for one service is a few
+	// kilobytes, so this fits a host with dozens of services, and stops
+	// anyone holding a token from making the server buffer what they like.
+	MaxReportBytes = 256 << 10
+
 	// PublicPort is where Caddy reaches the page, on loopback only.
 	// IngestPort takes reports, on loopback and the tailnet address.
 	PublicPort = 7380

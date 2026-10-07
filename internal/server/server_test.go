@@ -160,20 +160,20 @@ func TestIngestRejectsBadTokens(t *testing.T) {
 
 func TestIngestRejectsOversizedReports(t *testing.T) {
 	s, _, _ := testServer(t)
-	huge := `{"host":"` + quietHost + `","services":[],"pad":"` + strings.Repeat("x", MaxReportBytes) + `"}`
+	huge := `{"host":"` + quietHost + `","services":[],"pad":"` + strings.Repeat("x", statuspage.MaxReportBytes) + `"}`
 	resp := post(t, s, statuspage.Token(secret, quietHost), huge)
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Errorf("status = %d, want 413", resp.StatusCode)
 	}
 }
 
-// The limit is inclusive: a report of exactly MaxReportBytes is accepted, so
+// The limit is inclusive: a report of exactly statuspage.MaxReportBytes is accepted, so
 // an agent sizing its report against the constant is never refused for it.
 func TestIngestAcceptsAReportOfExactlyTheLimit(t *testing.T) {
 	s, _, clk := testServer(t)
 	body, _ := json.Marshal(report(quietHost, healthy(notesName, clk.now())))
-	padded := string(body) + strings.Repeat(" ", MaxReportBytes-len(body))
-	if len(padded) != MaxReportBytes {
+	padded := string(body) + strings.Repeat(" ", statuspage.MaxReportBytes-len(body))
+	if len(padded) != statuspage.MaxReportBytes {
 		t.Fatalf("fixture is %d bytes", len(padded))
 	}
 	if resp := post(t, s, statuspage.Token(secret, quietHost), padded); resp.StatusCode != http.StatusNoContent {
