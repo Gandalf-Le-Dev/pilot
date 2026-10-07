@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"strings"
 	"time"
@@ -132,7 +134,7 @@ func (n Notifier) postJSON(ctx context.Context, body any) error {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.URL, bytes.NewReader(b))
 	if err != nil {
-		return err
+		return withoutURL(n.Name, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	return do(req, n.Name)
@@ -143,7 +145,7 @@ func (n Notifier) postJSON(ctx context.Context, body any) error {
 func (n Notifier) postNtfy(ctx context.Context, msg Notification) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.URL, strings.NewReader(msg.Text()))
 	if err != nil {
-		return err
+		return withoutURL(n.Name, err)
 	}
 	req.Header.Set("Title", msg.Title())
 	if msg.Severity == SevResolved {
@@ -185,7 +187,7 @@ func (n Notifier) runCommand(ctx context.Context, msg Notification) error {
 func do(req *http.Request, name string) error {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("notifier %q: %w", name, err)
+		return withoutURL(name, err)
 	}
 	defer resp.Body.Close()
 
@@ -193,6 +195,25 @@ func do(req *http.Request, name string) error {
 		return fmt.Errorf("notifier %q returned %s", name, resp.Status)
 	}
 	return nil
+}
+
+// withoutURL names a delivery failure without the endpoint it failed on.
+//
+// net/http wraps every request error in a *url.Error carrying the full URL,
+// and for a Discord or Slack webhook the path is the credential. These
+// errors go to the journal through OnError, so printing them as they come
+// would copy the token into every log reader's hands on the first outage.
+// The scheme and host stay: they say which service was unreachable.
+func withoutURL(name string, err error) error {
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		return fmt.Errorf("notifier %q: %w", name, err)
+	}
+	where := "the configured URL"
+	if u, perr := url.Parse(ue.URL); perr == nil && u.Host != "" {
+		where = u.Scheme + "://" + u.Host
+	}
+	return fmt.Errorf("notifier %q: %s %s: %w", name, ue.Op, where, ue.Err)
 }
 
 func firstLine(s string) string {

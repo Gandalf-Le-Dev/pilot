@@ -390,6 +390,32 @@ func TestDeliveryFailuresAreReportedNotFatal(t *testing.T) {
 	}
 }
 
+// A webhook's path is its credential. A failed delivery is logged on the
+// agent and the server, so the error must not carry it.
+func TestDeliveryErrorsOmitTheWebhookPath(t *testing.T) {
+	token := "T000" + "/B000/" + strings.Repeat("x", 24)
+	for name, endpoint := range map[string]string{
+		"unreachable": "http://127.0.0.1:1/services/" + token,
+		"unparseable": "http://bad host/services/" + token,
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, typ := range []NotifierType{TypeDiscord, TypeNtfy} {
+				n := Notifier{Name: "chat", Type: typ, URL: endpoint}
+				err := n.Send(context.Background(), Notification{Summary: "x"})
+				if err == nil {
+					t.Fatal("delivery to a closed port succeeded")
+				}
+				if strings.Contains(err.Error(), token) || strings.Contains(err.Error(), "/services/") {
+					t.Errorf("%s error carries the webhook path: %v", typ, err)
+				}
+				if !strings.Contains(err.Error(), `notifier "chat"`) {
+					t.Errorf("%s error no longer names the notifier: %v", typ, err)
+				}
+			}
+		})
+	}
+}
+
 func TestRegistryRejectsUnknownNotifier(t *testing.T) {
 	r := NewRegistry([]Notifier{{Name: "ntfy", Type: TypeNtfy, URL: "https://ntfy.sh/x"}})
 	if err := r.Send(context.Background(), "nope", Notification{}); err == nil {
