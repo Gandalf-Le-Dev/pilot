@@ -50,10 +50,20 @@ func (a *Agent) PutFleetConfig(spec string) error {
 
 	a.mu.Lock()
 	a.fleet = &fc
+	a.fleetDigest = config.StampedDigest(spec)
 	a.mu.Unlock()
 
 	a.rebuildNotifiers()
 	return nil
+}
+
+// FleetConfigDigest is the digest the CLI stamped on the cached host-wide
+// config, or "" for none. `pilot doctor` compares it against the fleet as it
+// stands, to find a host still working from an older config.
+func (a *Agent) FleetConfigDigest() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.fleetDigest
 }
 
 func (a *Agent) loadFleetConfig() error {
@@ -70,6 +80,7 @@ func (a *Agent) loadFleetConfig() error {
 		return nil
 	}
 	a.fleet = &fc
+	a.fleetDigest = config.StampedDigest(string(raw))
 	a.rebuildNotifiers()
 	return nil
 }

@@ -48,6 +48,9 @@ type Agent struct {
 	samples  map[string][]Sample
 	fleet    *FleetConfig
 
+	// fleetDigest is the digest stamped on the cached fleet config.
+	fleetDigest string
+
 	// Resource series for the dashboard, bounded rings, in-memory only.
 	serviceMetrics map[string][]proto.MetricSample
 	hostMetrics    []proto.MetricSample

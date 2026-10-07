@@ -255,12 +255,8 @@ func (a *App) StatusServerConfig() ([]byte, error) {
 // token for this host alone, and the listed services placed here. The status
 // host's own agent posts over loopback, so its reports do not depend on its
 // own tailnet address being up.
-func (a *App) reportTarget(host string) (*config.ReportTarget, error) {
+func (a *App) reportTarget(host, secret string) *config.ReportTarget {
 	st := a.Fleet.Status
-	secret, err := a.statusSecret()
-	if err != nil {
-		return nil, err
-	}
 	addr := st.Listen
 	if host == st.Host {
 		addr = "127.0.0.1"
@@ -269,7 +265,7 @@ func (a *App) reportTarget(host string) (*config.ReportTarget, error) {
 		URL:      "http://" + net.JoinHostPort(addr, strconv.Itoa(statuspage.IngestPort)) + statuspage.ReportPath,
 		Token:    statuspage.Token(secret, host),
 		Services: a.statusServicesOn(host),
-	}, nil
+	}
 }
 
 // statusServicesOn returns the page's services that run on host.
@@ -303,10 +299,39 @@ func (a *App) statusSecret() (string, error) {
 // caddy.bind so a route the agent re-renders (a blue/green flip) keeps the
 // same listener addresses as the one the CLI deployed, and where to report
 // for the status page.
+//
+// The spec opens with a digest of itself as written in the fleet, secret
+// references unresolved. The agent reports it back, so `pilot doctor` can
+// tell a host still running on an old config without resolving a single
+// secret: a check that prompted for the keychain would not be run.
 func (a *App) FleetConfigSpec(host string) (string, error) {
-	notifiers, err := resolveNotifiers(a.Fleet.Notifiers)
+	resolved, err := a.renderFleetConfig(host, true)
 	if err != nil {
 		return "", err
+	}
+	digest, err := a.FleetConfigDigest(host)
+	if err != nil {
+		return "", err
+	}
+	return config.StampDigest(resolved, digest), nil
+}
+
+// FleetConfigDigest is the digest a host's cached config should report.
+func (a *App) FleetConfigDigest(host string) (string, error) {
+	unresolved, err := a.renderFleetConfig(host, false)
+	if err != nil {
+		return "", err
+	}
+	return config.SpecDigest(unresolved), nil
+}
+
+func (a *App) renderFleetConfig(host string, resolve bool) (string, error) {
+	notifiers := a.Fleet.Notifiers
+	if resolve {
+		var err error
+		if notifiers, err = resolveNotifiers(notifiers); err != nil {
+			return "", err
+		}
 	}
 
 	fc := config.FleetConfig{
@@ -318,8 +343,18 @@ func (a *App) FleetConfigSpec(host string) (string, error) {
 		fc.CaddyBind = h.Caddy.Bind
 	}
 	if a.Fleet.Status != nil {
-		if fc.Report, err = a.reportTarget(host); err != nil {
-			return "", err
+		if resolve {
+			secret, err := a.statusSecret()
+			if err != nil {
+				return "", err
+			}
+			fc.Report = a.reportTarget(host, secret)
+		} else {
+			// The token is a function of the secret, which the digest must
+			// not need. A rotated secret is loud without it: every host's
+			// reports start failing at once.
+			fc.Report = a.reportTarget(host, "")
+			fc.Report.Token = "<token>"
 		}
 	}
 

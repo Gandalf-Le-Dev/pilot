@@ -907,3 +907,19 @@ func TestHostSilentRejectedInAgentRules(t *testing.T) {
 		}
 	}
 }
+
+func TestDigestStamp(t *testing.T) {
+	spec := "notifiers: {}\n"
+	d := SpecDigest(spec)
+	stamped := StampDigest(spec, d)
+	if got := StampedDigest(stamped); got != d {
+		t.Errorf("StampedDigest = %q, want %q", got, d)
+	}
+	var fc FleetConfig
+	if err := UnmarshalStrict([]byte(stamped), &fc); err != nil {
+		t.Errorf("the stamp broke the agent's strict parse: %v", err)
+	}
+	if got := StampedDigest(spec); got != "" {
+		t.Errorf("an unstamped spec reports %q, want none", got)
+	}
+}

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -169,5 +170,37 @@ func TestSampleHealthProbesListedServices(t *testing.T) {
 	a.sampleHealth(context.Background(), nil)
 	if got := a.HealthReport([]string{"blog"}); len(got) != 0 {
 		t.Errorf("an unlisted service is still held: %+v", got)
+	}
+}
+
+// The digest the CLI stamps on a config is what /v1/info reports, across a
+// restart too, since doctor may ask long after the push.
+func TestFleetConfigDigestIsReported(t *testing.T) {
+	a := newAgent(t)
+	if err := a.PutFleetConfig("# pilot fleet config digest: 0123456789abcdef\nnotifiers: {}\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(a.Handler())
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL + proto.PathInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var info proto.Info
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		t.Fatal(err)
+	}
+	if info.ConfigDigest != "0123456789abcdef" {
+		t.Errorf("info reports %q", info.ConfigDigest)
+	}
+
+	restarted, err := New(Options{Root: a.Layout.Root, Host: "web-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restarted.FleetConfigDigest(); got != "0123456789abcdef" {
+		t.Errorf("after a restart the digest is %q", got)
 	}
 }

@@ -196,3 +196,37 @@ func TestStatusRouteRendersForTheStatusHost(t *testing.T) {
 		t.Errorf("route points at a service file that does not exist:\n%s", route)
 	}
 }
+
+// Doctor computes the digest without resolving anything, and gets the same
+// answer the push stamped.
+func TestFleetConfigDigestNeedsNoSecrets(t *testing.T) {
+	a := statusApp(t)
+	spec, err := a.FleetConfigSpec("web-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PILOT_TEST_STATUS_SECRET", "")
+	t.Setenv("PILOT_TEST_HOOK", "")
+	fresh := &App{Root: a.Root, Fleet: a.Fleet}
+	want, err := fresh.FleetConfigDigest("web-1")
+	if err != nil {
+		t.Fatalf("the digest needed a secret: %v", err)
+	}
+	if got := config.StampedDigest(spec); got != want {
+		t.Errorf("pushed spec carries %q, doctor computes %q", got, want)
+	}
+
+	other, _ := fresh.FleetConfigDigest("box-1")
+	if other == want {
+		t.Error("two hosts' configs share a digest; their report targets differ")
+	}
+	a.Fleet.Status.Labels = map[string]string{"site": "Site"}
+	if changed, _ := fresh.FleetConfigDigest("web-1"); changed != want {
+		t.Error("a label is the server's business; the agent's digest moved with it")
+	}
+	a.Fleet.Status.Hide = append(a.Fleet.Status.Hide, "site")
+	if changed, _ := fresh.FleetConfigDigest("web-1"); changed == want {
+		t.Error("hiding a service changes what web-1 reports, but not its digest")
+	}
+}
