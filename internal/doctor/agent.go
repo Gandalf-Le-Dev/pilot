@@ -20,6 +20,12 @@ type AgentReport struct {
 	Expected    int
 	Unreachable bool
 	Detail      string
+
+	// ConfigDigest is what the agent says its cached fleet config is;
+	// WantDigest is what this fleet would push now. They differ when
+	// fleet.yaml changed and nobody pushed it.
+	ConfigDigest string
+	WantDigest   string
 }
 
 // Agents is how doctor asks about agents and repairs them.
@@ -31,6 +37,10 @@ type AgentReport struct {
 type Agents interface {
 	Status(ctx context.Context, host string) AgentReport
 	Upgrade(ctx context.Context, host string) error
+
+	// PushConfig sends the host-wide config through the agent's existing
+	// config endpoint, without reinstalling anything.
+	PushConfig(ctx context.Context, host string) error
 }
 
 // checkAgents reports agents that are missing or version-skewed.
@@ -84,7 +94,32 @@ func checkAgents(ctx context.Context, env *Env) []Finding {
 				Status: StatusOK, Scope: ScopeHost, Host: host,
 				Title: fmt.Sprintf("agent %s (protocol %d)", rep.Build, rep.Protocol),
 			})
+			if f := staleConfig(env, host, rep); f != nil {
+				out = append(out, *f)
+			}
 		}
 	}
 	return out
+}
+
+// staleConfig reports an agent working from an older host-wide config than
+// the fleet's. The agent is fine; the push that should have followed the edit
+// to fleet.yaml never happened, so the fix is that push and nothing more.
+func staleConfig(env *Env, host string, rep AgentReport) *Finding {
+	if rep.WantDigest == "" || rep.ConfigDigest == rep.WantDigest {
+		return nil
+	}
+	have := rep.ConfigDigest
+	if have == "" {
+		have = "none"
+	}
+	return &Finding{
+		Status: StatusWarn, Scope: ScopeHost, Host: host,
+		Title: "fleet config on the agent is stale",
+		Detail: fmt.Sprintf("the agent holds %s, the fleet would push %s. Until it is pushed, this host "+
+			"alerts with its old notifiers and rules and reports its old list to the status page.", have, rep.WantDigest),
+		Hint:    "pilot doctor --fix, or pilot agent upgrade " + host,
+		Fix:     func(ctx context.Context) error { return env.Agents.PushConfig(ctx, host) },
+		FixDesc: "push the fleet config to the agent",
+	}
 }

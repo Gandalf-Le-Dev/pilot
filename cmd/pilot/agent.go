@@ -146,6 +146,10 @@ func (ad agentAdapter) Status(ctx context.Context, host string) doctor.AgentRepo
 			return rep
 		}
 		rep.Installed, rep.Build, rep.Protocol = true, info.Build, info.Protocol
+		rep.ConfigDigest = info.ConfigDigest
+		if want, err := ad.app.FleetConfigDigest(host); err == nil {
+			rep.WantDigest = want
+		}
 	case app.AgentSkewed:
 		rep.Installed, rep.Skewed = true, true
 		var skew *remote.SkewError
@@ -166,6 +170,10 @@ func (ad agentAdapter) Upgrade(ctx context.Context, host string) error {
 		ModuleDir: moduleDir(),
 	})
 	return err
+}
+
+func (ad agentAdapter) PushConfig(ctx context.Context, host string) error {
+	return ad.app.PushFleetConfig(ctx, host)
 }
 
 func newAgentStatusCmd(g *globals) *cobra.Command {

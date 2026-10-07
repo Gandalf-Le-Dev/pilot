@@ -113,12 +113,8 @@ func (a *App) SyncAgent(ctx context.Context, host string, s AgentSync) (*AgentSy
 	// Push the host-wide half of the configuration. Without it the agent can
 	// evaluate rules but has nowhere to send them, and alerting silently does
 	// nothing — which is the worst possible failure mode for alerting.
-	spec, err := a.FleetConfigSpec(host)
-	if err != nil {
+	if err := a.pushFleetConfig(ctx, rc, host); err != nil {
 		return nil, err
-	}
-	if err := rc.PutConfig(ctx, spec); err != nil {
-		return nil, fmt.Errorf("installing alert configuration: %w", err)
 	}
 	res.Notifiers = len(a.Fleet.Notifiers)
 	res.Rules = len(a.Fleet.Alerts)
@@ -292,6 +288,31 @@ func (a *App) statusSecret() (string, error) {
 		}
 	})
 	return a.secret, a.secretErr
+}
+
+// PushFleetConfig sends a host the fleet's current host-wide config through
+// the agent's config endpoint. It reinstalls nothing, so it is safe to run
+// against a host serving traffic.
+func (a *App) PushFleetConfig(ctx context.Context, host string) error {
+	rc, err := a.Agent(host)
+	if err != nil {
+		return err
+	}
+	if _, err := rc.Check(ctx); err != nil {
+		return err
+	}
+	return a.pushFleetConfig(ctx, rc, host)
+}
+
+func (a *App) pushFleetConfig(ctx context.Context, rc *remote.Client, host string) error {
+	spec, err := a.FleetConfigSpec(host)
+	if err != nil {
+		return err
+	}
+	if err := rc.PutConfig(ctx, spec); err != nil {
+		return fmt.Errorf("installing the host-wide configuration: %w", err)
+	}
+	return nil
 }
 
 // FleetConfigSpec renders the host-wide configuration the agent needs in order
