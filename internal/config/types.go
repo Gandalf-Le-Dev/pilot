@@ -9,6 +9,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"slices"
 	"sort"
 	"strconv"
@@ -61,6 +62,9 @@ type Fleet struct {
 	// on, because a deploy nobody was told about is the case this exists for.
 	NotifyDeploys *bool `yaml:"notify_deploys,omitempty"`
 
+	// Status configures the public status page. Nil means there is none.
+	Status *Status `yaml:"status,omitempty"`
+
 	// Populated by Load, not by YAML.
 	Services map[string]*Service `yaml:"-"`
 	Root     string              `yaml:"-"`
@@ -103,6 +107,91 @@ func (n Notifier) Endpoint() string {
 		return n.URL
 	}
 	return n.Webhook
+}
+
+// Status is the public status page: which services it lists, where it is
+// served, and who hears when a host stops reporting to it.
+//
+// The page is served by `pilotd server` on one host. Every agent pushes its
+// own services' health there over the tailnet, so the page keeps working when
+// the operator's laptop is closed, and a host that goes quiet is itself the
+// signal: it is how an expired tailnet key on one machine gets noticed.
+type Status struct {
+	Domain string `yaml:"domain"`
+
+	// Host runs the server, and its Caddy fronts the domain.
+	Host string `yaml:"host"`
+
+	// Listen is the server host's tailnet address. Agents on other hosts post
+	// their reports to it; the server host's own agent uses loopback.
+	Listen string `yaml:"listen"`
+
+	// Secret derives each host's bearer token. It is meant to be a reference,
+	// since anyone holding it can mint a token for any host.
+	Secret string `yaml:"secret"`
+
+	Title string `yaml:"title"`
+
+	// The page lists every deployable service with a public route, plus Show,
+	// minus Hide. A restricted route is never listed, whatever Show says: a
+	// tailnet-only service published on a public page is a disclosure.
+	Show []string `yaml:"show"`
+	Hide []string `yaml:"hide"`
+
+	// Labels rename services on the page, keyed by service name.
+	Labels map[string]string `yaml:"labels"`
+
+	// SilentAfter is how long a host may go without reporting before its
+	// services read "not reporting" and the alert fires.
+	SilentAfter Duration `yaml:"silent_after"`
+
+	Notify []string `yaml:"notify"`
+}
+
+// DefaultSilentAfter is three missed reports.
+const DefaultSilentAfter = Duration(90_000_000_000) // 90s
+
+// MinSilentAfter is two report intervals. Anything shorter fires on one
+// report that arrived a little late.
+const MinSilentAfter = Duration(60_000_000_000) // 60s
+
+// Label is the name a service goes by on the page.
+func (st *Status) Label(service string) string {
+	if l := st.Labels[service]; l != "" {
+		return l
+	}
+	return service
+}
+
+// StatusServices returns the services the status page lists, sorted.
+func (f *Fleet) StatusServices() []string {
+	st := f.Status
+	if st == nil {
+		return nil
+	}
+	listed := map[string]bool{}
+	for name, s := range f.Services {
+		if s.Deployable() && s.Expose != nil && !s.Expose.Restricted() {
+			listed[name] = true
+		}
+	}
+	for _, name := range st.Show {
+		if _, ok := f.Services[name]; ok {
+			listed[name] = true
+		}
+	}
+	for _, name := range st.Hide {
+		delete(listed, name)
+	}
+
+	out := make([]string, 0, len(listed))
+	for name := range listed {
+		if !f.Services[name].Expose.Restricted() {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Host is one SSH-reachable machine.
@@ -362,6 +451,16 @@ func (e *Expose) Restricted() bool { return e != nil && len(e.Allow) > 0 }
 
 // TailnetCIDRs are Tailscale's address ranges, the common case for `allow`.
 var TailnetCIDRs = []string{"100.64.0.0/10", "fd7a:115c:a1e0::/48"}
+
+// InTailnet reports whether ip falls in one of TailnetCIDRs.
+func InTailnet(ip net.IP) bool {
+	for _, c := range TailnetCIDRs {
+		if _, n, err := net.ParseCIDR(c); err == nil && n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
 
 // IsStatic reports whether this route is served from disk rather than proxied.
 func (e *Expose) IsStatic() bool { return e.Static != nil }
@@ -627,6 +726,21 @@ type FleetConfig struct {
 	// default has to be on, because a deploy nobody was told about is the case
 	// this exists for.
 	NotifyDeploys *bool `yaml:"notify_deploys,omitempty"`
+
+	// Report is where this host sends the public health of its services. Nil
+	// when the fleet has no status page.
+	Report *ReportTarget `yaml:"report,omitempty"`
+}
+
+// ReportTarget is one host's view of the status server: where to post, the
+// token that proves which host is posting, and which services to include.
+//
+// Services is decided by the CLI, never by the agent, so a restricted or
+// hidden service cannot reach the page because an agent was asked to guess.
+type ReportTarget struct {
+	URL      string   `yaml:"url"`
+	Token    string   `yaml:"token"`
+	Services []string `yaml:"services"`
 }
 
 // DeployNotificationsEnabled reports whether finished deploys should notify.

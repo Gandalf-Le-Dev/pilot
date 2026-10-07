@@ -90,3 +90,30 @@ alerts:
 
   - when: host.disk.free_pct < 10
     notify: [phone, chat]
+
+# A public status page at status.example.com, served by `pilotd server` on
+# box-1. Every agent posts its services' health there every 30s over the
+# tailnet; a host that stops posting shows "not reporting" and fires an alert,
+# which is how one machine's expired tailnet key gets noticed.
+status:
+  domain: status.example.com
+  host: box-1
+
+  # box-1's tailnet address. Other hosts' agents post here; box-1's own agent
+  # uses loopback.
+  listen: 100.64.0.50
+
+  # Each host's token is derived from this, and the server stores only their
+  # hashes. Keep it out of the repository.
+  secret: ${cmd:security find-generic-password -s pilot/status -a secret -w}
+  title: example.com
+
+  # By default the page lists deployable services with a public route: site
+  # and objects here. `api` is restricted to the tailnet and is never listed,
+  # whatever `show` says.
+  hide: [objects]
+  show: [backup]
+  labels: {site: Website, backup: Nightly backup}
+
+  silent_after: 90s
+  notify: [phone]

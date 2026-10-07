@@ -163,4 +163,7 @@ func TestExampleCoversEveryFeature(t *testing.T) {
 	if f.NotifyDeploys == nil {
 		t.Error("the example no longer shows notify_deploys")
 	}
+	if f.Status == nil || len(f.Status.Show) == 0 || len(f.Status.Hide) == 0 || len(f.Status.Labels) == 0 {
+		t.Error("the example no longer shows a status page with show, hide and labels")
+	}
 }

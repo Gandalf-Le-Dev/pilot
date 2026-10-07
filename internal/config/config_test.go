@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -710,4 +711,177 @@ expose:
 	single := strings.ReplaceAll(svc, "hosts: [web-1, web-2]", "hosts: [web-1]")
 	_, ds = load(t, fleet, map[string]string{"api.yaml": single})
 	assertNoErrors(t, ds)
+}
+
+const statusFleet = `
+version: 1
+hosts:
+  web-1:
+    address: web1.example.com
+  box-1:
+    address: 10.0.0.5
+notifiers:
+  discord: {type: discord, url: "https://discord.example/hook"}
+  script: {type: command, command: [logger]}
+`
+
+var statusServices = map[string]string{
+	"site.yaml": "name: site\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\n" +
+		"health: {docker: true}\nexpose: {domains: [example.com], upstream: 8080}\n",
+	"wiki.yaml": "name: wiki\nruntime: compose\nhosts: [box-1]\ncompose: {file: c.yaml}\n" +
+		"health: {docker: true}\nexpose: {domains: [wiki.example.com], upstream: 8081}\n",
+	"admin.yaml": "name: admin\nruntime: compose\nhosts: [box-1]\ncompose: {file: c.yaml}\n" +
+		"health: {docker: true}\nexpose: {domains: [admin.example.com], upstream: 8082, allow: [100.64.0.0/10]}\n",
+	"backup.yaml": "name: backup\nruntime: systemd\nhosts: [box-1]\n" +
+		"build: {command: make, output: [dist/backup]}\n" +
+		"unit: {name: backup.service, kind: oneshot, timer: backup.timer, fresh: 48h}\nhealth: {systemd: true}\n",
+	"db.yaml": "name: db\nruntime: compose\nmanage: observe\nhosts: [box-1]\ncompose: {file: c.yaml}\n" +
+		"health: {tcp: {addr: 127.0.0.1:5432}}\nexpose: {domains: [db.example.com], upstream: 5432}\n",
+}
+
+// statusBlock renders a status block from a valid baseline with overrides.
+func statusBlock(overrides map[string]string) string {
+	fields := map[string]string{
+		"domain": "status.example.com",
+		"host":   "box-1",
+		"listen": "100.64.0.10",
+		"secret": "${cmd:echo s3cret}",
+		"notify": "[discord]",
+	}
+	for k, v := range overrides {
+		fields[k] = v
+	}
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	b.WriteString("status:\n")
+	for _, k := range keys {
+		if fields[k] != "" {
+			b.WriteString("  " + k + ": " + fields[k] + "\n")
+		}
+	}
+	return b.String()
+}
+
+func TestStatusBlockAccepted(t *testing.T) {
+	f, ds := load(t, statusFleet+statusBlock(nil), statusServices)
+	assertNoErrors(t, ds)
+	for _, d := range ds {
+		t.Errorf("unexpected warning: %s", d)
+	}
+	if got := f.Status.SilentAfter; got != DefaultSilentAfter {
+		t.Errorf("silent_after = %s, want defaulted %s", got, DefaultSilentAfter)
+	}
+	if got := f.Status.Title; got != "status.example.com" {
+		t.Errorf("title = %q, want the domain", got)
+	}
+}
+
+func TestValidateStatus(t *testing.T) {
+	tests := []struct {
+		name      string
+		overrides map[string]string
+		field     string
+		want      string
+		sev       Severity
+	}{
+		{"no domain", map[string]string{"domain": ""}, "status.domain", "missing", SevError},
+		{"domain with scheme", map[string]string{"domain": "https://status.example.com"}, "status.domain", "includes a scheme", SevError},
+		{"no host", map[string]string{"host": ""}, "status.host", "missing", SevError},
+		{"unknown host", map[string]string{"host": "nope"}, "status.host", "no such host", SevError},
+		{"no listen", map[string]string{"listen": ""}, "status.listen", "missing", SevError},
+		{"listen is a name", map[string]string{"listen": "box-1.tailnet.ts.net"}, "status.listen", "not an IP", SevError},
+		{"listen everywhere", map[string]string{"listen": "0.0.0.0"}, "status.listen", "every interface", SevError},
+		{"listen everywhere v6", map[string]string{"listen": `"::"`}, "status.listen", "every interface", SevError},
+		{"listen on loopback", map[string]string{"listen": "127.0.0.1"}, "status.listen", "loopback", SevError},
+		{"listen off the tailnet", map[string]string{"listen": "203.0.113.7"}, "status.listen", "outside the tailnet", SevWarning},
+		{"no secret", map[string]string{"secret": ""}, "status.secret", "missing", SevError},
+		{"literal secret", map[string]string{"secret": "hunter2"}, "status.secret", "written literally", SevWarning},
+		{"unknown shown service", map[string]string{"show": "[nope]"}, "status.show[0]", "no such service", SevError},
+		{"unknown hidden service", map[string]string{"hide": "[nope]"}, "status.hide[0]", "no such service", SevError},
+		{"shown restricted service", map[string]string{"show": "[admin]"}, "status.show[0]", "restricted route", SevWarning},
+		{"shown and hidden", map[string]string{"show": "[backup]", "hide": "[backup]"}, "status.show[0]", "also in status.hide", SevWarning},
+		{"label for unknown service", map[string]string{"labels": "{nope: Nope}"}, "status.labels.nope", "no such service", SevError},
+		{"silent_after too short", map[string]string{"silent_after": "30s"}, "status.silent_after", "single late report", SevError},
+		{"unknown notifier", map[string]string{"notify": "[pager]"}, "status.notify[0]", "no notifier named", SevError},
+		{"command notifier", map[string]string{"notify": "[script]"}, "status.notify[0]", "command notifier", SevError},
+		{"no notifier", map[string]string{"notify": ""}, "status.notify", "no notifier listed", SevWarning},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ds := load(t, statusFleet+statusBlock(tc.overrides), statusServices)
+			d := findDiag(ds, tc.field, tc.want)
+			if d == nil {
+				t.Fatalf("want %s: %q; got:\n%v", tc.field, tc.want, ds.Sorted())
+			}
+			if d.Severity != tc.sev {
+				t.Errorf("severity = %s, want %s", d.Severity, tc.sev)
+			}
+		})
+	}
+}
+
+// The page's domain is a site on the status host like any other, so a
+// service already serving it there would make Caddy refuse the reload.
+func TestStatusDomainCollidesOnItsHost(t *testing.T) {
+	svcs := map[string]string{}
+	for k, v := range statusServices {
+		svcs[k] = v
+	}
+	svcs["wiki.yaml"] = strings.ReplaceAll(svcs["wiki.yaml"], "wiki.example.com", "status.example.com")
+
+	_, ds := load(t, statusFleet+statusBlock(nil), svcs)
+	if findDiag(ds, "status.domain", "also claimed by: wiki") == nil {
+		t.Errorf("want a collision on status.domain:\n%v", ds.Sorted())
+	}
+	if findDiag(ds, "expose.domains", "also claimed by: the status page") == nil {
+		t.Errorf("want the collision reported on the service too:\n%v", ds.Sorted())
+	}
+
+	// The same domain on another host is that host's business.
+	_, ds = load(t, statusFleet+statusBlock(map[string]string{"host": "web-1"}), svcs)
+	assertNoErrors(t, ds)
+}
+
+// The default set is deployable services with a public route. Show adds,
+// hide removes, and a restricted route never appears whatever show says.
+func TestStatusServices(t *testing.T) {
+	f, _ := load(t, statusFleet+statusBlock(map[string]string{
+		"show": "[backup, admin]",
+		"hide": "[wiki]",
+	}), statusServices)
+
+	got := f.StatusServices()
+	want := []string{"backup", "site"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("StatusServices = %v, want %v (db is observe-only, admin restricted, wiki hidden)", got, want)
+	}
+
+	f.Status.Labels = map[string]string{"site": "Website"}
+	if got := f.Status.Label("site"); got != "Website" {
+		t.Errorf("Label(site) = %q", got)
+	}
+	if got := f.Status.Label("backup"); got != "backup" {
+		t.Errorf("an unlabelled service goes by its name, got %q", got)
+	}
+
+	f.Status = nil
+	if got := f.StatusServices(); got != nil {
+		t.Errorf("no status block lists nothing, got %v", got)
+	}
+}
+
+// Pilot keeps _fleet.yaml beside cached services and _status.caddy beside
+// routes; a service with either name would overwrite Pilot's own file.
+func TestUnderscoreServiceNamesReserved(t *testing.T) {
+	_, ds := load(t, baseFleet, map[string]string{
+		"_status.yaml": "name: _status\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nhealth: {docker: true}\n",
+	})
+	if findDiag(ds, "name", "reserves") == nil {
+		t.Errorf("want _status rejected:\n%v", ds.Sorted())
+	}
 }
