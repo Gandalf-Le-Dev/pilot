@@ -1,0 +1,10 @@
+repos:
+  - repo: local
+    hooks:
+      - id: no-secrets
+        name: reject staged secrets
+        language: pygrep
+        # AWS access key, GitHub token, JWT, PEM private key.
+        entry: '(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36}|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
+        # The redaction scanner's own patterns and test fixtures match by design.
+        exclude: '^internal/redact/'
