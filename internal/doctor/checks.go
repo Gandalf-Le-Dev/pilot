@@ -15,6 +15,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/server"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/ssh"
 )
@@ -299,14 +300,7 @@ func checkCaddyRoutes(ctx context.Context, env *Env) []Finding {
 			continue
 		}
 
-		known := map[string]bool{}
-		for _, s := range env.ServicesOn(name) {
-			if s.Expose != nil {
-				known[s.Name] = true
-			}
-		}
-
-		for _, orphan := range caddy.Orphans(installed, known) {
+		for _, orphan := range caddy.Orphans(installed, knownRoutes(env, name)) {
 			svc, c := orphan, client
 			out = append(out, Finding{
 				Status: StatusWarn, Scope: ScopeHost, Host: name,
@@ -321,6 +315,21 @@ func checkCaddyRoutes(ctx context.Context, env *Env) []Finding {
 		}
 	}
 	return out
+}
+
+// knownRoutes names the routes a host should carry: one per exposed service
+// placed there, plus the status page's on the status host.
+func knownRoutes(env *Env, host string) map[string]bool {
+	known := map[string]bool{}
+	for _, s := range env.ServicesOn(host) {
+		if s.Expose != nil {
+			known[s.Name] = true
+		}
+	}
+	if st := env.Fleet.Status; st != nil && st.Host == host {
+		known[server.SnippetName] = true
+	}
+	return known
 }
 
 // checkCaddyBind finds installed routes sitting in a Caddy server public

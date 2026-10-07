@@ -1,0 +1,40 @@
+# managed by pilot — do not edit
+# regenerate with: pilot agent upgrade <status host>
+[Unit]
+Description=Pilot status server
+Documentation=https://github.com/Gandalf-Le-Dev/pilot
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/opt/pilot/bin/pilotd server
+Restart=always
+RestartSec=5s
+DynamicUser=yes
+LoadCredential=server.yaml:/etc/pilot/server.yaml
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

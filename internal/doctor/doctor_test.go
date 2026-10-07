@@ -303,3 +303,22 @@ func TestInsideAllow(t *testing.T) {
 		t.Error("an unrestricted route has no private shape")
 	}
 }
+
+// The page's route is Pilot's own on the status host, and an orphan
+// anywhere else — left behind when status.host moves.
+func TestStatusRouteIsKnownOnlyOnTheStatusHost(t *testing.T) {
+	env := &Env{Fleet: &config.Fleet{
+		Hosts:    map[string]*config.Host{"web-1": {Name: "web-1"}, "box-1": {Name: "box-1"}},
+		Services: map[string]*config.Service{"api": {Name: "api", Hosts: []string{"web-1"}, Expose: &config.Expose{}}},
+		Status:   &config.Status{Host: "box-1"},
+	}}
+	if !knownRoutes(env, "box-1")["_status"] {
+		t.Error("_status should be known on the status host")
+	}
+	if knownRoutes(env, "web-1")["_status"] {
+		t.Error("_status should be an orphan on any other host")
+	}
+	if !knownRoutes(env, "web-1")["api"] {
+		t.Error("an exposed service's route stopped being known")
+	}
+}

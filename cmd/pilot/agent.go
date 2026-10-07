@@ -82,6 +82,7 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string, force boo
 	if err != nil {
 		return err
 	}
+	hosts = a.StatusHostLast(hosts)
 
 	fmt.Println()
 	var failed, changed int

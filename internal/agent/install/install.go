@@ -7,14 +7,18 @@ package install
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/server"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
@@ -332,8 +336,228 @@ WantedBy=multi-user.target
 `, o.Host, transport.Join(args...))
 }
 
-// Uninstall stops and removes the agent, leaving releases untouched.
+const (
+	// ServerUnitPath is where the status server's unit lives.
+	ServerUnitPath = "/etc/systemd/system/pilot-server.service"
+
+	// ServerConfigPath is the server's configuration. Readable by root
+	// alone: it holds notifier webhooks, which are credentials. The unit
+	// hands it to the server as a systemd credential, so the unprivileged
+	// process reads a copy without the file ever being opened to it.
+	ServerConfigPath = "/etc/pilot/" + server.CredentialName
+)
+
+// minSystemd is the first systemd with LoadCredential=, which is how the
+// server receives its configuration. On an older one the unit would load,
+// ignore the line, and start a server with no configuration.
+const minSystemd = 247
+
+// Server start is confirmed by watching the unit for a while, because
+// systemctl returns once the binary has been executed, and a server that
+// rejects its configuration exits a moment later.
+var (
+	serverSettle = 3 * time.Second
+	serverPoll   = 500 * time.Millisecond
+)
+
+// InstallServer writes the status server's configuration and unit, restarts
+// it, and confirms it stayed up.
+//
+// Always a restart, never a reload: the configuration arrives as a
+// credential, which systemd reads only when the unit starts, and the binary
+// it runs was likely just replaced.
+func InstallServer(ctx context.Context, ex transport.Executor, binary string, config []byte) error {
+	if err := requireSystemdVersion(ctx, ex, minSystemd); err != nil {
+		return err
+	}
+
+	// The server runs as a dynamic user, not root, so it must be able to
+	// reach the binary. Pilot owns these two directories; a umask that left
+	// them closed would otherwise surface as a crash loop with "permission
+	// denied" in the journal.
+	bin := filepath.Dir(binary)
+	if r, err := ex.Run(ctx, transport.Join("chmod", "0755", filepath.Dir(bin), bin)); err != nil {
+		return err
+	} else if !r.OK() {
+		return fmt.Errorf("opening %s to the status server: %w", bin, r.Err())
+	}
+
+	if err := ex.MkdirAll(ctx, filepath.Dir(ServerConfigPath)); err != nil {
+		return err
+	}
+	if err := ex.WriteFile(ctx, ServerConfigPath, config, "0600"); err != nil {
+		return fmt.Errorf("writing the status server configuration: %w", err)
+	}
+	if err := ex.WriteFile(ctx, ServerUnitPath, []byte(ServerUnit(binary)), "0644"); err != nil {
+		return fmt.Errorf("writing the status server unit: %w", err)
+	}
+
+	script := strings.Join([]string{
+		"systemctl daemon-reload",
+		"systemctl enable pilot-server.service",
+		"systemctl restart pilot-server.service",
+	}, "\n")
+	if r, err := ex.RunScript(ctx, script); err != nil {
+		return err
+	} else if !r.OK() {
+		return serverStartError(ctx, ex, r.Err().Error())
+	}
+	return waitServerActive(ctx, ex)
+}
+
+// waitServerActive watches the unit through the settle window and fails on
+// the first sign it did not stay up.
+func waitServerActive(ctx context.Context, ex transport.Executor) error {
+	deadline := time.Now().Add(serverSettle)
+	for {
+		r, err := ex.Run(ctx, "systemctl is-active pilot-server.service")
+		if err != nil {
+			return err
+		}
+		state := strings.TrimSpace(r.Stdout)
+		if state != "active" && state != "activating" {
+			return serverStartError(ctx, ex, "the unit is "+orDefault(state, "not running"))
+		}
+		if !time.Now().Before(deadline) {
+			if state != "active" {
+				return serverStartError(ctx, ex, "the unit is still "+state)
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(serverPoll):
+		}
+	}
+}
+
+// serverStartError carries the unit's last journal lines, since the reason a
+// server refused to start (a bad configuration, root) is printed there.
+func serverStartError(ctx context.Context, ex transport.Executor, why string) error {
+	msg := "the status server did not start: " + why
+	if r, err := ex.Run(ctx, "journalctl -u pilot-server.service -n 10 --no-pager -o cat"); err == nil && strings.TrimSpace(r.Stdout) != "" {
+		msg += "\n" + strings.TrimSpace(r.Stdout)
+	} else {
+		msg += "\nsee what happened with:  journalctl -u pilot-server -n 50 --no-pager"
+	}
+	return errors.New(msg)
+}
+
+func requireSystemdVersion(ctx context.Context, ex transport.Executor, least int) error {
+	r, err := ex.Run(ctx, "systemctl --version")
+	if err != nil {
+		return err
+	}
+	// "systemd 252 (252.22-1~deb12u1)"
+	fields := strings.Fields(r.Stdout)
+	if len(fields) < 2 {
+		return fmt.Errorf("cannot read the systemd version from %q", firstLine(r.Stdout))
+	}
+	v, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return fmt.Errorf("cannot read the systemd version from %q", firstLine(r.Stdout))
+	}
+	if v < least {
+		return fmt.Errorf("the status server needs systemd %d or later for LoadCredential=; this host runs %d", least, v)
+	}
+	return nil
+}
+
+func firstLine(s string) string {
+	head, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	return head
+}
+
+// scriptRunner is all RemoveServer needs, so doctor can call it with the
+// connection it already holds.
+type scriptRunner interface {
+	RunScript(ctx context.Context, body string) (transport.Result, error)
+}
+
+// RemoveServer stops and deletes a status server, reporting whether there was
+// one. Idempotent, and quiet on a host that never ran one.
+//
+// A server left behind when status.host moves, or the status block goes, is
+// worse than useless: it keeps its old configuration and pages about every
+// host that no longer reports to it, forever.
+func RemoveServer(ctx context.Context, r scriptRunner) (bool, error) {
+	unit, cfg := transport.Quote(ServerUnitPath), transport.Quote(ServerConfigPath)
+	script := strings.Join([]string{
+		"if [ ! -e " + unit + " ] && [ ! -e " + cfg + " ]; then exit 0; fi",
+		"systemctl disable --now pilot-server.service 2>/dev/null || true",
+		"rm -f " + unit + " " + cfg,
+		"systemctl daemon-reload",
+		"echo removed",
+	}, "\n")
+	res, err := r.RunScript(ctx, script)
+	if err != nil {
+		return false, err
+	}
+	if err := res.Err(); err != nil {
+		return false, fmt.Errorf("removing the status server: %w", err)
+	}
+	return strings.TrimSpace(res.Stdout) == "removed", nil
+}
+
+// ServerUnit renders the status server's systemd unit.
+//
+// The agent runs as root because it must; this process must not. It parses
+// reports from the tailnet and serves the internet through Caddy, so it gets
+// a fresh unprivileged user every start, no capabilities, a read-only view of
+// the filesystem and nothing beyond IP sockets. Its configuration comes in as
+// a credential, the one file it ever reads.
+func ServerUnit(binary string) string {
+	return fmt.Sprintf(`# managed by pilot — do not edit
+# regenerate with: pilot agent upgrade <status host>
+[Unit]
+Description=Pilot status server
+Documentation=https://github.com/Gandalf-Le-Dev/pilot
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=%s
+Restart=always
+RestartSec=5s
+DynamicUser=yes
+LoadCredential=%s:%s
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+`, transport.Join(binary, "server"), server.CredentialName, ServerConfigPath)
+}
+
+// Uninstall stops and removes the agent, leaving releases untouched. A status
+// server goes with it: its binary is the agent's, so left behind its unit
+// would crash-loop at the next boot.
 func Uninstall(ctx context.Context, ex transport.Executor, layout release.Layout) error {
+	if _, err := RemoveServer(ctx, ex); err != nil {
+		return err
+	}
 	script := strings.Join([]string{
 		"systemctl disable --now pilotd.service 2>/dev/null || true",
 		"rm -f " + transport.Quote(UnitPath),

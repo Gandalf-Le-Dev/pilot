@@ -34,6 +34,10 @@ type App struct {
 
 	mu      sync.Mutex
 	clients map[string]*ssh.Client
+
+	secretOnce sync.Once
+	secret     string
+	secretErr  error
 }
 
 // Load finds and parses the fleet configuration.

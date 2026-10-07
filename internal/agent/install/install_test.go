@@ -2,12 +2,15 @@ package install
 
 import (
 	"context"
+	"flag"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
@@ -22,10 +25,15 @@ type fakeHost struct {
 	uname     string
 	noSystemd bool
 	failStart bool
+
+	// The status server's unit, as systemctl and the journal see it.
+	systemd     string
+	serverState []string // successive answers to is-active; the last repeats
+	journal     string
 }
 
 func newFake(uname string) *fakeHost {
-	return &fakeHost{uname: uname, files: map[string][]byte{}}
+	return &fakeHost{uname: uname, files: map[string][]byte{}, systemd: "252", serverState: []string{"active"}}
 }
 
 func (f *fakeHost) Run(ctx context.Context, cmd string) (transport.Result, error) {
@@ -33,6 +41,16 @@ func (f *fakeHost) Run(ctx context.Context, cmd string) (transport.Result, error
 	switch {
 	case strings.HasPrefix(cmd, "uname"):
 		return transport.Result{Stdout: f.uname + "\n"}, nil
+	case cmd == "systemctl --version":
+		return transport.Result{Stdout: "systemd " + f.systemd + " (" + f.systemd + ".1)\n+PAM +AUDIT\n"}, nil
+	case strings.HasPrefix(cmd, "systemctl is-active pilot-server"):
+		state := f.serverState[0]
+		if len(f.serverState) > 1 {
+			f.serverState = f.serverState[1:]
+		}
+		return transport.Result{Stdout: state + "\n"}, nil
+	case strings.HasPrefix(cmd, "journalctl"):
+		return transport.Result{Stdout: f.journal}, nil
 	case strings.Contains(cmd, "systemctl"):
 		if f.failStart {
 			return transport.Result{ExitCode: 1, Stderr: "Job for pilotd.service failed"}, nil
@@ -386,4 +404,141 @@ func TestSourceResolveUsesSiblingForReleaseBuild(t *testing.T) {
 	if path != agent || !strings.Contains(origin, "alongside") {
 		t.Errorf("path = %q, origin = %q; want the sibling", path, origin)
 	}
+}
+
+var updateGolden = flag.Bool("update", false, "rewrite golden files")
+
+// The server unit is its sandbox, so it is pinned byte for byte: a dropped
+// line here is a privilege the status server quietly regains.
+func TestServerUnitGolden(t *testing.T) {
+	got := ServerUnit("/opt/pilot/bin/pilotd")
+	golden := filepath.Join("testdata", "pilot-server.service")
+	if *updateGolden {
+		if err := os.MkdirAll("testdata", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("%v (run with -update to create it)", err)
+	}
+	if got != string(want) {
+		t.Errorf("unit differs from %s:\n%s", golden, got)
+	}
+	for _, line := range []string{"DynamicUser=yes", "NoNewPrivileges=yes", "ProtectSystem=strict", "LoadCredential=server.yaml:/etc/pilot/server.yaml"} {
+		if !strings.Contains(got, line+"\n") {
+			t.Errorf("unit lacks %q", line)
+		}
+	}
+	if strings.Contains(got, "User=root") {
+		t.Error("the status server must never run as root")
+	}
+}
+
+func TestInstallServerWritesConfigAndRestarts(t *testing.T) {
+	fastSettle(t)
+	host := newFake("Linux x86_64")
+	if err := InstallServer(context.Background(), host, "/opt/pilot/bin/pilotd", []byte("title: x\n")); err != nil {
+		t.Fatal(err)
+	}
+	if string(host.files[ServerConfigPath]) != "title: x\n" {
+		t.Errorf("config = %q", host.files[ServerConfigPath])
+	}
+	if _, ok := host.files[ServerUnitPath]; !ok {
+		t.Error("unit not written")
+	}
+	restarted := false
+	for _, c := range host.cmds {
+		restarted = restarted || strings.Contains(c, "systemctl restart pilot-server.service")
+	}
+	if !restarted {
+		t.Errorf("no restart in %q: the credential is read only at start", host.cmds)
+	}
+	if !slices.Contains(host.cmds, "chmod 0755 /opt/pilot /opt/pilot/bin") {
+		t.Errorf("the binary's directories were not opened to the dynamic user: %q", host.cmds)
+	}
+}
+
+func fastSettle(t *testing.T) {
+	t.Helper()
+	settle, poll := serverSettle, serverPoll
+	serverSettle, serverPoll = 20*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { serverSettle, serverPoll = settle, poll })
+}
+
+// A server that exits right after systemctl reports the restart done is a
+// failed install, and says why in the unit's own words.
+func TestInstallServerFailsWhenTheUnitDoesNotStayUp(t *testing.T) {
+	fastSettle(t)
+	host := newFake("Linux x86_64")
+	host.serverState = []string{"activating", "failed"}
+	host.journal = "pilotd server: invalid configuration:\n  no hosts: nothing could report\n"
+
+	err := InstallServer(context.Background(), host, "/opt/pilot/bin/pilotd", []byte("title: x\n"))
+	if err == nil || !strings.Contains(err.Error(), "failed") || !strings.Contains(err.Error(), "no hosts") {
+		t.Errorf("err = %v, want the failed state and the journal's reason", err)
+	}
+
+	host = newFake("Linux x86_64")
+	host.serverState = []string{"activating"}
+	if err := InstallServer(context.Background(), host, "/opt/pilot/bin/pilotd", nil); err == nil {
+		t.Error("a unit still activating after the settle window was reported as running")
+	}
+}
+
+func TestInstallServerNeedsLoadCredential(t *testing.T) {
+	host := newFake("Linux x86_64")
+	host.systemd = "245"
+	err := InstallServer(context.Background(), host, "/opt/pilot/bin/pilotd", nil)
+	if err == nil || !strings.Contains(err.Error(), "247") {
+		t.Fatalf("err = %v, want a refusal naming systemd 247", err)
+	}
+	if _, ok := host.files[ServerConfigPath]; ok {
+		t.Error("wrote the configuration before refusing")
+	}
+}
+
+func TestRemoveServer(t *testing.T) {
+	host := &scriptHost{out: "removed\n"}
+	removed, err := RemoveServer(context.Background(), host)
+	if err != nil || !removed {
+		t.Fatalf("removed = %v, err = %v", removed, err)
+	}
+	for _, want := range []string{"systemctl disable --now pilot-server.service", ServerUnitPath, ServerConfigPath, "daemon-reload"} {
+		if !strings.Contains(host.script, want) {
+			t.Errorf("script lacks %q:\n%s", want, host.script)
+		}
+	}
+	// The script exits before touching systemd when there is nothing to
+	// remove, so it is safe on every host at every sync.
+	if !strings.HasPrefix(host.script, "if [ ! -e ") {
+		t.Errorf("script does not check for a server first:\n%s", host.script)
+	}
+
+	host.out = ""
+	if removed, err := RemoveServer(context.Background(), host); err != nil || removed {
+		t.Errorf("a host with no server: removed = %v, err = %v", removed, err)
+	}
+}
+
+// Uninstalling the agent takes a status server with it: the server runs the
+// agent's binary, and its unit would crash-loop at the next boot.
+func TestUninstallRemovesTheServer(t *testing.T) {
+	host := newFake("Linux x86_64")
+	if err := Uninstall(context.Background(), host, release.NewLayout("")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(host.cmds, "\n"), "pilot-server.service") {
+		t.Errorf("uninstall left the status server:\n%s", strings.Join(host.cmds, "\n"))
+	}
+}
+
+type scriptHost struct{ script, out string }
+
+func (h *scriptHost) RunScript(_ context.Context, body string) (transport.Result, error) {
+	h.script = body
+	return transport.Result{Stdout: h.out}, nil
 }
