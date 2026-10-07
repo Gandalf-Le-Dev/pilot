@@ -85,6 +85,17 @@ func (a *Agent) CaddyBind() []string {
 	return a.fleet.CaddyBind
 }
 
+// ReportTarget returns where this host reports its public health, or nil when
+// the fleet has no status page.
+func (a *Agent) ReportTarget() *config.ReportTarget {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.fleet == nil {
+		return nil
+	}
+	return a.fleet.Report
+}
+
 // rebuildNotifiers refreshes the delivery registry from the cached config.
 func (a *Agent) rebuildNotifiers() {
 	a.mu.RLock()
