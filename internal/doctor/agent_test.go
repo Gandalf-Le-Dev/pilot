@@ -14,6 +14,7 @@ import (
 type fakeAgents struct {
 	rep      AgentReport
 	upgraded []string
+	pushed   []string
 	err      error
 }
 
@@ -21,6 +22,11 @@ func (f *fakeAgents) Status(context.Context, string) AgentReport { return f.rep 
 
 func (f *fakeAgents) Upgrade(_ context.Context, host string) error {
 	f.upgraded = append(f.upgraded, host)
+	return f.err
+}
+
+func (f *fakeAgents) PushConfig(_ context.Context, host string) error {
+	f.pushed = append(f.pushed, host)
 	return f.err
 }
 
@@ -138,5 +144,46 @@ func TestFixFailurePropagates(t *testing.T) {
 	found := checkAgents(context.Background(), agentEnv(fake))
 	if err := found[0].Fix(context.Background()); err == nil {
 		t.Fatal("want the underlying error")
+	}
+}
+
+// A config older than the fleet's is reported against the agent that holds
+// it, and repaired by a push alone: nothing is reinstalled or restarted.
+func TestStaleFleetConfigIsPushedNotUpgraded(t *testing.T) {
+	fake := &fakeAgents{rep: AgentReport{Installed: true, Build: "v1", Protocol: 11,
+		ConfigDigest: "aaaa", WantDigest: "bbbb"}}
+
+	found := checkAgents(context.Background(), agentEnv(fake))
+	var stale *Finding
+	for i := range found {
+		if strings.Contains(found[i].Title, "stale") {
+			stale = &found[i]
+		}
+	}
+	if stale == nil {
+		t.Fatalf("no stale-config finding in %+v", found)
+	}
+	if stale.Status != StatusWarn || !stale.Fixable() {
+		t.Errorf("finding = %+v, want a fixable warning", stale)
+	}
+	if err := stale.Fix(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.pushed) != 1 || len(fake.upgraded) != 0 {
+		t.Errorf("pushed %v, upgraded %v; want one push and no upgrade", fake.pushed, fake.upgraded)
+	}
+
+	fake.rep.ConfigDigest = "bbbb"
+	for _, f := range checkAgents(context.Background(), agentEnv(fake)) {
+		if strings.Contains(f.Title, "stale") {
+			t.Errorf("a current config was reported stale: %+v", f)
+		}
+	}
+
+	// An agent from before the stamp holds no digest; that is stale too.
+	fake.rep.ConfigDigest = ""
+	found = checkAgents(context.Background(), agentEnv(fake))
+	if len(found) != 2 || !strings.Contains(found[1].Detail, "holds none") {
+		t.Errorf("an unstamped config should read as stale: %+v", found)
 	}
 }

@@ -276,6 +276,15 @@ func applyDefaults(f *Fleet) {
 		f.Defaults.KeepReleases = DefaultKeepReleases
 	}
 
+	if st := f.Status; st != nil {
+		if st.SilentAfter.IsZero() {
+			st.SilentAfter = DefaultSilentAfter
+		}
+		if st.Title == "" {
+			st.Title = st.Domain
+		}
+	}
+
 	for _, h := range f.Hosts {
 		if h.User == "" {
 			h.User = f.Defaults.User

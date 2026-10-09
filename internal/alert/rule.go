@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Metric is a thing a rule can be written about.
@@ -28,6 +29,9 @@ const (
 	// Host-wide metrics.
 	DiskUsedPct Metric = "host.disk.used_pct"
 	DiskFreePct Metric = "host.disk.free_pct"
+
+	// Status server metrics.
+	HostSilent Metric = "host.silent"
 )
 
 // Kind is whether a metric is a yes/no condition or a number to compare.
@@ -44,6 +48,11 @@ type Scope int
 const (
 	ScopeService Scope = iota
 	ScopeHost
+
+	// ScopeServer metrics are evaluated by the status server about a host,
+	// never by an agent. A host cannot report its own silence: the failure
+	// this exists for is the one that stops it reporting anything.
+	ScopeServer
 )
 
 type metricInfo struct {
@@ -60,12 +69,14 @@ var metrics = map[Metric]metricInfo{
 	DriftDetected:   {Boolean, ScopeService, "live configuration no longer matches the manifest"},
 	DiskUsedPct:     {Numeric, ScopeHost, "percentage of the Pilot volume in use"},
 	DiskFreePct:     {Numeric, ScopeHost, "percentage of the Pilot volume still free"},
+	HostSilent:      {Boolean, ScopeServer, "the host stopped reporting to the status server"},
 }
 
 // Kind reports whether the metric is boolean or numeric.
 func (m Metric) Kind() Kind { return metrics[m].kind }
 
-// Scope reports whether the metric concerns one service or the whole host.
+// Scope reports whether the metric concerns one service, the whole host, or
+// the host as the status server sees it.
 func (m Metric) Scope() Scope { return metrics[m].scope }
 
 // Known reports whether the metric exists.
@@ -177,6 +188,7 @@ type Reading struct {
 	DeployFailed    bool
 	DriftDetected   bool
 	DiskUsedPct     int
+	HostSilent      bool
 
 	// Detail is the runtime's own one-line explanation of the state, e.g.
 	// "last succeeded 60d ago, past the 48h freshness bound".
@@ -188,6 +200,14 @@ type Reading struct {
 	// is a timer, it is never running. The runtime already knows the real
 	// reason; this carries it through.
 	Detail string
+
+	// Since is when the condition began, for a reader that knows better than
+	// the engine can. Left zero, the engine dates a condition from the first
+	// evaluation that saw it — right for a sampled state, but a silence
+	// began at the last report, a whole report interval before anyone could
+	// notice, and both the `for:` clock and the "since" in the message
+	// should count from there.
+	Since time.Time
 }
 
 // Eval reports whether the condition holds for a reading.
@@ -201,6 +221,8 @@ func (c Condition) Eval(r Reading) bool {
 		return r.DeployFailed
 	case DriftDetected:
 		return r.DriftDetected
+	case HostSilent:
+		return r.HostSilent
 	case ServiceRestarts:
 		return compare(float64(r.Restarts), c.Op, c.Value)
 	case DiskUsedPct:

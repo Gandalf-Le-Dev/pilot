@@ -109,7 +109,8 @@ blue-green deploys for compose, the systemd runtime for adopted units — both
 long-running daemons and oneshots behind a timer — drift detection, a local
 alert engine, deploy notifications, `pilot updates` reporting newer upstream
 image versions, credential redaction in logs, machine-readable output on every
-command, and an embedded skill for AI agents.
+command, an embedded skill for AI agents, and a public status page that alerts
+when a host stops reporting.
 
 Not implemented, and erroring clearly when used: `${sops:}` and `${op:}` secret
 schemes, rollout concurrency (serial only), multi-host `logs --follow`, and
@@ -254,6 +255,56 @@ undo with:  pilot rollback my-app
 It fires whoever ran the deploy — Pilot does not detect or care. That is the
 point: a notification you did not cause is the anomaly, whatever produced it.
 Delivery failures are logged by the agent and never fail a deploy.
+
+## Status page
+
+A public page that shows whether each public service is up, served from one of
+your hosts:
+
+```yaml
+status:
+  domain: status.example.com
+  host: box-1                  # runs the server; its Caddy fronts the domain
+  listen: 100.64.0.10          # box-1's tailnet IP; other hosts report here
+  secret: ${cmd:security find-generic-password -s pilot/status -w}
+  hide: [db]
+  show: [backup]
+  labels: {docmost: Notes}
+  silent_after: 90s
+  notify: [discord]
+```
+
+The page lists every deployable service with a public route, plus `show`, minus
+`hide`. A service with `expose.allow` is never listed, whatever `show` says.
+
+Every agent checks its listed services every 30 seconds, including their health
+check, and posts the result to the server over the tailnet. The agent opens no
+port: it dials out. The server runs as `pilot-server.service`, an unprivileged
+unit on `status.host`, and keeps everything in memory.
+
+When a host stops reporting for `silent_after`, its services read "not
+reporting" and the `status.notify` notifiers get an alert. This catches the
+failure a host cannot report about itself, such as an expired tailnet key.
+Only webhook-style notifiers work here: the server cannot run a `command`.
+
+The page shows service labels and states only. Host names, errors, release IDs
+and internal URLs never reach it.
+
+`pilot agent upgrade` installs the server, its configuration and its route on
+`status.host`, and removes a server left on any other host. A fleet-wide run
+does `status.host` last, so the server restarts only after every agent has
+the new build.
+
+After you edit the `status:` block (labels, notifiers, `show`, `hide`), run
+`pilot agent upgrade --force <status host>`. The `--force` is needed because an
+upgrade skips a host that already runs this build. Until you do, the server
+keeps its old configuration: a service you just hid stays on the page as
+"awaiting report", and a new label does not appear. `pilot doctor --fix`
+pushes the new list to each agent, but it does not rewrite the server's
+configuration.
+
+`pilot doctor` also checks the server, its route, its domain, which hosts have
+gone quiet, and any host still running a server it should not.
 
 ## Pin your image tags
 
@@ -401,7 +452,9 @@ pilot agent upgrade      bring them all up to date
 ```
 
 A deploy that meets a stale agent upgrades it and carries on, and
-`pilot doctor --fix` repairs one it finds behind. `pilot bootstrap` is for
+`pilot doctor --fix` repairs one it finds behind. Doctor also notices an agent
+whose host-wide config (notifiers, host rules, status page) is older than
+`fleet.yaml`, and `--fix` pushes the current one. `pilot bootstrap` is for
 preparing a *new* host, not for updating an existing one.
 
 ## Fleet layout
@@ -425,7 +478,7 @@ not deprecated. Both can coexist in one fleet.
 
 `example/` holds a complete fleet exercising every feature: both runtimes,
 blue-green, restricted routes, static sites, `manage: observe`, all three secret
-reference forms, notifiers, and alerts. A test loads it and asserts the coverage,
+reference forms, notifiers, alerts, and a status page. A test loads it and asserts the coverage,
 so unlike a README it cannot quietly go stale.
 
 ## Using it with an AI agent

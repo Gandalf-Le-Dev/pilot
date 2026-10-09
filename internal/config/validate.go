@@ -24,6 +24,7 @@ func Validate(f *Fleet) Diagnostics {
 	validatePortCollisions(f, &ds)
 	validateNotifiers(f, &ds)
 	validateAlertList(f, FleetFile, "alerts", f.Alerts, alert.ScopeHost, &ds)
+	validateStatus(f, &ds)
 	return ds
 }
 
@@ -91,6 +92,13 @@ func validateService(f *Fleet, s *Service, ds *Diagnostics) {
 
 	if s.Name == "" {
 		ds.Errorf(file, "name", "missing")
+	}
+	// Pilot names its own files beside the services' in the same directories:
+	// _fleet.yaml in the agent's cache, _status.caddy among the routes. A
+	// service called _status would overwrite the status page's route.
+	if strings.HasPrefix(s.Name, "_") {
+		ds.ErrorHint(file, "name", fmt.Sprintf("%q starts with an underscore, which Pilot reserves for its own files", s.Name),
+			"rename the service")
 	}
 
 	switch s.Runtime {
@@ -611,7 +619,12 @@ func validateAlertList(f *Fleet, file, prefix string, alerts []Alert, scope aler
 
 		// A host-wide metric on a service, or the reverse, would silently
 		// never fire — worth catching rather than leaving to be discovered.
-		if cond.Metric.Scope() != scope {
+		switch {
+		case cond.Metric.Scope() == alert.ScopeServer:
+			ds.ErrorHint(file, field+".when",
+				fmt.Sprintf("%s is evaluated by the status server, not by an agent", cond.Metric),
+				"set `status.silent_after` and `status.notify` in "+FleetFile+" instead")
+		case cond.Metric.Scope() != scope:
 			switch scope {
 			case alert.ScopeService:
 				ds.ErrorHint(file, field+".when",
@@ -634,6 +647,125 @@ func validateAlertList(f *Fleet, file, prefix string, alerts []Alert, scope aler
 					fmt.Sprintf("no notifier named %q", n),
 					"define it under `notifiers:` in "+FleetFile)
 			}
+		}
+	}
+}
+
+// validateStatus checks the status page block.
+func validateStatus(f *Fleet, ds *Diagnostics) {
+	st := f.Status
+	if st == nil {
+		return
+	}
+
+	switch d := st.Domain; {
+	case d == "":
+		ds.ErrorHint(FleetFile, "status.domain", "missing", "the page's hostname, e.g. status.example.com")
+	case strings.Contains(d, "://"):
+		ds.ErrorHint(FleetFile, "status.domain", fmt.Sprintf("%q includes a scheme", d),
+			"use a bare hostname; Caddy handles TLS")
+	case strings.Contains(d, "/"):
+		ds.Errorf(FleetFile, "status.domain", "%q includes a path; the page is served at the root", d)
+	}
+
+	switch _, ok := f.Hosts[st.Host]; {
+	case st.Host == "":
+		ds.ErrorHint(FleetFile, "status.host", "missing", "the host that runs the status server")
+	case !ok:
+		ds.ErrorHint(FleetFile, "status.host", fmt.Sprintf("no such host %q", st.Host),
+			"known hosts: "+strings.Join(f.HostNames(), ", "))
+	}
+
+	// Written verbatim into the server's listen address, and every agent
+	// dials it, so a hostname would make reporting depend on DNS inside the
+	// tailnet — the thing most likely to be broken when the page matters.
+	switch {
+	case st.Listen == "":
+		ds.ErrorHint(FleetFile, "status.listen", "missing",
+			"the status host's tailnet IP, which other hosts' agents report to")
+	case net.ParseIP(st.Listen) == nil:
+		ds.ErrorHint(FleetFile, "status.listen", fmt.Sprintf("%q is not an IP address", st.Listen),
+			"the status host's tailnet IP, e.g. 100.64.0.10")
+	case net.ParseIP(st.Listen).IsUnspecified():
+		ds.ErrorHint(FleetFile, "status.listen",
+			fmt.Sprintf("%s would take reports on every interface, the public one included", st.Listen),
+			"the status host's tailnet IP, e.g. 100.64.0.10")
+	case net.ParseIP(st.Listen).IsLoopback():
+		ds.ErrorHint(FleetFile, "status.listen", "other hosts cannot reach a loopback address",
+			"the server binds 127.0.0.1 for its own host already; set the tailnet IP here")
+	case !InTailnet(net.ParseIP(st.Listen)):
+		ds.WarnHint(FleetFile, "status.listen",
+			fmt.Sprintf("%s is outside the tailnet ranges (%s)", st.Listen, strings.Join(TailnetCIDRs, ", ")),
+			"reports carry bearer tokens over plain HTTP, which only the tailnet's encryption protects")
+	}
+
+	switch {
+	case st.Secret == "":
+		ds.ErrorHint(FleetFile, "status.secret", "missing",
+			"a reference such as ${cmd:security find-generic-password -s pilot/status -w}")
+	case !HasSecretRef(st.Secret):
+		ds.WarnHint(FleetFile, "status.secret", "written literally",
+			"anyone who reads the repository can post as any host; use a ${cmd:...} or ${file:...} reference")
+	}
+
+	known := func(field string, names []string) {
+		for i, name := range names {
+			if _, ok := f.Services[name]; !ok {
+				ds.ErrorHint(FleetFile, fmt.Sprintf("%s[%d]", field, i),
+					fmt.Sprintf("no such service %q", name), "known services: "+strings.Join(f.ServiceNames(), ", "))
+			}
+		}
+	}
+	known("status.show", st.Show)
+	known("status.hide", st.Hide)
+
+	for i, name := range st.Show {
+		s, ok := f.Services[name]
+		switch {
+		case !ok:
+		case s.Expose.Restricted():
+			ds.WarnHint(FleetFile, fmt.Sprintf("status.show[%d]", i),
+				fmt.Sprintf("%s has a restricted route, so the public page never lists it", name),
+				"remove it from status.show, or drop its expose.allow if it is meant to be public")
+		case slices.Contains(st.Hide, name):
+			ds.Warnf(FleetFile, fmt.Sprintf("status.show[%d]", i), "%s is also in status.hide, which wins", name)
+		}
+	}
+
+	labelled := make([]string, 0, len(st.Labels))
+	for name := range st.Labels {
+		labelled = append(labelled, name)
+	}
+	sort.Strings(labelled)
+	for _, name := range labelled {
+		if _, ok := f.Services[name]; !ok {
+			ds.Errorf(FleetFile, "status.labels."+name, "no such service %q", name)
+		}
+	}
+
+	if st.SilentAfter < MinSilentAfter {
+		ds.ErrorHint(FleetFile, "status.silent_after",
+			fmt.Sprintf("%s would fire on a single late report", st.SilentAfter),
+			fmt.Sprintf("agents report every 30s; use at least %s", MinSilentAfter))
+	}
+
+	if len(st.Notify) == 0 {
+		ds.WarnHint(FleetFile, "status.notify", "no notifier listed",
+			"a silent host will show on the page, but nobody will be told")
+	}
+	for i, n := range st.Notify {
+		field := fmt.Sprintf("status.notify[%d]", i)
+		switch nf, ok := f.Notifiers[n]; {
+		case !ok:
+			ds.ErrorHint(FleetFile, field,
+				fmt.Sprintf("no notifier named %q", n), "define it under `notifiers:` in "+FleetFile)
+		// The server runs as a sandboxed dynamic user with a read-only
+		// filesystem: a command that works under the agent's root would fail
+		// there, on the night it mattered.
+		case alert.NotifierType(nf.Type) == alert.TypeCommand:
+			ds.ErrorHint(FleetFile, field,
+				fmt.Sprintf("%s is a command notifier, which the sandboxed status server cannot run", n),
+				"use a webhook, ntfy, slack or discord notifier")
 		}
 	}
 }
@@ -694,8 +826,12 @@ func validateNotifiers(f *Fleet, ds *Diagnostics) {
 // address on the same host, which Caddy would reject at reload time. Keying by
 // host matters: the same domain on two hosts is a normal load-balanced setup,
 // not a conflict.
+//
+// The status page claims its domain on its host like any service would, so a
+// service already serving that domain there is caught here rather than by
+// Caddy refusing the reload that installs the page.
 func validateRouteCollisions(f *Fleet, ds *Diagnostics) {
-	type claim struct{ service, file string }
+	type claim struct{ service, file, field string }
 	claims := map[string][]claim{}
 
 	for _, name := range f.ServiceNames() {
@@ -706,9 +842,13 @@ func validateRouteCollisions(f *Fleet, ds *Diagnostics) {
 		for _, host := range s.Hosts {
 			for _, addr := range s.Expose.SiteAddresses() {
 				key := host + "\x00" + addr
-				claims[key] = append(claims[key], claim{s.Name, s.File})
+				claims[key] = append(claims[key], claim{s.Name, s.File, "expose.domains"})
 			}
 		}
+	}
+	if st := f.Status; st != nil && st.Domain != "" && st.Host != "" {
+		key := st.Host + "\x00" + st.Domain
+		claims[key] = append(claims[key], claim{"the status page", FleetFile, "status.domain"})
 	}
 
 	keys := make([]string, 0, len(claims))
@@ -736,7 +876,7 @@ func validateRouteCollisions(f *Fleet, ds *Diagnostics) {
 					others = append(others, n)
 				}
 			}
-			ds.ErrorHint(c.file, "expose.domains",
+			ds.ErrorHint(c.file, c.field,
 				fmt.Sprintf("site address %q on host %q is also claimed by: %s",
 					addr, host, strings.Join(others, ", ")),
 				"give each service a distinct domain or `expose.path`")

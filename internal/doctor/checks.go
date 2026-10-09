@@ -15,6 +15,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/server"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/ssh"
 )
@@ -34,6 +35,7 @@ func Standard() []Check {
 		{Name: "caddy-routes", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyRoutes},
 		{Name: "caddy-bind", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyBind},
 		{Name: "disk", Scope: ScopeHost, NeedsNetwork: true, Run: checkDisk},
+		{Name: "status-server", Scope: ScopeHost, NeedsNetwork: true, Run: checkStatusServer},
 		{Name: "dns-tls", Scope: ScopeEdge, NeedsNetwork: true, Run: checkEdge},
 	}
 }
@@ -299,14 +301,7 @@ func checkCaddyRoutes(ctx context.Context, env *Env) []Finding {
 			continue
 		}
 
-		known := map[string]bool{}
-		for _, s := range env.ServicesOn(name) {
-			if s.Expose != nil {
-				known[s.Name] = true
-			}
-		}
-
-		for _, orphan := range caddy.Orphans(installed, known) {
+		for _, orphan := range caddy.Orphans(installed, knownRoutes(env, name)) {
 			svc, c := orphan, client
 			out = append(out, Finding{
 				Status: StatusWarn, Scope: ScopeHost, Host: name,
@@ -321,6 +316,21 @@ func checkCaddyRoutes(ctx context.Context, env *Env) []Finding {
 		}
 	}
 	return out
+}
+
+// knownRoutes names the routes a host should carry: one per exposed service
+// placed there, plus the status page's on the status host.
+func knownRoutes(env *Env, host string) map[string]bool {
+	known := map[string]bool{}
+	for _, s := range env.ServicesOn(host) {
+		if s.Expose != nil {
+			known[s.Name] = true
+		}
+	}
+	if st := env.Fleet.Status; st != nil && st.Host == host {
+		known[server.SnippetName] = true
+	}
+	return known
 }
 
 // checkCaddyBind finds installed routes sitting in a Caddy server public
@@ -446,12 +456,7 @@ func checkEdge(ctx context.Context, env *Env) []Finding {
 	var out []Finding
 	var resolver net.Resolver
 
-	for _, svcName := range env.Fleet.ServiceNames() {
-		s := env.Fleet.Services[svcName]
-		if s.Expose == nil {
-			continue
-		}
-
+	for _, s := range edgeSites(env.Fleet) {
 		declared := publicAddresses(env.Fleet, s.Hosts)
 
 		for _, domain := range s.Expose.Domains {
@@ -531,6 +536,26 @@ func checkEdge(ctx context.Context, env *Env) []Finding {
 			f.Detail = fmt.Sprintf("→ %s  %s  %s", hosts, dns, tls)
 			out = append(out, f)
 		}
+	}
+	return out
+}
+
+// edgeSites lists everything with a public domain: each exposed service, and
+// the status page, which is a site on its host like any other and fails the
+// same ways — a record never pointed, a certificate never issued.
+func edgeSites(f *config.Fleet) []*config.Service {
+	var out []*config.Service
+	for _, name := range f.ServiceNames() {
+		if s := f.Services[name]; s.Expose != nil {
+			out = append(out, s)
+		}
+	}
+	if st := f.Status; st != nil && st.Domain != "" {
+		out = append(out, &config.Service{
+			Name:   server.SnippetName,
+			Hosts:  []string{st.Host},
+			Expose: &config.Expose{Domains: []string{st.Domain}},
+		})
 	}
 	return out
 }

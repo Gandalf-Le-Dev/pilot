@@ -24,8 +24,9 @@ func newDoctorCmd(g *globals) *cobra.Command {
 		Use:   "doctor",
 		Short: "Check that the fleet configuration, hosts, and routing are sound",
 		Long: "Runs every check Pilot knows: configuration validity, host reachability and\n" +
-			"prerequisites, the Caddy import line and generated routes, disk headroom, and\n" +
-			"DNS and TLS for each exposed domain.\n\n" +
+			"prerequisites, the Caddy import line and generated routes, disk headroom, the\n" +
+			"status server and the hosts reporting to it, and DNS and TLS for each exposed\n" +
+			"domain.\n\n" +
 			"Exit codes: 0 clean, 1 errors present, 2 warnings only — so it drops straight\n" +
 			"into cron or CI.",
 		Args: cobra.NoArgs,

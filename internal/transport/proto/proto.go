@@ -56,7 +56,16 @@ import (
 // episodes, and deploy history in one response, because each call from the
 // operator's machine costs an ssh exec. The config schema is unchanged; the
 // bump is for the wire.
-const Version = 9
+//
+// Version 10 added the `status` block to the fleet file and `report` to the
+// host-wide config: where an agent posts its public health, with which token,
+// for which services. An older agent would reject the pushed config outright.
+//
+// Version 11 added `config_digest` to GET /v1/info: the digest the CLI stamps
+// on every pushed host-wide config, so `pilot doctor` can find a host whose
+// config is older than the fleet's. An older agent would report none, and
+// doctor would push config at it forever.
+const Version = 11
 
 // SchemaDigest pins the configuration schema this protocol version speaks.
 //
@@ -70,7 +79,7 @@ const Version = 9
 //     decodes): update this digest alone.
 //
 // The choice is deliberately yours. What is not optional is making it.
-const SchemaDigest = "9473ec986c56dc1a"
+const SchemaDigest = "048e70524c15bc55"
 
 const (
 	// DefaultSocket is where the daemon listens. A Unix socket rather than a
@@ -89,6 +98,10 @@ type Info struct {
 	Host      string    `json:"host"`
 	StartedAt time.Time `json:"started_at"`
 	Services  int       `json:"services"`
+
+	// ConfigDigest is the digest the CLI stamped on the host-wide config it
+	// last pushed, empty when none was stamped.
+	ConfigDigest string `json:"config_digest,omitempty"`
 }
 
 // Error is the body of every non-2xx response.

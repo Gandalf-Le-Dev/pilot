@@ -48,10 +48,19 @@ type Agent struct {
 	samples  map[string][]Sample
 	fleet    *FleetConfig
 
+	// fleetDigest is the digest stamped on the cached fleet config.
+	fleetDigest string
+
 	// Resource series for the dashboard, bounded rings, in-memory only.
 	serviceMetrics map[string][]proto.MetricSample
 	hostMetrics    []proto.MetricSample
 	capacity       proto.Capacity
+
+	// Public health per listed service, for the status page.
+	health map[string]*healthRing
+
+	// now is overridable in tests; nil means the wall clock.
+	now func() time.Time
 
 	jobs   *JobStore
 	alerts *alert.Engine
@@ -231,6 +240,7 @@ func (a *Agent) ForgetService(name string) error {
 	a.mu.Lock()
 	delete(a.services, name)
 	delete(a.drift, name)
+	delete(a.health, name)
 	a.mu.Unlock()
 	a.alerts.Forget(name)
 

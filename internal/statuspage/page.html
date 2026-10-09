@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<title>{{.Title}} status</title>
+<style>{{.CSS}}</style>
+</head>
+<body>
+<main>
+<h1>{{.Title}}</h1>
+<p class="summary p-{{.State}}">{{.Summary}}</p>
+<ul>
+{{- range .Rows}}
+<li>
+<div class="row"><span class="label">{{.Label}}</span><span class="state t-{{.State}}">{{stateText .State}}</span></div>
+<div class="bars" aria-hidden="true">{{range .Bars}}<span{{if .}} class="s-{{.}}"{{end}}></span>{{end}}</div>
+<div class="meta">
+{{- if eq .State "not_reporting"}}Not reporting since {{utc .NotReportingSince}}
+{{- else if .UptimePct}}{{pct .UptimePct}} over the last 24 hours
+{{- else}}No history yet{{end -}}
+</div>
+</li>
+{{- end}}
+</ul>
+<footer>Updated {{utc .Updated}}. This page refreshes every minute.</footer>
+</main>
+</body>
+</html>

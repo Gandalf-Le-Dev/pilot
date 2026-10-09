@@ -63,6 +63,8 @@ func (a *Agent) handleInfo(w http.ResponseWriter, r *http.Request) {
 		Host:      a.Host,
 		StartedAt: a.StartedAt,
 		Services:  len(a.ServiceNames()),
+
+		ConfigDigest: a.FleetConfigDigest(),
 	})
 }
 

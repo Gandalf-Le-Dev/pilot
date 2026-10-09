@@ -112,6 +112,9 @@ func TestScope(t *testing.T) {
 	if DiskFreePct.Scope() != ScopeHost {
 		t.Error("host.disk.free_pct should be host-wide")
 	}
+	if HostSilent.Scope() != ScopeServer {
+		t.Error("host.silent should belong to the status server")
+	}
 }
 
 func TestEval(t *testing.T) {
@@ -390,6 +393,32 @@ func TestDeliveryFailuresAreReportedNotFatal(t *testing.T) {
 	}
 }
 
+// A webhook's path is its credential. A failed delivery is logged on the
+// agent and the server, so the error must not carry it.
+func TestDeliveryErrorsOmitTheWebhookPath(t *testing.T) {
+	token := "T000" + "/B000/" + strings.Repeat("x", 24)
+	for name, endpoint := range map[string]string{
+		"unreachable": "http://127.0.0.1:1/services/" + token,
+		"unparseable": "http://bad host/services/" + token,
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, typ := range []NotifierType{TypeDiscord, TypeNtfy} {
+				n := Notifier{Name: "chat", Type: typ, URL: endpoint}
+				err := n.Send(context.Background(), Notification{Summary: "x"})
+				if err == nil {
+					t.Fatal("delivery to a closed port succeeded")
+				}
+				if strings.Contains(err.Error(), token) || strings.Contains(err.Error(), "/services/") {
+					t.Errorf("%s error carries the webhook path: %v", typ, err)
+				}
+				if !strings.Contains(err.Error(), `notifier "chat"`) {
+					t.Errorf("%s error no longer names the notifier: %v", typ, err)
+				}
+			}
+		})
+	}
+}
+
 func TestRegistryRejectsUnknownNotifier(t *testing.T) {
 	r := NewRegistry([]Notifier{{Name: "ntfy", Type: TypeNtfy, URL: "https://ntfy.sh/x"}})
 	if err := r.Send(context.Background(), "nope", Notification{}); err == nil {
@@ -521,5 +550,32 @@ func TestEventsRecordDeliveryFailure(t *testing.T) {
 	evs := e.Events()
 	if len(evs) != 1 || !evs[0].DeliveryFailed {
 		t.Fatalf("episode should be marked undelivered: %+v", evs)
+	}
+}
+
+// A silence began at the last report, not when it was noticed. Dating it from
+// the reading makes `for:` count from the report, and the message say so.
+func TestReadingSinceDatesTheCondition(t *testing.T) {
+	e, cap, clk := newEngine(t)
+	r := rule(t, "", "host.silent", 90*time.Second)
+	lastReport := clk.now()
+	ctx := context.Background()
+
+	clk.add(45 * time.Second)
+	e.Evaluate(ctx, []Rule{r}, map[string]Reading{"": {HostSilent: true, Since: lastReport}})
+	e.Flush()
+	if n := len(cap.all()); n != 0 {
+		t.Fatalf("fired 45s into a 90s rule (%d sent)", n)
+	}
+
+	clk.add(45 * time.Second)
+	e.Evaluate(ctx, []Rule{r}, map[string]Reading{"": {HostSilent: true, Since: lastReport}})
+	e.Flush()
+	sent := cap.all()
+	if len(sent) != 1 {
+		t.Fatalf("got %d notifications, want 1 at 90s after the last report", len(sent))
+	}
+	if !sent[0].Since.Equal(lastReport) {
+		t.Errorf("since = %s, want the last report at %s", sent[0].Since, lastReport)
 	}
 }

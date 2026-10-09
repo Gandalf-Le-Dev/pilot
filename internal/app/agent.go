@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/goccy/go-yaml"
@@ -11,7 +14,11 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent/install"
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/secrets"
+	"github.com/Gandalf-Le-Dev/pilot/internal/server"
+	"github.com/Gandalf-Le-Dev/pilot/internal/statuspage"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
@@ -106,29 +113,246 @@ func (a *App) SyncAgent(ctx context.Context, host string, s AgentSync) (*AgentSy
 	// Push the host-wide half of the configuration. Without it the agent can
 	// evaluate rules but has nowhere to send them, and alerting silently does
 	// nothing — which is the worst possible failure mode for alerting.
-	spec, err := a.FleetConfigSpec(host)
-	if err != nil {
+	if err := a.pushFleetConfig(ctx, rc, host); err != nil {
 		return nil, err
-	}
-	if err := rc.PutConfig(ctx, spec); err != nil {
-		return nil, fmt.Errorf("installing alert configuration: %w", err)
 	}
 	res.Notifiers = len(a.Fleet.Notifiers)
 	res.Rules = len(a.Fleet.Alerts)
 	if res.Notifiers > 0 {
 		logf("%d notifier(s) and %d host rule(s) installed", res.Notifiers, res.Rules)
 	}
+
+	if err := a.syncStatusServer(ctx, client, host, logf); err != nil {
+		return nil, err
+	}
 	return res, nil
 }
 
+// syncStatusServer puts the status server where status.host says, and only
+// there.
+//
+// It rides along with the agent rather than being deployed like a service:
+// it watches the services, so it must not depend on the machinery it is
+// watching, and it must be the same build as the agents reporting to it.
+//
+// Anywhere else a status server is a leftover from a status.host that moved
+// or a status block that went. It would keep its old configuration and page
+// about every host forever, so it goes, with its route.
+func (a *App) syncStatusServer(ctx context.Context, ex transport.Executor, host string, logf func(string, ...any)) error {
+	if st := a.Fleet.Status; st != nil && st.Host == host {
+		if err := a.installStatusServer(ctx, ex); err != nil {
+			return fmt.Errorf("installing the status server: %w", err)
+		}
+		logf("status server running; %s routed to it", st.Domain)
+		return nil
+	}
+
+	removed, err := install.RemoveServer(ctx, ex)
+	if err != nil {
+		return err
+	}
+	if _, err := caddy.RemoveSnippet(ctx, ex, a.CaddyPaths(), server.SnippetName); err != nil {
+		return fmt.Errorf("removing the old status page route: %w", err)
+	}
+	if removed {
+		logf("removed a status server this host no longer runs")
+	}
+	return nil
+}
+
+// StatusHostLast orders hosts for a fleet-wide sync so the status host comes
+// last. Its server restarts with the new build only once every agent has it,
+// so an agent still on the old build is never judged by a server on the new
+// one, and the restart wait covers the agents' own restarts.
+func (a *App) StatusHostLast(hosts []string) []string {
+	st := a.Fleet.Status
+	if st == nil {
+		return hosts
+	}
+	out := make([]string, 0, len(hosts))
+	last := false
+	for _, h := range hosts {
+		if h == st.Host {
+			last = true
+			continue
+		}
+		out = append(out, h)
+	}
+	if last {
+		out = append(out, st.Host)
+	}
+	return out
+}
+
+func (a *App) installStatusServer(ctx context.Context, client transport.Executor) error {
+	cfg, err := a.StatusServerConfig()
+	if err != nil {
+		return err
+	}
+	if err := install.InstallServer(ctx, client, a.Layout.Agent(), cfg); err != nil {
+		return err
+	}
+	route, err := server.Route(a.Fleet)
+	if err != nil {
+		return err
+	}
+	_, err = caddy.InstallSnippet(ctx, client, a.CaddyPaths(), server.SnippetName, route)
+	return err
+}
+
+// StatusServerConfig renders the status server's configuration.
+//
+// It carries each host's token hash, never the token, and only the notifiers
+// status.notify names, resolved: the server can then check a report and send
+// an alert without the fleet secret or the operator's keychain.
+func (a *App) StatusServerConfig() ([]byte, error) {
+	st := a.Fleet.Status
+	if st == nil {
+		return nil, fmt.Errorf("the fleet has no status block")
+	}
+	secret, err := a.statusSecret()
+	if err != nil {
+		return nil, err
+	}
+
+	named := map[string]config.Notifier{}
+	for _, n := range st.Notify {
+		named[n] = a.Fleet.Notifiers[n]
+	}
+	notifiers, err := resolveNotifiers(named)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := server.Config{
+		Title:       st.Title,
+		Listen:      st.Listen,
+		SilentAfter: st.SilentAfter,
+		Notifiers:   notifiers,
+		Hosts:       map[string]server.HostConfig{},
+	}
+	// Every host, including one with nothing on the page: the silence alert
+	// is about hosts, and a host with no public service can still lose its
+	// tailnet key.
+	for _, host := range a.Fleet.HostNames() {
+		labels := map[string]string{}
+		for _, name := range a.statusServicesOn(host) {
+			labels[name] = st.Label(name)
+		}
+		cfg.Hosts[host] = server.HostConfig{
+			TokenSHA256: statuspage.TokenHash(statuspage.Token(secret, host)),
+			Services:    labels,
+		}
+	}
+	return yaml.Marshal(cfg)
+}
+
+// reportTarget is one host's half of the status page: where to post, the
+// token for this host alone, and the listed services placed here. The status
+// host's own agent posts over loopback, so its reports do not depend on its
+// own tailnet address being up.
+func (a *App) reportTarget(host, secret string) *config.ReportTarget {
+	st := a.Fleet.Status
+	addr := st.Listen
+	if host == st.Host {
+		addr = "127.0.0.1"
+	}
+	return &config.ReportTarget{
+		URL:      "http://" + net.JoinHostPort(addr, strconv.Itoa(statuspage.IngestPort)) + statuspage.ReportPath,
+		Token:    statuspage.Token(secret, host),
+		Services: a.statusServicesOn(host),
+	}
+}
+
+// statusServicesOn returns the page's services that run on host.
+func (a *App) statusServicesOn(host string) []string {
+	var out []string
+	for _, name := range a.Fleet.StatusServices() {
+		if slices.Contains(a.Fleet.Services[name].Hosts, host) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// statusSecret resolves status.secret once per run. It is usually a keychain
+// lookup, and an upgrade of every host should not prompt once per host.
+func (a *App) statusSecret() (string, error) {
+	a.secretOnce.Do(func() {
+		a.secret, a.secretErr = secrets.Resolve(a.Fleet.Status.Secret)
+		if a.secretErr == nil && a.secret == "" {
+			a.secretErr = fmt.Errorf("status.secret resolved to an empty value")
+		}
+		if a.secretErr != nil {
+			a.secretErr = fmt.Errorf("status.secret: %w", a.secretErr)
+		}
+	})
+	return a.secret, a.secretErr
+}
+
+// PushFleetConfig sends a host the fleet's current host-wide config through
+// the agent's config endpoint. It reinstalls nothing, so it is safe to run
+// against a host serving traffic.
+func (a *App) PushFleetConfig(ctx context.Context, host string) error {
+	rc, err := a.Agent(host)
+	if err != nil {
+		return err
+	}
+	if _, err := rc.Check(ctx); err != nil {
+		return err
+	}
+	return a.pushFleetConfig(ctx, rc, host)
+}
+
+func (a *App) pushFleetConfig(ctx context.Context, rc *remote.Client, host string) error {
+	spec, err := a.FleetConfigSpec(host)
+	if err != nil {
+		return err
+	}
+	if err := rc.PutConfig(ctx, spec); err != nil {
+		return fmt.Errorf("installing the host-wide configuration: %w", err)
+	}
+	return nil
+}
+
 // FleetConfigSpec renders the host-wide configuration the agent needs in order
-// to act on its own: notifiers and host-scoped rules for alerting, and the
-// host's caddy.bind so a route the agent re-renders (a blue/green flip) keeps
-// the same listener addresses as the one the CLI deployed.
+// to act on its own: notifiers and host-scoped rules for alerting, the host's
+// caddy.bind so a route the agent re-renders (a blue/green flip) keeps the
+// same listener addresses as the one the CLI deployed, and where to report
+// for the status page.
+//
+// The spec opens with a digest of itself as written in the fleet, secret
+// references unresolved. The agent reports it back, so `pilot doctor` can
+// tell a host still running on an old config without resolving a single
+// secret: a check that prompted for the keychain would not be run.
 func (a *App) FleetConfigSpec(host string) (string, error) {
-	notifiers, err := resolveNotifiers(a.Fleet.Notifiers)
+	resolved, err := a.renderFleetConfig(host, true)
 	if err != nil {
 		return "", err
+	}
+	digest, err := a.FleetConfigDigest(host)
+	if err != nil {
+		return "", err
+	}
+	return config.StampDigest(resolved, digest), nil
+}
+
+// FleetConfigDigest is the digest a host's cached config should report.
+func (a *App) FleetConfigDigest(host string) (string, error) {
+	unresolved, err := a.renderFleetConfig(host, false)
+	if err != nil {
+		return "", err
+	}
+	return config.SpecDigest(unresolved), nil
+}
+
+func (a *App) renderFleetConfig(host string, resolve bool) (string, error) {
+	notifiers := a.Fleet.Notifiers
+	if resolve {
+		var err error
+		if notifiers, err = resolveNotifiers(notifiers); err != nil {
+			return "", err
+		}
 	}
 
 	fc := config.FleetConfig{
@@ -138,6 +362,21 @@ func (a *App) FleetConfigSpec(host string) (string, error) {
 	}
 	if h, ok := a.Fleet.Hosts[host]; ok {
 		fc.CaddyBind = h.Caddy.Bind
+	}
+	if a.Fleet.Status != nil {
+		if resolve {
+			secret, err := a.statusSecret()
+			if err != nil {
+				return "", err
+			}
+			fc.Report = a.reportTarget(host, secret)
+		} else {
+			// The token is a function of the secret, which the digest must
+			// not need. A rotated secret is loud without it: every host's
+			// reports start failing at once.
+			fc.Report = a.reportTarget(host, "")
+			fc.Report.Token = "<token>"
+		}
 	}
 
 	body, err := yaml.Marshal(fc)
