@@ -263,3 +263,10 @@ func TestScanCountsAValueThatStartsAfterTheOneBefore(t *testing.T) {
 		}
 	}
 }
+
+// An apostrophe that never closes does not make the rest of the line a value.
+func TestScanReadsAnUnclosedSingleQuoteAsUnquoted(t *testing.T) {
+	if got := Scan(`{"msg":"token: 'abc def","user":"root"}`, nil); len(got) != 0 {
+		t.Errorf("reported %+v, want nothing: the value is abc, too short to count", got)
+	}
+}

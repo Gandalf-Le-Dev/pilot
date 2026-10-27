@@ -103,8 +103,12 @@ func findLabelled(text string) []labelledValue {
 
 // valueEnd finds where the value starting at i ends. A value opened by a quote
 // runs to the matching unescaped quote, spaces and commas included, so none of
-// it is left behind; one never closed runs to the end of the line. An
-// unquoted value stops at the first character that cannot be part of one.
+// it is left behind. An unquoted value stops at the first character that
+// cannot be part of one.
+//
+// A double quote never closed runs to the end of the line. A single quote
+// never closed is more likely an apostrophe than an opener, as in
+// `token: 'abc def` inside a JSON string, so its value is read as unquoted.
 //
 // A quote opened as `\"` sits in a string logged inside another string, such
 // as a JSON request body, where every character arrives escaped once more;
@@ -114,22 +118,21 @@ func findLabelled(text string) []labelledValue {
 func valueEnd(s string, i int, sep string) int {
 	q := sep[len(sep)-1]
 	if q != '"' && q != '\'' {
-		for i < len(s) && !strings.ContainsRune("\"'&,;} \t\n\f\r", rune(s[i])) {
-			i++
-		}
-		return i
+		return unquotedEnd(s, i)
 	}
 	depth, ok := escapeDepth(len(sep) - 1 - len(strings.TrimRight(sep[:len(sep)-1], `\`)))
 	if !ok {
 		return i
 	}
+	start := i
 	escaped := false
 	for {
-		c, next, stop := read(s, i, depth, q)
-		if stop {
-			return i
-		}
+		c, next, end := read(s, i, depth, q)
 		switch {
+		case end == lineEnd && q == '\'':
+			return unquotedEnd(s, start)
+		case end != reading:
+			return i
 		case escaped:
 			escaped = false
 		case c == '\\':
@@ -139,6 +142,13 @@ func valueEnd(s string, i int, sep string) int {
 		}
 		i = next
 	}
+}
+
+func unquotedEnd(s string, i int) int {
+	for i < len(s) && !strings.ContainsRune("\"'&,;} \t\n\f\r", rune(s[i])) {
+		i++
+	}
+	return i
 }
 
 // escapeDepth is how many strings deep a quote preceded by n backslashes
@@ -155,29 +165,41 @@ func escapeDepth(n int) (int, bool) {
 	return depth, true
 }
 
+// readEnd says why read stopped, if it did.
+type readEnd int
+
+const (
+	reading readEnd = iota
+	lineEnd
+	enclosingEnd
+)
+
 // read returns the character at i as seen depth layers of escapes down, where
 // a backslash and the character after it read as that character, and the
 // index after it. It stops at the end of the line, or at a bare quote q in a
 // shallower layer, where an enclosing string ends.
-func read(s string, i, depth int, q byte) (c byte, next int, stop bool) {
+func read(s string, i, depth int, q byte) (c byte, next int, end readEnd) {
 	if i >= len(s) || s[i] == '\n' {
-		return 0, i, true
+		return 0, i, lineEnd
 	}
 	if depth == 0 {
-		return s[i], i + 1, false
+		return s[i], i + 1, reading
 	}
-	c, next, stop = read(s, i, depth-1, q)
-	if stop || c == q {
-		return 0, i, true
+	c, next, end = read(s, i, depth-1, q)
+	if end != reading {
+		return 0, i, end
+	}
+	if c == q {
+		return 0, i, enclosingEnd
 	}
 	if c != '\\' {
-		return c, next, false
+		return c, next, reading
 	}
-	c, next, stop = read(s, next, depth-1, q)
-	if stop {
-		return 0, i, true
+	c, next, end = read(s, next, depth-1, q)
+	if end != reading {
+		return 0, i, end
 	}
-	return c, next, false
+	return c, next, reading
 }
 
 // formats are values that cannot plausibly be anything but a credential.
