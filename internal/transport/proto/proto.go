@@ -69,7 +69,14 @@ import (
 // Version 12 added the `host.mem.used_pct` and `host.mem.free_pct` alert
 // metrics. An older agent accepts the pushed config, then drops each such rule
 // on parse, so the metric names now count toward SchemaDigest too.
-const Version = 12
+//
+// Version 13 added `start` to DeployRequest, and the `start` job kind: start a
+// stopped service on the release the host already runs, through the health
+// gate, and never roll back.
+// An older agent would ignore the field and deploy that release onto itself,
+// "roll back" to it on a failed check, and could prune the real rollback
+// target.
+const Version = 13
 
 // SchemaDigest pins the configuration schema this protocol version speaks.
 //
@@ -178,7 +185,13 @@ const (
 // laptop cannot leave a half-deployed service with nobody to roll it back.
 type DeployRequest struct {
 	Service string `json:"service"`
+
 	Release string `json:"release"`
+
+	// Start asks to start a stopped service on Release, which must be the
+	// release the host already runs. Nothing is staged and nothing is rolled
+	// back on failure.
+	Start bool `json:"start,omitempty"`
 
 	// Spec is the service definition as YAML. The agent caches it so it can
 	// keep observing, probing, and alerting on this service without a CLI.
@@ -258,6 +271,7 @@ type Job struct {
 const (
 	KindDeploy   = "deploy"
 	KindRollback = "rollback"
+	KindStart    = "start"
 )
 
 // Endpoint paths.

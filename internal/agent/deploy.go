@@ -11,6 +11,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/compose"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
@@ -54,13 +55,92 @@ func (a *Agent) StartDeploy(req proto.DeployRequest) (*proto.Job, error) {
 		return nil, err
 	}
 
-	job := a.jobs.Create(proto.KindDeploy, svc.Name, req.Release, from)
-	if svc.Rollout.IsBlueGreen() {
+	// A start and a deploy are never inferred from each other. A plan that
+	// went stale while it was shown would otherwise restart the wrong release,
+	// or roll a deploy onto the release it is meant to replace.
+	switch {
+	case req.Start && from != req.Release:
+		return nil, fmt.Errorf("asked to start %s, but %s runs %q", req.Release, svc.Name, from)
+	case !req.Start && from == req.Release:
+		return nil, fmt.Errorf("%s already runs %s", svc.Name, req.Release)
+	}
+
+	kind := proto.KindDeploy
+	if req.Start {
+		kind = proto.KindStart
+	}
+	job := a.jobs.Create(kind, svc.Name, req.Release, from)
+	switch {
+	case req.Start:
+		go a.runStart(job.ID, svc, rt, req)
+	case svc.Rollout.IsBlueGreen():
 		go a.runBlueGreen(job.ID, svc, rt, req, from)
-	} else {
+	default:
 		go a.runDeploy(job.ID, svc, rt, req, from)
 	}
 	return job, nil
+}
+
+// runStart brings a stopped service back up on the release it already runs.
+//
+// There is no rollback. The only earlier release is older code that was
+// replaced on purpose, and the usual reason a service is stopped here has
+// nothing to do with its code: after a reboot, a port bound to an address that
+// did not exist yet. A failed health check is reported and the service is left
+// as it is, for a human to look at.
+func (a *Agent) runStart(jobID string, svc *config.Service, rt runtime.Runtime, req proto.DeployRequest) {
+	ctx, cancel := context.WithTimeout(context.Background(), jobTimeout)
+	defer cancel()
+
+	a.jobs.Start(jobID)
+	started := time.Now().UTC()
+
+	unlock, err := a.lockService(svc.Name)
+	if err != nil {
+		a.jobs.Finish(jobID, err, false)
+		return
+	}
+	defer unlock()
+
+	t := a.Target(svc, req.Release)
+	fail := func(err error) {
+		a.jobs.Event(jobID, proto.PhaseDone, "not rolling back: %s is already the live release, left as it is", req.Release)
+		a.record(ctx, t, svc, req, req.Release, started, release.OutcomeFailed, err)
+		a.jobs.Finish(jobID, err, false)
+	}
+
+	a.jobs.Event(jobID, proto.PhaseActivate, "starting %s, the live release", req.Release)
+
+	// Blue-green has no plain activation. The stopped stack is the active
+	// colour, and the route already points at it.
+	verifyStarted := func() error { return a.verify(ctx, jobID, rt, t) }
+	if svc.Rollout.IsBlueGreen() {
+		active := a.activeColor(svc.Name)
+		err = compose.StartColor(ctx, t, active, t.ReleaseDir())
+		verifyStarted = func() error { return a.verifyColor(ctx, jobID, rt, t, active) }
+	} else {
+		err = rt.Activate(ctx, t)
+	}
+	if err != nil {
+		a.jobs.Event(jobID, proto.PhaseActivate, "start failed: %v", err)
+		fail(err)
+		return
+	}
+
+	if req.Verify {
+		a.jobs.Event(jobID, proto.PhaseVerify, "verifying health")
+		if err := verifyStarted(); err != nil {
+			a.jobs.Event(jobID, proto.PhaseVerify, "unhealthy: %v", err)
+			fail(err)
+			return
+		}
+		a.jobs.Event(jobID, proto.PhaseVerify, "healthy")
+	}
+
+	a.jobs.Event(jobID, proto.PhaseFinalise, "recording state")
+	a.record(ctx, t, svc, req, req.Release, started, release.OutcomeOK, nil)
+	a.setDrift(svc.Name, nil)
+	a.jobs.Finish(jobID, nil, false)
 }
 
 // runDeploy is the state machine: activate, route, verify, and roll back if
@@ -254,8 +334,11 @@ func (a *Agent) record(ctx context.Context, t *runtime.Target, svc *config.Servi
 		Release: req.Release, From: from, Host: a.Host, By: req.By,
 		StartedAt: started, FinishedAt: time.Now().UTC(), Outcome: outcome,
 	}
-	if cause != nil {
+	switch {
+	case cause != nil:
 		rec.Reason = firstLine(cause.Error())
+	case req.Start:
+		rec.Reason = release.ReasonStarted
 	}
 	st.Record(rec)
 

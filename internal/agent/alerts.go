@@ -332,7 +332,13 @@ func (a *Agent) notifyDeployFinished(job proto.Job) {
 		At:       job.FinishedAt,
 	}
 
+	started := job.Kind == proto.KindStart
 	switch {
+	case started && job.State == proto.JobFailed:
+		msg.Summary = fmt.Sprintf("%s failed to start %s, the live release", job.Service, job.Release)
+		msg.Detail = job.Error + "\nnothing was rolled back — check `pilot status`"
+	case started:
+		msg.Summary = fmt.Sprintf("%s was stopped and is running %s again", job.Service, job.Release)
 	case job.State == proto.JobFailed && job.RolledBack:
 		msg.Summary = fmt.Sprintf("%s failed to deploy %s and was rolled back", job.Service, job.Release)
 		msg.Detail = job.Error
@@ -345,8 +351,8 @@ func (a *Agent) notifyDeployFinished(job proto.Job) {
 		msg.Summary = fmt.Sprintf("%s deployed %s", job.Service, job.Release)
 	}
 
-	// A rollback of a rollback is a forward move again, so only offer the undo
-	// where it means what it says.
+	// A rollback of a rollback is a forward move again, and a start changed no
+	// release, so only offer the undo where it means what it says.
 	if job.State == proto.JobSucceeded && job.Kind == proto.KindDeploy {
 		msg.Detail = appendLine(msg.Detail, "undo with:  pilot rollback "+job.Service)
 	}

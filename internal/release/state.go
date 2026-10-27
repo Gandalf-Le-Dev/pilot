@@ -57,6 +57,10 @@ type DeployRecord struct {
 	Reason     string    `json:"reason,omitempty"`
 }
 
+// ReasonStarted marks a record whose release did not change: the host already
+// ran it, the service was stopped, and a deploy started it again.
+const ReasonStarted = "started: the live release was stopped"
+
 func (r DeployRecord) Duration() time.Duration {
 	if r.FinishedAt.IsZero() {
 		return 0
