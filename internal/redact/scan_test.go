@@ -198,6 +198,11 @@ func TestPwdStillMeansPassword(t *testing.T) {
 		"PWD=hunter22":          "pwd",
 		"password=/notapath123": "password",
 		"token=/notapath123":    "token",
+		// A pwd value that carries a later pair is not a path, and excusing it
+		// would hide the secret riding along in the same match.
+		"pwd=/cb?token=s3cr3tvalue":                  "pwd",
+		"PWD=/x:password=hunter22":                   "pwd",
+		`{"pwd":"/var/lib/x","password":"hunter22"}`: "password",
 	}
 	for line, want := range cases {
 		got := Scan(line, nil)

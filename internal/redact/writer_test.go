@@ -162,9 +162,13 @@ func TestTextAgreesWithScanOnSudoPWD(t *testing.T) {
 
 func TestTextStillRedactsPwdAsPassword(t *testing.T) {
 	cases := map[string]string{
-		"pwd=hunter22":          "pwd=" + Placeholder,
-		"PWD=hunter22":          "PWD=" + Placeholder,
-		"password=/notapath123": "password=" + Placeholder,
+		"pwd=hunter22":                               "pwd=" + Placeholder,
+		"PWD=hunter22":                               "PWD=" + Placeholder,
+		"password=/notapath123":                      "password=" + Placeholder,
+		"token=/notapath123":                         "token=" + Placeholder,
+		"pwd=/cb?token=s3cr3tvalue":                  "pwd=" + Placeholder,
+		"PWD=/x:password=hunter22":                   "PWD=" + Placeholder,
+		`{"pwd":"/var/lib/x","password":"hunter22"}`: `{"pwd":"/var/lib/x","password":"` + Placeholder + `"}`,
 	}
 	for line, want := range cases {
 		if got := Text(line, nil); got != want {

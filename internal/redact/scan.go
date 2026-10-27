@@ -96,19 +96,15 @@ var placeholders = map[string]bool{
 	"<redacted>": true, "[redacted]": true, "changeme": true, "your_api_key": true,
 }
 
-// harmless reports whether a labelled match reveals nothing, given the label
-// and the raw captured value.
-//
-// A pwd that is an absolute path is a working directory: sudo writes
-// `PWD=/srv/app ; USER=root` into the journal of every unit that calls it, and
-// reporting that taught people to skip the check. Only pwd is excused, since a
-// password or token may start with a slash.
+// harmless reports whether a labelled match reveals nothing. A pwd that is a
+// bare path is sudo's working directory; `=`, `?` or `:` mean a pair rode along.
 func harmless(label, raw string) bool {
 	value := strings.Trim(raw, `"'`)
 	if placeholders[strings.ToLower(value)] {
 		return true
 	}
-	return strings.EqualFold(label, "pwd") && strings.HasPrefix(value, "/")
+	return strings.EqualFold(label, "pwd") && strings.HasPrefix(value, "/") &&
+		!strings.ContainsAny(value, "=?:")
 }
 
 // minKnownLength is the shortest supplied value worth searching for.
