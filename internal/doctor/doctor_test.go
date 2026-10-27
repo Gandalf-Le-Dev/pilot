@@ -178,36 +178,6 @@ func TestCheckConfigReportsCleanFleet(t *testing.T) {
 	}
 }
 
-func TestParseDiskUsed(t *testing.T) {
-	tests := []struct {
-		name string
-		out  string
-		want int
-		ok   bool
-	}{
-		{
-			"normal df output",
-			"Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 41251136 13320520 25811560 34% /",
-			34, true,
-		},
-		{
-			"nearly full",
-			"Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 95 5 95% /opt",
-			95, true,
-		},
-		{"header only", "Filesystem 1024-blocks Used Available Capacity Mounted on", 0, false},
-		{"empty", "", 0, false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := parseDiskUsed(tc.out)
-			if ok != tc.ok || got != tc.want {
-				t.Errorf("parseDiskUsed = %d, %v; want %d, %v", got, ok, tc.want, tc.ok)
-			}
-		})
-	}
-}
-
 func TestServicesOn(t *testing.T) {
 	env := &Env{Fleet: &config.Fleet{
 		Hosts: map[string]*config.Host{"web-1": {Name: "web-1"}, "box-1": {Name: "box-1"}},

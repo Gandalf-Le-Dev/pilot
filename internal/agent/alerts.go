@@ -214,7 +214,7 @@ func (a *Agent) readings(ctx context.Context, rules []alert.Rule) map[string]ale
 	out := map[string]alert.Reading{}
 
 	host := alert.Reading{}
-	if d, err := a.diskUsage(); err == nil {
+	if d := a.diskUsage(); d != nil {
 		host.DiskUsedPct = &d.UsedPercent
 	}
 	if readsMemory(rules) {

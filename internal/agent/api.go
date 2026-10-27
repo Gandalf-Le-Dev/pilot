@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
@@ -75,9 +74,7 @@ func (a *Agent) handleStatus(w http.ResponseWriter, r *http.Request) {
 	for _, name := range a.ServiceNames() {
 		resp.Services = append(resp.Services, a.statusFor(r.Context(), name))
 	}
-	if d, err := a.diskUsage(); err == nil {
-		resp.Disk = d
-	}
+	resp.Disk = a.diskUsage()
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -273,9 +270,7 @@ func (a *Agent) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	for _, name := range a.ServiceNames() {
 		resp.Status.Services = append(resp.Status.Services, a.statusFor(r.Context(), name))
 	}
-	if d, err := a.diskUsage(); err == nil {
-		resp.Status.Disk = d
-	}
+	resp.Status.Disk = a.diskUsage()
 
 	resp.ServiceSamples, resp.HostSamples, resp.Capacity = a.MetricsSince(since)
 
@@ -298,29 +293,18 @@ func (a *Agent) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// diskUsage reports headroom on the volume holding releases.
-func (a *Agent) diskUsage() (*proto.DiskUsage, error) {
+// diskUsage reports headroom on the volume holding releases, or nil when it
+// could not be read.
+func (a *Agent) diskUsage() *proto.DiskUsage {
 	res, err := a.Exec.Run(context.Background(), "df -P "+a.Layout.Root+" 2>/dev/null || df -P /")
 	if err != nil || !res.OK() {
-		return nil, fmt.Errorf("df failed")
+		return nil
 	}
-	lines := strings.Split(strings.TrimSpace(res.Stdout), "\n")
-	if len(lines) < 2 {
-		return nil, fmt.Errorf("unexpected df output")
+	n, ok := release.ParseDiskUsed(res.Stdout)
+	if !ok {
+		return nil
 	}
-	for _, f := range strings.Fields(lines[len(lines)-1]) {
-		if pct, ok := strings.CutSuffix(f, "%"); ok {
-			n, err := strconv.Atoi(pct)
-			if err != nil {
-				continue
-			}
-			if n < 0 || n > 100 {
-				return nil, fmt.Errorf("df reported %d%% used", n)
-			}
-			return &proto.DiskUsage{Path: a.Layout.Root, UsedPercent: n}, nil
-		}
-	}
-	return nil, fmt.Errorf("no percentage in df output")
+	return &proto.DiskUsage{Path: a.Layout.Root, UsedPercent: n}
 }
 
 // httpServer sends net/http's own errors, a recovered handler panic among
