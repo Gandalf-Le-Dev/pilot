@@ -26,6 +26,15 @@ func memRules(t *testing.T) []alert.Rule {
 	return []alert.Rule{{Cond: cond}}
 }
 
+func diskRules(t *testing.T) []alert.Rule {
+	t.Helper()
+	cond, err := alert.Parse("host.disk.used_pct > 90")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []alert.Rule{{Cond: cond}}
+}
+
 func TestHostReadingCarriesMemory(t *testing.T) {
 	a := newAgent(t)
 	a.meminfo = func() ([]byte, error) {
@@ -168,6 +177,84 @@ func TestHungDiskReadIsBounded(t *testing.T) {
 	}
 }
 
+// A disk rule that can never evaluate should say so once, naming the path
+// and what df said, rather than stay silent or repeat every sweep.
+func TestUnreadDiskIsLoggedOnce(t *testing.T) {
+	var buf bytes.Buffer
+	a := newAgent(t)
+	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	a.Exec = dfFake{res: transport.Result{ExitCode: 1, Stderr: "df: /opt/pilot: No such file or directory\n"}}
+	a.readings(t.Context(), diskRules(t))
+	a.readings(t.Context(), diskRules(t))
+
+	out := buf.String()
+	if n := strings.Count(out, "host disk unreadable"); n != 1 {
+		t.Fatalf("logged %d times, want once:\n%s", n, out)
+	}
+	for _, want := range []string{"path=" + a.Layout.Root, "exit_code=1", `stderr="df: /opt/pilot: No such file or directory"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log should carry %s:\n%s", want, out)
+		}
+	}
+}
+
+// The warning is about alert rules, so only a sweep that has a disk rule to
+// lose gives it: not one without, and not a status or dashboard read.
+func TestUnreadDiskIsQuietWithoutDiskRule(t *testing.T) {
+	var buf bytes.Buffer
+	a := newAgent(t)
+	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	a.Exec = dfFake{err: errors.New("fork failed")}
+	a.fleet = &FleetConfig{Alerts: []config.Alert{{When: "host.disk.used_pct > 90"}}}
+
+	a.readings(t.Context(), nil)
+	if d := a.diskUsage(t.Context()); d != nil {
+		t.Errorf("diskUsage = %+v, want nil", d)
+	}
+	if strings.Contains(buf.String(), "host disk unreadable") {
+		t.Errorf("warned with no disk rule in the sweep:\n%s", buf.String())
+	}
+}
+
+// A sweep canceled mid-read, e.g. at shutdown, is not a disk fault, and must
+// not spend the one warning a real fault gets.
+func TestCanceledDiskReadIsNotLogged(t *testing.T) {
+	var buf bytes.Buffer
+	a := newAgent(t)
+	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	a.Exec = hungDF{}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if got := a.readings(ctx, diskRules(t))[""].DiskUsedPct; got != nil {
+		t.Errorf("DiskUsedPct = %d, want unset", *got)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("logged a canceled read:\n%s", buf.String())
+	}
+}
+
+func TestReadsDisk(t *testing.T) {
+	tests := map[string]bool{
+		"host.disk.used_pct > 90": true,
+		"host.disk.free_pct < 10": true,
+		"host.mem.used_pct > 90":  false,
+		"service.down":            false,
+	}
+	for when, want := range tests {
+		cond, err := alert.Parse(when)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := readsDisk([]alert.Rule{{Cond: cond}}); got != want {
+			t.Errorf("readsDisk(%q) = %v, want %v", when, got, want)
+		}
+	}
+	if readsDisk(nil) {
+		t.Error("readsDisk(nil) = true, want false")
+	}
+}
+
 // A memory rule that can never evaluate, e.g. in an LXC container reporting
 // MemAvailable above MemTotal, should say so once rather than stay silent or
 // repeat every sweep.
@@ -212,7 +299,7 @@ func TestUnreadMemoryIsQuietWithoutMemRule(t *testing.T) {
 	var buf bytes.Buffer
 	a := newAgent(t)
 	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
-	a.Exec = dfFake{err: errors.New("fork failed")}
+	a.Exec = dfFake{res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 34 66 34% /\n"}}
 	a.meminfo = func() ([]byte, error) {
 		t.Error("memory read with no host.mem rule")
 		return nil, errors.New("no such file")

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
@@ -299,20 +300,37 @@ func (a *Agent) handleDashboard(w http.ResponseWriter, r *http.Request) {
 var diskTimeout = 10 * time.Second
 
 // diskUsage reports headroom on the volume holding releases, or nil when it
-// could not be read. No fallback path: where the Pilot root is its own volume,
-// another figure would resolve a disk alert that nil leaves held.
+// could not be read.
 func (a *Agent) diskUsage(ctx context.Context) *proto.DiskUsage {
+	d, _ := a.readDisk(ctx)
+	return d
+}
+
+// readDisk is diskUsage plus, on failure, the cause as slog attributes. No
+// fallback path: where the Pilot root is its own volume, another figure would
+// resolve a disk alert that nil leaves held.
+func (a *Agent) readDisk(ctx context.Context) (*proto.DiskUsage, []any) {
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, diskTimeout)
 	defer cancel()
 	res, err := a.Exec.Run(ctx, "df -P "+transport.Quote(a.Layout.Root))
-	if err != nil || !res.OK() {
-		return nil
+	if err == nil && res.OK() {
+		if n, ok := release.ParseDiskUsed(res.Stdout); ok {
+			return &proto.DiskUsage{Path: a.Layout.Root, UsedPercent: n}, nil
+		}
 	}
-	n, ok := release.ParseDiskUsed(res.Stdout)
-	if !ok {
-		return nil
+
+	switch {
+	case parent.Err() != nil:
+		// A caller hanging up says nothing about the disk.
+		return nil, nil
+	case err != nil:
+		return nil, []any{"err", err}
+	case !res.OK():
+		return nil, []any{"exit_code", res.ExitCode, "stderr", strings.TrimSpace(res.Stderr)}
+	default:
+		return nil, []any{"stdout", strings.TrimSpace(res.Stdout)}
 	}
-	return &proto.DiskUsage{Path: a.Layout.Root, UsedPercent: n}
 }
 
 // httpServer sends net/http's own errors, a recovered handler panic among
