@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"path"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -23,6 +26,18 @@ type fakeRunner struct {
 	writeFails    bool
 	corruptWrite  bool
 	missing       map[string]bool
+
+	// ambiguous names a site Caddy reports as declared twice.
+	ambiguous string
+
+	// lockHeld makes the host lock look taken by another Pilot.
+	lockHeld bool
+
+	// grepFails makes the search for another block of a domain fail.
+	grepFails bool
+
+	// listFails makes the snippet dir unreadable to the route listing.
+	listFails bool
 }
 
 func newFake(files map[string]string) *fakeRunner {
@@ -36,7 +51,12 @@ func (f *fakeRunner) Run(ctx context.Context, cmd string) (ssh.Result, error) {
 	fields := strings.Fields(cmd)
 
 	switch {
+	case strings.Contains(cmd, "while ! mkdir") && f.lockHeld:
+		return ssh.Result{ExitCode: errLockHeld}, nil
 	case strings.HasPrefix(cmd, "caddy validate"):
+		if f.ambiguous != "" {
+			return ssh.Result{ExitCode: 1, Stderr: "adapting config: ambiguous site definition: " + f.ambiguous}, nil
+		}
 		if f.validateFails {
 			return ssh.Result{ExitCode: 1, Stderr: "adapting config: unexpected token"}, nil
 		}
@@ -65,18 +85,53 @@ func (f *fakeRunner) Run(ctx context.Context, cmd string) (ssh.Result, error) {
 		}
 		sort.Sort(sort.Reverse(sort.StringSlice(found)))
 		return ssh.Result{Stdout: strings.Join(found, "\n")}, nil
-	case strings.HasPrefix(cmd, "ls -1 "):
-		var names []string
-		dir := unquote(strings.Fields(strings.TrimPrefix(cmd, "ls -1 "))[0])
-		for p := range f.files {
-			if base, ok := strings.CutPrefix(p, dir+"/"); ok {
-				names = append(names, base)
+	case strings.Contains(cmd, "grep -lxF"):
+		if f.grepFails {
+			return ssh.Result{ExitCode: 2, Stderr: "grep: _site.x.caddy: Permission denied"}, nil
+		}
+		dir := unquote(fields[2])
+		var matched []string
+		for p, content := range f.files {
+			rel, ok := strings.CutPrefix(p, dir+"/")
+			if !ok || strings.Contains(rel, "/") || !strings.HasSuffix(rel, ".caddy") {
+				continue
+			}
+			for _, m := range grepPattern.FindAllStringSubmatch(cmd, -1) {
+				if slices.Contains(strings.Split(content, "\n"), m[1]) {
+					matched = append(matched, rel)
+					break
+				}
 			}
 		}
+		if len(matched) == 0 {
+			return ssh.Result{ExitCode: 1}, nil
+		}
+		sort.Strings(matched)
+		return ssh.Result{Stdout: strings.Join(matched, "\n")}, nil
+	case strings.Contains(cmd, "for f in *.caddy"):
+		if f.listFails {
+			return ssh.Result{ExitCode: 2}, nil
+		}
+		var names []string
+		dir := unquote(fields[2])
+		for p := range f.files {
+			rel, ok := strings.CutPrefix(p, dir+"/")
+			if !ok {
+				continue
+			}
+			for _, pattern := range []string{"*.caddy", "_site.*/*.caddy"} {
+				if m, _ := path.Match(pattern, rel); m {
+					names = append(names, rel)
+				}
+			}
+		}
+		sort.Strings(names)
 		return ssh.Result{Stdout: strings.Join(names, "\n")}, nil
 	}
 	return ssh.Result{}, nil
 }
+
+var grepPattern = regexp.MustCompile(`-e '([^']*)'`)
 
 func unquote(s string) string {
 	s = strings.TrimSuffix(strings.TrimPrefix(s, "'"), "'")
@@ -96,6 +151,7 @@ func (f *fakeRunner) ReadFile(ctx context.Context, p string) ([]byte, error) {
 }
 
 func (f *fakeRunner) WriteFile(ctx context.Context, p string, data []byte, mode string) error {
+	f.cmds = append(f.cmds, "write "+p)
 	switch {
 	case f.writeFails:
 		// A real shell can truncate and *then* fail, which is exactly how the

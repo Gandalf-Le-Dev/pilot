@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -109,12 +110,31 @@ func runDeploy(ctx context.Context, g *globals, selector string, opts deployOpts
 		return fmt.Errorf("nothing to deploy")
 	}
 
-	for _, s := range deployable {
+	for _, s := range sharedSitesFirst(a.Fleet, deployable) {
 		if err := deployService(ctx, a, s, opts, g.json); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// sharedSitesFirst moves each whole-domain route on a shared domain ahead of
+// the rest. Until it is deployed, such a route may still be the site block
+// of its own that predates sharing, and the plan of a path service on its
+// domain refuses to put the shared site block beside it.
+func sharedSitesFirst(f *config.Fleet, services []*config.Service) []*config.Service {
+	out := slices.Clone(services)
+	slices.SortStableFunc(out, func(a, b *config.Service) int {
+		first := func(s *config.Service) bool { return f.SharesSite(s) && s.Expose.PathPrefix() == "" }
+		switch fa, fb := first(a), first(b); {
+		case fa && !fb:
+			return -1
+		case fb && !fa:
+			return 1
+		}
+		return 0
+	})
+	return out
 }
 
 func deployService(ctx context.Context, a *app.App, s *config.Service, opts deployOpts, asJSON bool) error {

@@ -179,18 +179,7 @@ func BindUsage(content string) (siteBind, defaultBind bool) {
 // the host until the service is next deployed.
 func ExactPaths(snippet string) []string {
 	var exact []string
-	depth := 0
-	for raw := range strings.SplitSeq(snippet, "\n") {
-		line, delta := scanLine(raw)
-		header := depth == 0 && strings.HasSuffix(strings.TrimSpace(line), "{")
-		depth += delta
-		if !header {
-			continue
-		}
-
-		addrs := strings.FieldsFunc(strings.TrimSuffix(strings.TrimSpace(line), "{"), func(r rune) bool {
-			return r == ',' || r == ' ' || r == '\t'
-		})
+	for _, addrs := range siteHeaders(snippet) {
 		for _, addr := range addrs {
 			_, p, ok := strings.Cut(addr, "/")
 			if !ok || strings.HasSuffix(p, "*") || slices.Contains(addrs, addr+"/*") {
@@ -200,6 +189,45 @@ func ExactPaths(snippet string) []string {
 		}
 	}
 	return exact
+}
+
+// PathAddresses returns the site addresses in a snippet that carry a path.
+//
+// Caddy 2.10 deprecates a path in a site address, and Pilot now routes a path
+// through a handle in the domain's shared site. A route rendered before that
+// stays on the host until its service is next deployed.
+func PathAddresses(snippet string) []string {
+	var out []string
+	for _, addrs := range siteHeaders(snippet) {
+		for _, addr := range addrs {
+			if strings.Contains(addr, "/") {
+				out = append(out, addr)
+			}
+		}
+	}
+	return out
+}
+
+// siteHeaders returns the addresses of each top-level block in a snippet. A
+// shared route has none: its top-level blocks are handles.
+func siteHeaders(snippet string) [][]string {
+	if Shared(snippet) {
+		return nil
+	}
+	var out [][]string
+	depth := 0
+	for raw := range strings.SplitSeq(snippet, "\n") {
+		line, delta := scanLine(raw)
+		header := depth == 0 && strings.HasSuffix(strings.TrimSpace(line), "{")
+		depth += delta
+		if !header {
+			continue
+		}
+		out = append(out, strings.FieldsFunc(strings.TrimSuffix(strings.TrimSpace(line), "{"), func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\t'
+		}))
+	}
+	return out
 }
 
 // AppendImport returns content with the import directive appended. It is the

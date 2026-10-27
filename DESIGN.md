@@ -30,7 +30,7 @@ These are the constraints that make Pilot *not* a worse Ansible or a worse Kuber
 5. **No always-on server required.** Alert rules are evaluated by each agent locally.
    Telemetry is stored locally in a ring buffer. Day one works with nothing but your laptop.
 6. **Generated config lives in a fenced garden.** Pilot *owns* `/etc/caddy/pilot.d/`, one
-   file per service, and nothing else. It makes exactly one edit outside that fence — the
+   route per service, and nothing else. It makes exactly one edit outside that fence — the
    `import` line, once, at bootstrap, backed up and validated. The fence is what keeps
    "Pilot manages routing" from sliding into "Pilot manages your OS."
 7. **Boring over clever.** Recreate-style deploys with an honest brief blip beat a
@@ -66,7 +66,7 @@ Fleet
 | **Service** | Named workload with a *runtime* (`compose` / `systemd` / `static`), a source of artifacts, a health check, a host placement, and optionally an `expose:` route. |
 | **Runtime** | The pluggable adapter that knows how to stage, activate, inspect, and roll back one kind of workload. |
 | **Release** | Immutable directory on the host: rendered config + artifact + manifest. Identified by `<seq>-<shorthash>`, e.g. `0042-9f3ac1b`. |
-| **Route** | A rendered Caddy snippet at `/etc/caddy/pilot.d/<svc>.caddy`, owned entirely by Pilot. |
+| **Route** | A rendered Caddy snippet at `/etc/caddy/pilot.d/<svc>.caddy`, or, on a domain that services share, `handle` blocks at `pilot.d/_site.<domain>/<svc>.caddy`. Owned entirely by Pilot. |
 | **Deployment** | One attempt to move a service on a host from release A to release B. |
 | **Drift** | Divergence between the manifest of `current` and what's actually running or routed. |
 
@@ -321,8 +321,11 @@ them:
 /etc/caddy/
 ├── Caddyfile                        # YOURS. Pilot never writes here.
 └── pilot.d/
-    ├── api.caddy                    # Pilot's. One file per exposed service.
-    └── blog.caddy
+    ├── blog.caddy                   # Pilot's. One file per exposed service,
+    ├── _site.example.com.caddy      # or, on a domain services share, one site
+    └── _site.example.com/           # block per domain that imports one file
+        ├── api.caddy                # of handles per service routed into it.
+        └── site.caddy
 ```
 
 `manifest.json` is the contract: it records exactly what a release claims to be, so
@@ -340,8 +343,9 @@ automate in a way nginx isn't. *(Resolved: Q2 — Pilot generates routes from v1
 
 ### The ownership fence
 
-- Pilot writes **only** `/etc/caddy/pilot.d/<service>.caddy`, one file per service, named
-  after the service. Atomic write + rename.
+- Pilot writes **only** under `/etc/caddy/pilot.d/`: `<service>.caddy`, one file per
+  service, named after the service. A domain that services share is the exception, see
+  [Shared domains](#shared-domains). Atomic write + rename.
 - Your `/etc/caddy/Caddyfile` is hand-written, holds global options, and contains one line:
   `import pilot.d/*.caddy`
 - Pilot never touches global options, TLS config, or anything you wrote. If a generated
@@ -398,12 +402,13 @@ expose:
   timeouts: { read: 60s }
 ```
 
-`path` is always a prefix. Caddy reads a path in a site address as an exact match, and
-`/v1/*` does not match bare `/v1`, so Pilot renders two addresses per domain:
-`api.example.com/v1, api.example.com/v1/*`. A single `/v1*` would also catch `/v1beta`.
-`/`, `/*` and an empty path all mean the whole domain. Validation accepts only URL path
-characters, with `*` allowed only as a trailing `/*`. Caddy does not strip the prefix, so
-the upstream receives the full request path.
+`path` is always a prefix. A Caddy path matcher is an exact match, and `/v1/*` does not
+match bare `/v1`, so Pilot renders two handles, `handle /v1` and `handle /v1/*`, with the
+same body. A single `/v1*` would also catch `/v1beta`. `/`, `/*` and an empty path all
+mean the whole domain. Validation accepts only URL path characters, with `*` allowed only
+as a trailing `/*`. Caddy does not strip the prefix, so the upstream receives the full
+request path. A route with a path always goes into its domain's shared site, described
+below.
 
 ```yaml
 # static site
@@ -464,6 +469,97 @@ api.example.com {
 Caddy **holds** in-flight requests and retries instead of returning 502. A 3-second outage
 becomes a 3-second latency spike. That alone justifies doing this in v1 rather than later.
 
+### Shared domains
+
+Caddy accepts one site block per address, and rejects a second one as an ambiguous site
+definition. That error stops the whole configuration from loading, so it takes down every
+site on the host at the next restart. Caddy 2.10 also deprecates a path in a site
+address. A domain that several services share therefore cannot be a block in each
+service's file. Pilot gives the domain one block and gives each service a file of
+`handle` blocks inside it:
+
+```caddyfile
+# pilot.d/_site.example.com.caddy, written by Pilot for the domain
+example.com {
+    bind 10.0.0.1                          # the host's caddy.bind, if any
+    import _site.example.com/*.caddy
+}
+
+# pilot.d/_site.example.com/api.caddy, the route of service api (path: /v1/*)
+# shared site: example.com
+handle /v1 {
+    encode gzip zstd
+    reverse_proxy 127.0.0.1:8081 { … }
+}
+
+handle /v1/* {
+    encode gzip zstd
+    reverse_proxy 127.0.0.1:8081 { … }
+}
+```
+
+The rules:
+
+- A route with a `path` is always shared. A whole-domain route is shared when another
+  service on one of its hosts serves a path on one of its domains. It then renders as
+  one matcher-less `handle`. A domain that only one whole-domain service uses keeps an
+  ordinary site block of its own, so most routes never change.
+- A shared route writes one copy of its handles per domain. Its `# shared site:` header
+  lists the domains, and Pilot reads the header to place the files.
+- The site block holds only the bind and the import. Every service on the domain writes
+  the same bytes, so no service owns it. It goes away with the domain's last handles,
+  because a site block with nothing to import still answers its domain with an empty
+  200. A route that wants the domain to itself also removes a site block that was left
+  with no handles at all.
+- Caddy sorts the handles itself, deepest path first and the matcher-less one last,
+  whatever file they came from. It sorts by path length only when a handle has a single
+  path, which is why `/v1` and `/v1/*` are two handles and not one.
+- A route that changes layout moves in one validated reload. The files it leaves are
+  removed first, then the new ones are written, so no state on disk declares the domain
+  twice. If Caddy rejects the result, every file goes back.
+- A deploy never changes another service's files. If the route would declare a domain a
+  second time beside another service's block, the plan refuses it, and the install
+  refuses it again before it writes anything. If that block is the status page's route,
+  `pilot doctor --fix` reinstalls it into the shared site. For Pilot's own blocks, Pilot
+  does not rely on Caddy's validation: the rejected config would sit on disk until the
+  undo, and a Caddy restart in that moment would fail for every site on the host. The
+  search finds a block whose address line holds the domain alone, which is how Pilot
+  renders one. A block in your own Caddyfile, or one that lists several addresses on
+  its line, is still caught only by `caddy validate`, and the install then puts every
+  file back.
+- `expose.raw` on a shared route goes inside the handle, so it cannot set `bind`, `tls`,
+  `log` or `handle_errors`. Caddy refuses those inside a `handle`. `pilot validate`
+  reports it, and rendering refuses it. For a DNS-01 certificate on a shared domain, set
+  the `acme_dns` global option in your Caddyfile instead of a `tls` block.
+- Every change to route files on a host takes a lock first, the directory
+  `pilot.d/.pilot-lock`. The agent, a CLI deploying without one, `pilot routes --prune`
+  and `pilot doctor --fix` can run on one host at once, and they share the site blocks
+  and the decision to remove one. The CLI waits 30 seconds for it and then names the
+  lock. The agent waits up to 10 minutes, because its route update lands after
+  activation, and giving up there would roll healthy code back. A plan warns when the
+  lock is held. A lock older than 10 minutes belongs to a Pilot that died holding it, and
+  the next change breaks it. The lock holds its holder's token: a holder only releases
+  its own lock, and two waiters cannot both break the same stale one.
+- The drift check, `pilot diff` and the plan compare every file a route occupies,
+  including the domain's site block.
+- The agent renders a route itself only for a blue-green rollback, and it cannot see
+  the other services. It renders a shared route when the release's own route is shared,
+  or when one of the domains already has a site block on the host.
+- `pilot doctor` reports a site block with no handles in it, and handles with no site
+  block, which Caddy never serves. `pilot doctor --fix` and `pilot routes --prune`
+  remove the first and rebuild the second from the handles' header.
+
+Moving an existing host to this layout happens on the next deploy of each service. A
+path route installed before this layout still works beside the new site block, because
+its site addresses differ from the bare domain. A whole-domain route installed as its own
+block does not, so the plan of a path service on that domain refuses and names the
+whole-domain service. Redeploy the whole-domain service first, then the path services. A
+`pilot deploy` of several services puts such whole-domain services first. `pilot doctor`
+reports both states under `caddy-paths` and names the service to redeploy first.
+A rollback to a release from before the layout restores that release's route. It
+installs cleanly unless it is a whole-domain block on a domain that other handles still
+use, in which case the newer route stays and the rollback says so.
+
 ### Where routing fits the deploy pipeline
 
 Caddy's two-phase behaviour maps exactly onto stage/activate:
@@ -490,16 +586,11 @@ Ordering rules:
 - Containers fronted by Caddy must publish on **loopback** (`127.0.0.1:8080:8080`), not
   `0.0.0.0`. Pilot validates this at stage time and refuses a service that exposes a port
   to the world while also being proxied — that's a real hole worth catching mechanically.
-- Two services can share a domain via distinct path prefixes (`path: /api` and none),
-  because path is part of a Caddyfile site address: each service keeps its own blocks.
-  Caddy orders site blocks by their longest host first and compares path length only
-  between equal hosts, so Pilot renders one block per domain. Within one domain the
-  deeper path then wins. A block that mixed domains would let a long second domain
-  outrank a deeper path on a shorter shared one.
-- A `handle` inside one block per domain would read better, but two services' files
-  cannot both declare the bare domain. Caddy 2.10 logs a deprecation warning for every
-  path in a site address. Moving off it means one generated file per domain, tracked in
-  docket #124.
+- Two services can share a domain via distinct path prefixes (`path: /api` and none).
+  See [Shared domains](#shared-domains).
+- Pilot renders one site block per domain. Caddy orders site blocks by their longest host
+  first, so a block that mixed domains would let a long second domain outrank a shorter
+  domain's shared site block.
 - Pilot detects genuine collisions at plan time, before anything ships, comparing the
   normalised prefix, so `/api` and `/api/*` on one domain collide.
 - First deploy of a new domain triggers ACME issuance, which can fail if DNS isn't pointed
@@ -782,8 +873,8 @@ Notifiers are deliberately dumb — one HTTP POST each (webhook, ntfy, Slack, Di
 email). Dedup and per-rule cooldown live in the agent so a flapping service doesn't
 generate 400 messages.
 
-**Drift detection** (5m) — `Runtime.Fingerprint()` vs `manifest.json`, *plus* a hash of
-each `pilot.d/*.caddy` file. Catches the classic small-fleet failure: someone SSH'd in and
+**Drift detection** (5m) — `Runtime.Fingerprint()` vs `manifest.json`, *plus* a comparison
+of each file a route occupies in `pilot.d/`, a shared domain's site block included. Catches the classic small-fleet failure: someone SSH'd in and
 hand-edited a compose file or a route at 2am, and the next deploy would silently revert it.
 
 Only a deploy that ships a new release resets drift. A deploy with nothing new to ship
@@ -1039,9 +1130,10 @@ is checked on every command; incompatible agents are refused with a "re-bootstra
 | Caddy admin API unreachable | Deploy aborts at stage for exposed services with a clear message — you'd be shipping something unroutable. |
 | ACME issuance fails (DNS not pointed) | Reported distinctly from an app health failure; app stays up on localhost. |
 | Host unreachable during fan-out | Marked failed; `max_unhealthy` decides whether to continue. |
-| Two operators deploy at once | Per-service `flock` on the host; second waits, or fails fast with `--no-wait`. |
+| Two operators deploy at once | Per-service `flock` on the host; second waits, or fails fast with `--no-wait`. Route files take a host-wide lock, `pilot.d/.pilot-lock`, because services that share a domain share its site block. |
 | Hand-edited compose file or route on the host | Drift detected within 5m, alert fired, `pilot diff` shows it. |
 | Orphaned `pilot.d` file after service removal | Reported by `pilot doctor`; removed by `--fix` or `pilot routes --prune`. |
+| A path service's route meets a whole-domain block for the same domain | The plan refuses before anything ships and names the whole-domain service to deploy first. The install checks again before it writes, and `pilot doctor` reports the same state. |
 | `import` line removed from the global Caddyfile | `pilot doctor` reports it; never silently re-appended. `--fix` restores it. |
 | Global Caddyfile is brace-less single-site form | `bootstrap` refuses to append and tells you to wrap it in braces — appending would nest the import inside that site. |
 | CLI is newer than the agent | Handshake refuses before any work; `pilot bootstrap <host>` fixes it. The protocol version covers the **config schema**, so a new field is a version bump — see below. |

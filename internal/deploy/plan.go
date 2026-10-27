@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path"
 	"slices"
 	"sort"
 	"strings"
@@ -215,6 +214,14 @@ func planHost(ctx context.Context, in Input, p *Plan, host string) (HostPlan, er
 		if err != nil {
 			return hp, err
 		}
+		if hp.Route == RouteInstall || hp.Route == RouteUpdate {
+			paths := caddy.Paths{SnippetDir: in.Fleet.Caddy.SnippetDir}
+			if held, _ := caddy.LockHeld(ctx, t.Client, paths); held {
+				hp.Warnings = append(hp.Warnings, fmt.Sprintf(
+					"another Pilot holds the route lock %s/.pilot-lock; this route change waits for it, "+
+						"and a route update that gives up after activation rolls the deploy back", paths.SnippetDir))
+			}
+		}
 	}
 
 	if current == "" {
@@ -231,7 +238,7 @@ func planHost(ctx context.Context, in Input, p *Plan, host string) (HostPlan, er
 	}
 
 	hp.Changes = diff(prev, p)
-	hp.Warnings = leftBehind(in.Service, hp.Changes)
+	hp.Warnings = append(hp.Warnings, leftBehind(in.Service, hp.Changes)...)
 	if len(hp.Changes) == 0 && (hp.Route == RouteNone || hp.Route == RouteNotExposed) {
 		// Nothing new ships, so the release that stays live is the current
 		// one, not the sequence number this plan would have used.
@@ -300,14 +307,20 @@ func startable(s *config.Service) bool {
 // Most deploys land here with an identical snippet, which is what lets the
 // executor skip the Caddy reload entirely.
 func planRoute(ctx context.Context, in Input, p *Plan, t *runtime.Target) (RouteAction, error) {
-	target := path.Join(in.Fleet.Caddy.SnippetDir, caddy.SnippetName(p.Service.Name))
-
-	existing, err := t.Client.ReadFile(ctx, target)
-	if err != nil {
-		return RouteInstall, nil
-	}
-	if string(existing) == p.Snippet {
+	read := func(file string) ([]byte, error) { return t.Client.ReadFile(ctx, file) }
+	paths := caddy.Paths{SnippetDir: in.Fleet.Caddy.SnippetDir}
+	_, state := caddy.Installed(read, paths, p.Service.Name, p.Snippet)
+	if state == caddy.RouteMatches {
 		return RouteNone, nil
+	}
+
+	// Refused here rather than at install, which for a changed route comes
+	// after activation and would roll the code back over a routing conflict.
+	if err := caddy.CheckSites(ctx, t.Client, paths, p.Service.Name, p.Snippet); err != nil {
+		return RouteNone, fmt.Errorf("%s: %w", t.Host.Name, err)
+	}
+	if state == caddy.RouteMissing {
+		return RouteInstall, nil
 	}
 	return RouteUpdate, nil
 }
@@ -502,6 +515,7 @@ func renderRoute(s *config.Service, f *config.Fleet, layout release.Layout) (str
 		Expose:  s.Expose,
 		Root:    layout.Current(s.Name),
 		Bind:    f.CaddyBindFor(s.Hosts),
+		Shared:  f.SharesSite(s),
 	})
 }
 

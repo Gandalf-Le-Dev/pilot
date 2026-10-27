@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
@@ -83,7 +85,7 @@ func (a *Agent) runBlueGreen(jobID string, svc *config.Service, rt runtime.Runti
 	// finish against the old upstream and new ones go to the new color.
 	snippet := req.Route
 	if snippet == "" {
-		snippet, err = a.renderColorRoute(svc, target)
+		snippet, err = a.renderColorRoute(svc, target, req.Release)
 		if err != nil {
 			a.jobs.Finish(jobID, err, false)
 			return
@@ -205,8 +207,9 @@ func (a *Agent) abandonColor(ctx context.Context, jobID string, t *runtime.Targe
 	a.jobs.Event(jobID, proto.PhaseRollback, "removed the %s stack", c)
 }
 
-// renderColorRoute produces the Caddy snippet pointing at a color's port.
-func (a *Agent) renderColorRoute(svc *config.Service, c config.Color) (string, error) {
+// renderColorRoute produces the Caddy snippet pointing at a color's port, for
+// the release being made live.
+func (a *Agent) renderColorRoute(svc *config.Service, c config.Color, releaseID string) (string, error) {
 	if svc.Expose == nil {
 		return "", fmt.Errorf("service %q has no route to flip", svc.Name)
 	}
@@ -218,7 +221,25 @@ func (a *Agent) renderColorRoute(svc *config.Service, c config.Color) (string, e
 		Expose:  &scoped,
 		Root:    a.Layout.Current(svc.Name),
 		Bind:    a.CaddyBind(),
+		Shared:  a.routeShared(svc, releaseID),
 	})
+}
+
+// routeShared reports whether a route rendered here must join the shared site
+// blocks. The agent has no view of the other services, so it reads the
+// decision the CLI made from the release's own route, and also joins any
+// shared site one of the domains already has: a block of its own beside it
+// would be refused.
+func (a *Agent) routeShared(svc *config.Service, releaseID string) bool {
+	if b, err := os.ReadFile(a.Layout.Snippet(svc.Name, releaseID)); err == nil && caddy.Shared(string(b)) {
+		return true
+	}
+	for _, d := range svc.Expose.Domains {
+		if _, err := os.Stat(filepath.Join(a.Caddy.SnippetDir, caddy.SiteFile(d))); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // activeColor reports which color is currently serving.

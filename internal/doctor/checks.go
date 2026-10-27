@@ -285,7 +285,8 @@ func checkCaddyImport(ctx context.Context, env *Env) []Finding {
 }
 
 // checkCaddyRoutes finds routes on a host with no matching service, which is
-// what a removed service leaves behind.
+// what a removed service leaves behind, and shared site blocks that a failed
+// change or a hand edit left without routes, or routes without.
 func checkCaddyRoutes(ctx context.Context, env *Env) []Finding {
 	var out []Finding
 	paths := hostPaths(env.Fleet)
@@ -297,23 +298,67 @@ func checkCaddyRoutes(ctx context.Context, env *Env) []Finding {
 		}
 
 		installed, err := caddy.ListSnippets(ctx, client, paths)
-		if err != nil || len(installed) == 0 {
+		if err != nil {
 			continue
 		}
-
-		for _, orphan := range caddy.Orphans(installed, knownRoutes(env, name)) {
-			svc, c := orphan, client
-			out = append(out, Finding{
-				Status: StatusWarn, Scope: ScopeHost, Host: name,
-				Title:   "orphaned route: " + caddy.SnippetName(svc),
-				Detail:  "no service named " + svc + " is placed on this host",
-				FixDesc: "remove it and reload caddy",
-				Fix: func(ctx context.Context) error {
+		empty, headless, err := caddy.SiteProblems(ctx, client, paths)
+		if err != nil {
+			continue
+		}
+		c := client
+		out = append(out, caddyRouteFindings(name, installed, knownRoutes(env, name), empty, headless,
+			func(svc string) func(context.Context) error {
+				return func(ctx context.Context) error {
 					_, err := caddy.RemoveSnippet(ctx, c, paths, svc)
 					return err
-				},
-			})
+				}
+			},
+			func(ctx context.Context) error {
+				_, err := caddy.TidySites(ctx, c, paths)
+				return err
+			})...)
+	}
+	return out
+}
+
+// caddyRouteFindings judges a host's routes against the services placed on
+// it. remove and tidy are the repairs, so the judgement stays testable.
+func caddyRouteFindings(host string, installed []string, known map[string]bool, empty []string, headless []caddy.HeadlessSite,
+	remove func(svc string) func(context.Context) error, tidy func(context.Context) error) []Finding {
+	// Orphans come first: fixes run in finding order, and their removal must
+	// land before a shared site block is rebuilt around what is left.
+	var out []Finding
+	for _, svc := range caddy.Orphans(installed, known) {
+		out = append(out, Finding{
+			Status: StatusWarn, Scope: ScopeHost, Host: host,
+			Title:   "orphaned route: " + caddy.SnippetName(svc),
+			Detail:  "no service named " + svc + " is placed on this host",
+			FixDesc: "remove it and reload caddy",
+			Fix:     remove(svc),
+		})
+	}
+	for _, f := range empty {
+		out = append(out, Finding{
+			Status: StatusWarn, Scope: ScopeHost, Host: host,
+			Title:   "shared site block with no routes in it: " + f,
+			Detail:  "Caddy answers its domain with an empty 200, and a route that serves the whole domain is refused beside it",
+			FixDesc: "remove it and reload caddy",
+			Fix:     tidy,
+		})
+	}
+	for _, h := range headless {
+		// Rebuilding the site block would route services the fleet removed;
+		// the orphan findings above take those away instead.
+		if !slices.ContainsFunc(h.Services, func(s string) bool { return known[s] }) {
+			continue
 		}
+		out = append(out, Finding{
+			Status: StatusFail, Scope: ScopeHost, Host: host,
+			Title:   "routes with no site block: " + h.Dir + "/",
+			Detail:  "no site block imports them, so Caddy serves none of these routes",
+			FixDesc: "rebuild the site block from the routes' header and reload caddy",
+			Fix:     tidy,
+		})
 	}
 	return out
 }
@@ -361,17 +406,15 @@ func checkCaddyBind(ctx context.Context, env *Env) []Finding {
 			continue // no split servers, or default_bind already covers ours
 		}
 
+		read := func(file string) ([]byte, error) { return client.ReadFile(ctx, file) }
 		dead := false
 		for _, s := range env.ServicesOn(name) {
 			if s.Expose == nil {
 				continue
 			}
-			snippet, err := client.ReadFile(ctx, path.Join(paths.SnippetDir, caddy.SnippetName(s.Name)))
-			if err != nil {
-				continue // not installed yet; InstallSnippet refuses at deploy time
-			}
-			if hasBind, _ := caddy.BindUsage(string(snippet)); hasBind {
-				continue
+			installed, binds := caddy.InstalledBinds(read, paths, s.Name, s.Expose.Domains)
+			if !installed || binds {
+				continue // bound, or not installed yet: InstallSnippet refuses a bind-less route
 			}
 			dead = true
 			out = append(out, Finding{
@@ -393,7 +436,9 @@ func checkCaddyBind(ctx context.Context, env *Env) []Finding {
 
 // checkCaddyPaths finds installed routes whose path matches only itself, a
 // route that deploys green, passes health and TLS, and answers every real
-// request with an empty 200.
+// request with an empty 200. It also finds routes on a shared domain still
+// installed the way Pilot rendered them before Caddy 2.10 deprecated a path in
+// a site address.
 func checkCaddyPaths(ctx context.Context, env *Env) []Finding {
 	var out []Finding
 	paths := hostPaths(env.Fleet)
@@ -403,22 +448,68 @@ func checkCaddyPaths(ctx context.Context, env *Env) []Finding {
 		if client == nil {
 			continue
 		}
+		own := map[string]string{}
 		for _, s := range env.ServicesOn(name) {
-			if s.Expose == nil || s.Expose.Path == "" {
+			if !env.Fleet.SharesSite(s) {
 				continue
 			}
-			snippet, err := client.ReadFile(ctx, path.Join(paths.SnippetDir, caddy.SnippetName(s.Name)))
-			if err != nil {
-				continue // not installed yet; the next deploy renders a prefix
+			// Missing means not installed, or already handles in the shared site.
+			if snippet, err := client.ReadFile(ctx, path.Join(paths.SnippetDir, caddy.SnippetName(s.Name))); err == nil {
+				own[s.Name] = string(snippet)
 			}
-			if exact := caddy.ExactPaths(string(snippet)); len(exact) > 0 {
-				out = append(out, Finding{
-					Status: StatusFail, Scope: ScopeHost, Host: name,
-					Title:  "route for " + s.Name + " matches only " + strings.Join(exact, ", "),
-					Detail: "a path in a Caddy site address is an exact match, so every request below it gets an empty 200",
-					Hint:   "redeploy " + s.Name + " to install a route that matches the whole path prefix",
-				})
+		}
+		out = append(out, caddyPathFindings(name, env.ServicesOn(name), own)...)
+	}
+	return out
+}
+
+// caddyPathFindings judges the routes on a shared domain that a host still
+// has in a file of their own, keyed by service.
+func caddyPathFindings(host string, services []*config.Service, own map[string]string) []Finding {
+	// A whole-domain block on a shared domain refuses the path services their
+	// shared site, so they must wait for it.
+	blockers := func(s *config.Service) string {
+		var names []string
+		for _, o := range services {
+			snippet, ok := own[o.Name]
+			if ok && o.Name != s.Name && o.Expose.Path == "" && len(caddy.PathAddresses(snippet)) == 0 &&
+				slices.ContainsFunc(o.Expose.Domains, func(d string) bool { return slices.Contains(s.Expose.Domains, d) }) {
+				names = append(names, o.Name)
 			}
+		}
+		if len(names) == 0 {
+			return ""
+		}
+		return strings.Join(names, ", ") + ", then "
+	}
+
+	var out []Finding
+	for _, s := range services {
+		snippet, ok := own[s.Name]
+		if !ok {
+			continue
+		}
+		if exact := caddy.ExactPaths(snippet); len(exact) > 0 {
+			out = append(out, Finding{
+				Status: StatusFail, Scope: ScopeHost, Host: host,
+				Title:  "route for " + s.Name + " matches only " + strings.Join(exact, ", "),
+				Detail: "a path in a Caddy site address is an exact match, so every request below it gets an empty 200",
+				Hint:   "redeploy " + blockers(s) + s.Name + " to install a route that matches the whole path prefix",
+			})
+		} else if addrs := caddy.PathAddresses(snippet); len(addrs) > 0 {
+			out = append(out, Finding{
+				Status: StatusWarn, Scope: ScopeHost, Host: host,
+				Title:  "route for " + s.Name + " puts its path in the site address " + strings.Join(addrs, ", "),
+				Detail: "Caddy 2.10 deprecates a path in a site address and logs a warning for each one on every reload",
+				Hint:   "redeploy " + blockers(s) + s.Name + " to move it into a handle in the domain's shared site, " + caddy.SiteFile(s.Expose.Domains[0]),
+			})
+		} else if s.Expose.Path == "" {
+			out = append(out, Finding{
+				Status: StatusWarn, Scope: ScopeHost, Host: host,
+				Title:  "route for " + s.Name + " serves " + strings.Join(s.Expose.Domains, ", ") + " as a site of its own",
+				Detail: "another service serves a path on that domain, and its deploys are refused while this block declares the whole domain: Caddy would reject the shared site block as a second one",
+				Hint:   "redeploy " + s.Name + " first, then the services with a path on its domains",
+			})
 		}
 	}
 	return out

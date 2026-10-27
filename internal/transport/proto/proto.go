@@ -76,7 +76,13 @@ import (
 // An older agent would ignore the field and deploy that release onto itself,
 // "roll back" to it on a failed check, and could prune the real rollback
 // target.
-const Version = 13
+//
+// Version 14 changed what a deploy's `route` may hold: a route on a domain
+// that services share is a set of `handle` blocks, installed under the
+// domain's _site.<domain>/ beside a site block Pilot writes for it. An older
+// agent would install the handles as a file of their own, which Caddy
+// refuses: it reads a top-level `handle` as a site address.
+const Version = 14
 
 // SchemaDigest pins the configuration schema this protocol version speaks.
 //

@@ -173,13 +173,15 @@ func routeTexts(ctx context.Context, a *app.App, t *runtime.Target, service, cur
 	if err != nil {
 		return "", "", false
 	}
-	installed, err := t.Client.ReadFile(ctx, path.Join(a.Fleet.Caddy.SnippetDir, caddy.SnippetName(service)))
-	if err != nil {
-		// The release carries a route but none is installed, which is itself
-		// a divergence worth reporting.
-		return string(deployed), "", true
+	read := func(file string) ([]byte, error) { return t.Client.ReadFile(ctx, file) }
+	installed, state := caddy.Installed(read, a.CaddyPaths(), service, string(deployed))
+	if state != caddy.RouteMatches && caddy.Shared(string(deployed)) {
+		before, after = caddy.SharedTexts(read, a.CaddyPaths(), service, string(deployed))
+		return before, after, true
 	}
-	return string(deployed), string(installed), string(deployed) != string(installed)
+	// A release that carries a route none of which is installed is itself a
+	// divergence worth reporting.
+	return string(deployed), installed, state != caddy.RouteMatches
 }
 
 func hostsFor(services []*config.Service) []string {

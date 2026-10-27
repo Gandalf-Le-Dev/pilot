@@ -176,6 +176,12 @@ writes one file per service under `/etc/caddy/pilot.d/`, and makes exactly one
 edit outside that directory — a single `import` line, added once, with a backup
 taken first and restored if Caddy then rejects the result.
 
+Services can share a domain by path. Pilot then writes one site block for the
+domain, `_site.<domain>.caddy`, and each service's route becomes `handle` blocks
+in `_site.<domain>/<service>.caddy`. Caddy sends a request to the deepest
+matching path. No generated file puts a path in a site address, which Caddy 2.10
+deprecates.
+
 ```yaml
 expose:
   domains: [api.example.com]

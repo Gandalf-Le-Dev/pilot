@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path"
 	"strings"
 	"time"
 
@@ -172,13 +171,13 @@ func statusRouteDrift(ctx context.Context, r caddy.Runner, f *config.Fleet, path
 		return nil
 	}
 	file := caddy.SnippetName(server.SnippetName)
-	got, err := r.ReadFile(ctx, path.Join(paths.SnippetDir, file))
+	read := func(file string) ([]byte, error) { return r.ReadFile(ctx, file) }
 
 	var title string
-	switch {
-	case err != nil:
+	switch _, state := caddy.Installed(read, paths, server.SnippetName, want); state {
+	case caddy.RouteMissing:
 		title = "status page route missing: " + file
-	case string(got) != want:
+	case caddy.RouteDiffers:
 		title = "status page route differs from what Pilot renders: " + file
 	default:
 		return nil

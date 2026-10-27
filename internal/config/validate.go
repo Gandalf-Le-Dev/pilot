@@ -22,6 +22,7 @@ func Validate(f *Fleet) Diagnostics {
 		validateService(f, f.Services[name], &ds)
 	}
 	validateRouteCollisions(f, &ds)
+	validateSharedRaw(f, &ds)
 	validatePortCollisions(f, &ds)
 	validateNotifiers(f, &ds)
 	validateAlertList(f, FleetFile, "alerts", f.Alerts, alert.ScopeHost, &ds)
@@ -333,7 +334,7 @@ func validateBuild(s *Service, ds *Diagnostics) {
 }
 
 // exposePath admits RFC 3986 path characters, minus `*` except as a trailing
-// /*. Anything else could split or corrupt the rendered site address line.
+// /*. Anything else could split or corrupt the rendered `handle` line.
 var exposePath = regexp.MustCompile(`^(/[A-Za-z0-9._~!$&'()+;=:@%-]*)*(/\*)?$`)
 
 func validateExpose(s *Service, ds *Diagnostics) {
@@ -367,7 +368,7 @@ func validateExpose(s *Service, ds *Diagnostics) {
 		ds.ErrorHint(file, "expose.path", fmt.Sprintf("%q has a wildcard other than a trailing /*", p),
 			"a path is a prefix: /v1 and /v1/* both serve /v1 and everything under it")
 	case !exposePath.MatchString(p):
-		ds.ErrorHint(file, "expose.path", fmt.Sprintf("%q cannot sit in a Caddy site address", p),
+		ds.ErrorHint(file, "expose.path", fmt.Sprintf("%q cannot sit in a Caddy path matcher", p),
 			"use URL path characters only, such as /v1/*: no spaces, commas, braces, quotes, query or fragment; percent-encode other characters, e.g. /caf%C3%A9")
 	}
 
@@ -892,6 +893,22 @@ func validateRouteCollisions(f *Fleet, ds *Diagnostics) {
 				fmt.Sprintf("route %q on host %q is also claimed by: %s",
 					route, host, strings.Join(others, ", ")),
 				"give each service a distinct domain or `expose.path`")
+		}
+	}
+}
+
+// validateSharedRaw catches a raw block on a shared route that sets what only
+// a whole site may, which rendering would otherwise refuse at deploy time.
+func validateSharedRaw(f *Fleet, ds *Diagnostics) {
+	for _, name := range f.ServiceNames() {
+		s := f.Services[name]
+		if !f.SharesSite(s) {
+			continue
+		}
+		if d := s.Expose.SiteDirective(); d != "" {
+			ds.ErrorHint(s.File, "expose.raw",
+				fmt.Sprintf("`%s` configures the whole site, but this route shares its domain, so its raw block goes inside a `handle`, where Caddy refuses it", d),
+				"for a DNS-01 certificate, set `acme_dns` in the Caddyfile's global options; anything else site-wide needs a domain this route has to itself")
 		}
 	}
 }

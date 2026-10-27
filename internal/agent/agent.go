@@ -120,6 +120,9 @@ func New(opts Options) (*Agent, error) {
 			Caddyfile:  orDefault(opts.Caddyfile, config.DefaultCaddyfile),
 			SnippetDir: orDefault(opts.Snippets, config.DefaultSnippetDir),
 			Admin:      orDefault(opts.Admin, config.DefaultCaddyAdmin),
+			// A route update lands after activation, so giving up on the lock
+			// rolls healthy code back; wait as long as a live lock can last.
+			LockWait: caddy.LockStale,
 		},
 	}
 

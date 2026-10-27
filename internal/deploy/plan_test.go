@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport/local"
 )
 
 // A plan is printed to a terminal and may end up in CI output, so it must name
@@ -171,6 +173,24 @@ func TestRenderRoute(t *testing.T) {
 		}
 		if strings.Contains(got, "releases/") {
 			t.Errorf("route must not pin a release directory:\n%s", got)
+		}
+	})
+
+	// The whole-domain service must leave the site block to Pilot as soon as
+	// a path service shares its domain, or Caddy would see two blocks for it.
+	t.Run("a whole-domain route beside a path route is shared", func(t *testing.T) {
+		site := &config.Service{Name: "site", Hosts: []string{"web-1"}, Expose: &config.Expose{Domains: []string{"example.com"}, Upstream: 8080}}
+		api := &config.Service{Name: "api", Hosts: []string{"web-1"}, Expose: &config.Expose{Domains: []string{"example.com"}, Path: "/v1", Upstream: 8081}}
+		fleet := &config.Fleet{Services: map[string]*config.Service{"site": site, "api": api}}
+
+		for _, s := range []*config.Service{site, api} {
+			got, err := renderRoute(s, fleet, layout)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(got, "\n# shared site: example.com\n") || strings.Contains(got, "example.com {") {
+				t.Errorf("%s should render as handles in the shared site:\n%s", s.Name, got)
+			}
 		}
 	})
 }
@@ -494,5 +514,74 @@ func TestActivationAppliesTheUnitKindDefault(t *testing.T) {
 	written := &config.Service{Name: "runner", Unit: &config.Unit{Name: "runner.service", Kind: config.UnitService}}
 	if got := diff(&release.Manifest{Activation: activation(omitted)}, &Plan{Activation: activation(written)}); len(got) != 0 {
 		t.Errorf("diff = %+v, want none", got)
+	}
+}
+
+// A path route arriving on a domain whose whole-domain service still has a
+// site block of its own is refused at plan time: at install it would come
+// after activation, and Caddy would reject the shared site block anyway.
+func TestPlanRefusesASharedSiteBesideAnOldBlock(t *testing.T) {
+	root := t.TempDir()
+	layout := release.NewLayout(filepath.Join(root, "pilot"))
+	site := &config.Service{Name: "site", Runtime: config.RuntimeCompose, Hosts: []string{"web-1"},
+		Expose: &config.Expose{Domains: []string{"example.com"}, Upstream: 8080}}
+	api := &config.Service{Name: "api", Runtime: config.RuntimeCompose, Hosts: []string{"web-1"},
+		Expose: &config.Expose{Domains: []string{"example.com"}, Path: "/v1", Upstream: 8081}}
+	fleet := &config.Fleet{
+		Caddy:    config.Caddy{SnippetDir: filepath.Join(root, "pilot.d")},
+		Services: map[string]*config.Service{"site": site, "api": api},
+	}
+	write(t, filepath.Join(fleet.Caddy.SnippetDir, "site.caddy"), "example.com {\n\treverse_proxy 127.0.0.1:8080\n}\n")
+
+	in := Input{
+		Service: api, Fleet: fleet, Layout: layout,
+		Build: &build.Result{Artifacts: []release.Artifact{{Name: "image", Digest: "sha256:aaaa"}}},
+		Targets: map[string]*runtime.Target{"web-1": {
+			Service: api, Host: &config.Host{Name: "web-1"}, Layout: layout, Client: local.New("web-1"),
+		}},
+	}
+	_, err := Compute(t.Context(), in)
+	if err == nil || !strings.Contains(err.Error(), "first deploy site") {
+		t.Fatalf("want the plan refused, naming site, got: %v", err)
+	}
+
+	in.Service, in.Targets["web-1"].Service = site, site
+	if _, err := Compute(t.Context(), in); err != nil {
+		t.Errorf("site itself moves its own block into the shared site: %v", err)
+	}
+}
+
+// A held route lock is worth knowing before a deploy: the route change waits
+// for it, and an update that gives up after activation rolls the code back.
+func TestPlanWarnsAboutAHeldRouteLock(t *testing.T) {
+	root := t.TempDir()
+	layout := release.NewLayout(filepath.Join(root, "pilot"))
+	api := &config.Service{Name: "api", Runtime: config.RuntimeCompose, Hosts: []string{"web-1"},
+		Expose: &config.Expose{Domains: []string{"api.example.com"}, Upstream: 8081}}
+	fleet := &config.Fleet{
+		Caddy:    config.Caddy{SnippetDir: filepath.Join(root, "pilot.d")},
+		Services: map[string]*config.Service{"api": api},
+	}
+	in := Input{
+		Service: api, Fleet: fleet, Layout: layout,
+		Build: &build.Result{Artifacts: []release.Artifact{{Name: "image", Digest: "sha256:aaaa"}}},
+		Targets: map[string]*runtime.Target{"web-1": {
+			Service: api, Host: &config.Host{Name: "web-1"}, Layout: layout, Client: local.New("web-1"),
+		}},
+	}
+	warned := func() bool {
+		p, err := Compute(t.Context(), in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return slices.ContainsFunc(p.Hosts[0].Warnings, func(w string) bool { return strings.Contains(w, ".pilot-lock") })
+	}
+
+	if warned() {
+		t.Error("warned about a lock nobody holds")
+	}
+	write(t, filepath.Join(fleet.Caddy.SnippetDir, ".pilot-lock", "owner"), "abc\n")
+	if !warned() {
+		t.Error("no warning while another Pilot holds the route lock")
 	}
 }
