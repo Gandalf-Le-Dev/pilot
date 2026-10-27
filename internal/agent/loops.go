@@ -117,8 +117,7 @@ func (a *Agent) checkServiceDrift(ctx context.Context, name string) {
 	if s.Expose != nil {
 		want, err := os.ReadFile(a.Layout.Snippet(name, current))
 		if err == nil {
-			got, err := os.ReadFile(caddySnippetPath(a.Caddy, name))
-			if err != nil || string(got) != string(want) {
+			if _, state := caddy.Installed(os.ReadFile, a.Caddy, name, string(want)); state != caddy.RouteMatches {
 				rec.route = true
 				if rec.detail == "" {
 					rec.detail = "installed route differs from the one deployed with this release"
@@ -156,10 +155,6 @@ func (a *Agent) readFingerprint(service, releaseID string) (string, error) {
 
 func (a *Agent) writeFingerprint(service, releaseID, fp string) error {
 	return release.WriteFileAtomic(a.fingerprintPath(service, releaseID), []byte(fp), 0o644)
-}
-
-func caddySnippetPath(p caddy.Paths, service string) string {
-	return p.SnippetDir + "/" + caddy.SnippetName(service)
 }
 
 // observeLoop samples service state so a status query is answered from a recent

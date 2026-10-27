@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path"
 	"slices"
 	"sort"
 	"strings"
@@ -300,14 +299,20 @@ func startable(s *config.Service) bool {
 // Most deploys land here with an identical snippet, which is what lets the
 // executor skip the Caddy reload entirely.
 func planRoute(ctx context.Context, in Input, p *Plan, t *runtime.Target) (RouteAction, error) {
-	target := path.Join(in.Fleet.Caddy.SnippetDir, caddy.SnippetName(p.Service.Name))
-
-	existing, err := t.Client.ReadFile(ctx, target)
-	if err != nil {
-		return RouteInstall, nil
-	}
-	if string(existing) == p.Snippet {
+	read := func(file string) ([]byte, error) { return t.Client.ReadFile(ctx, file) }
+	paths := caddy.Paths{SnippetDir: in.Fleet.Caddy.SnippetDir}
+	_, state := caddy.Installed(read, paths, p.Service.Name, p.Snippet)
+	if state == caddy.RouteMatches {
 		return RouteNone, nil
+	}
+
+	// Refused here rather than at install, which for a changed route comes
+	// after activation and would roll the code back over a routing conflict.
+	if err := caddy.CheckSites(ctx, t.Client, paths, p.Service.Name, p.Snippet); err != nil {
+		return RouteNone, fmt.Errorf("%s: %w", t.Host.Name, err)
+	}
+	if state == caddy.RouteMissing {
+		return RouteInstall, nil
 	}
 	return RouteUpdate, nil
 }

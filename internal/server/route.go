@@ -9,9 +9,8 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/statuspage"
 )
 
-// SnippetName names the page's route among the services' routes. Config
-// validation reserves the leading underscore, so no service can claim it.
-const SnippetName = "_status"
+// SnippetName names the page's route among the services' routes.
+const SnippetName = caddy.StatusRoute
 
 // Route renders the Caddy site block that fronts the page on the status host.
 //

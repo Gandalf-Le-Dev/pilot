@@ -73,11 +73,15 @@ func (h *hostFake) Run(_ context.Context, cmd string) (transport.Result, error) 
 		}
 		sum := sha256.Sum256(b)
 		return transport.Result{Stdout: hex.EncodeToString(sum[:]) + "  " + path + "\n"}, nil
-	case strings.HasPrefix(cmd, "test -e"):
-		path := strings.Trim(strings.TrimPrefix(cmd, "test -e "), "'")
-		if _, ok := h.files[path]; !ok {
-			return transport.Result{ExitCode: 1}, nil
+	case strings.Contains(cmd, "for f in *.caddy"):
+		dir := strings.Trim(strings.Fields(cmd)[2], "'")
+		var routes []string
+		for p := range h.files {
+			if rel, ok := strings.CutPrefix(p, dir+"/"); ok && strings.HasSuffix(rel, ".caddy") {
+				routes = append(routes, rel)
+			}
 		}
+		return transport.Result{Stdout: strings.Join(routes, "\n")}, nil
 	}
 	return transport.Result{}, nil
 }
