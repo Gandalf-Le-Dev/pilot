@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Kind is how a match was recognised. The distinction matters for how much to
@@ -53,19 +55,202 @@ type Match struct {
 	Count int `json:"count"`
 }
 
-// labelled matches `name=value` and `name: value` where the name says secret.
+// labelHead matches `name=value` and `name: value` where the name says
+// secret, up to the value: the name, then the separator with any quote that
+// opens the value.
 //
 // Curated rather than clever. A bare `key=` is excluded because it is far too
 // common in ordinary log output to be evidence of anything, and a check that
 // cries wolf gets switched off.
-// Three groups, not two: the separator is captured so redaction can put the
-// value back as a placeholder while leaving `api_key=` intact. A log line that
-// says a key was passed and does not say which is still useful for debugging;
-// one with the whole pair removed is not.
-var labelled = regexp.MustCompile(`(?i)\b(api[_-]?keys?|apikey|access[_-]?token|refresh[_-]?token|` +
+// The separator is kept apart so redaction can put the value back as a
+// placeholder while leaving `api_key=` intact. A log line that says a key was
+// passed and does not say which is still useful for debugging; one with the
+// whole pair removed is not.
+//
+// `Bearer` also takes a space, the way an Authorization header writes it. It
+// is the only name that does: "password reset" is prose, not a credential.
+var labelHead = regexp.MustCompile(`(?i)\b(?:(api[_-]?keys?|apikey|access[_-]?token|refresh[_-]?token|` +
 	`id[_-]?token|auth[_-]?token|bearer|token|passwords?|passwd|pwd|secrets?|client[_-]?secret|` +
 	`private[_-]?key|secret[_-]?key|signature|sessionid|session[_-]?token|credentials?)` +
-	`(["']?\s*[=:]\s*["']?)([^"'\s&,;}]{4,})`)
+	`((?:\\*["'])?\s*[=:]\s*(?:\\*["'])?)|(bearer)[ \t]+)`)
+
+// token68End returns where the token68 run at i ends, the form RFC 6750 gives
+// a bearer token. Whatever follows it, such as the `]]` of a printed
+// http.Header or a closing parenthesis, is not part of the token. A run of `=`
+// is padding only at the end: followed by more, as in `Bearer pwd==x`, it is
+// a separator, and the pair is left for labelHead.
+func token68End(s string, i int) int {
+	for i < len(s) && token68Char(s[i]) {
+		i++
+	}
+	j := i
+	for j < len(s) && s[j] == '=' {
+		j++
+	}
+	if j < len(s) && token68Char(s[j]) {
+		return i
+	}
+	return j
+}
+
+func token68Char(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+		strings.IndexByte("._~+/-", c) >= 0
+}
+
+// bearerToken reports whether the token68 run after `Bearer ` is a token
+// rather than the next word of a sentence about bearer tokens: it holds a
+// digit or symbol, a full stop ending the sentence aside, or is too long to
+// be a word.
+func bearerToken(v string) bool {
+	v = strings.TrimRight(v, ".")
+	return len(v) >= 20 || strings.ContainsFunc(v, func(r rune) bool { return !unicode.IsLetter(r) })
+}
+
+// minLabelledLength is the shortest value a labelled match reports.
+const minLabelledLength = 4
+
+// labelledValue is one value found after a labelHead.
+type labelledValue struct {
+	label      string
+	start, end int
+}
+
+// findLabelled returns each labelled value in text, in order and without
+// overlap. A name inside a value already taken is skipped only when its own
+// value starts inside that one too: in `password="abc token:` followed by a
+// line holding the token, the token is a value of its own.
+func findLabelled(text string) []labelledValue {
+	var out []labelledValue
+	taken := 0
+	for _, loc := range labelHead.FindAllStringSubmatchIndex(text, -1) {
+		if loc[1] < taken {
+			continue
+		}
+		start := loc[1]
+		var label string
+		var end int
+		if loc[2] >= 0 {
+			label = text[loc[2]:loc[3]]
+			end = valueEnd(text, start, text[loc[4]:loc[5]])
+		} else {
+			label = text[loc[6]:loc[7]]
+			end = token68End(text, start)
+			if !bearerToken(text[start:end]) {
+				continue
+			}
+		}
+		if utf8.RuneCountInString(text[start:end]) < minLabelledLength {
+			continue
+		}
+		out = append(out, labelledValue{label: label, start: start, end: end})
+		taken = end
+	}
+	return out
+}
+
+// valueEnd finds where the value starting at i ends. A value opened by a quote
+// runs to the matching unescaped quote, spaces and commas included, so none of
+// it is left behind. An unquoted value stops at the first character that
+// cannot be part of one.
+//
+// A double quote never closed runs to the end of the line. A single quote
+// never closed is more likely an apostrophe than an opener, as in
+// `token: 'abc def` inside a JSON string, so its value is read as unquoted.
+//
+// A quote opened as `\"` sits in a string logged inside another string, such
+// as a JSON request body, where every character arrives escaped once more;
+// `\\\"` is one string further in. The value is read that many layers of
+// escapes down, and ends where an enclosing string does if its own quote
+// never comes.
+func valueEnd(s string, i int, sep string) int {
+	q := sep[len(sep)-1]
+	if q != '"' && q != '\'' {
+		return unquotedEnd(s, i)
+	}
+	depth, ok := escapeDepth(len(sep) - 1 - len(strings.TrimRight(sep[:len(sep)-1], `\`)))
+	if !ok {
+		return unquotedEnd(s, i)
+	}
+	start := i
+	escaped := false
+	for {
+		c, next, end := read(s, i, depth, q)
+		switch {
+		case end == lineEnd && q == '\'':
+			return unquotedEnd(s, start)
+		case end != reading:
+			return i
+		case escaped:
+			escaped = false
+		case c == '\\':
+			escaped = true
+		case c == q:
+			return i
+		}
+		i = next
+	}
+}
+
+func unquotedEnd(s string, i int) int {
+	for i < len(s) && !strings.ContainsRune("\"'&,;} \t\n\f\r", rune(s[i])) {
+		i++
+	}
+	return i
+}
+
+// escapeDepth is how many strings deep a quote preceded by n backslashes
+// sits: each layer escapes the backslashes of the one inside it too, so n is
+// 0, 1, 3, 7 and so on. Any other n is not a quote that opens a value, and
+// what follows it is read as unquoted.
+func escapeDepth(n int) (int, bool) {
+	depth := 0
+	for ; n > 0; n = (n - 1) / 2 {
+		if n%2 == 0 {
+			return 0, false
+		}
+		depth++
+	}
+	return depth, true
+}
+
+// readEnd says why read stopped, if it did.
+type readEnd int
+
+const (
+	reading readEnd = iota
+	lineEnd
+	enclosingEnd
+)
+
+// read returns the character at i as seen depth layers of escapes down, where
+// a backslash and the character after it read as that character, and the
+// index after it. It stops at the end of the line, LF or CRLF, or at a bare
+// quote q in a shallower layer, where an enclosing string ends. A lone CR is
+// part of the value: stopping there would leave the rest of it in the line.
+func read(s string, i, depth int, q byte) (c byte, next int, end readEnd) {
+	if i >= len(s) || s[i] == '\n' || s[i] == '\r' && (i+1 == len(s) || s[i+1] == '\n') {
+		return 0, i, lineEnd
+	}
+	if depth == 0 {
+		return s[i], i + 1, reading
+	}
+	c, next, end = read(s, i, depth-1, q)
+	if end != reading {
+		return 0, i, end
+	}
+	if c == q {
+		return 0, i, enclosingEnd
+	}
+	if c != '\\' {
+		return c, next, reading
+	}
+	c, next, end = read(s, next, depth-1, q)
+	if end != reading {
+		return 0, i, end
+	}
+	return c, next, reading
+}
 
 // formats are values that cannot plausibly be anything but a credential.
 //
@@ -98,13 +283,16 @@ var placeholders = map[string]bool{
 
 // harmless reports whether a labelled match reveals nothing. A pwd that is a
 // bare path is sudo's working directory; `=`, `?` or `:` mean a pair rode along.
+// Some JSON encoders, PHP's among them, write `/` as `\/`; any other backslash
+// is an escape that could hide one of those characters.
 func harmless(label, raw string) bool {
 	value := strings.Trim(raw, `"'`)
 	if placeholders[strings.ToLower(value)] {
 		return true
 	}
-	return strings.EqualFold(label, "pwd") && strings.HasPrefix(value, "/") &&
-		!strings.ContainsAny(value, "=?:")
+	path := strings.ReplaceAll(value, `\/`, "/")
+	return strings.EqualFold(label, "pwd") && strings.HasPrefix(path, "/") &&
+		!strings.ContainsAny(path, `=?:\`)
 }
 
 // minKnownLength is the shortest supplied value worth searching for.
@@ -125,12 +313,11 @@ const minKnownLength = 6
 func Scan(text string, known map[string]string) []Match {
 	counts := map[Match]int{}
 
-	for _, m := range labelled.FindAllStringSubmatch(text, -1) {
-		if harmless(m[1], m[3]) {
+	for _, v := range findLabelled(text) {
+		if harmless(v.label, text[v.start:v.end]) {
 			continue
 		}
-		key := Match{Kind: KindLabelled, Label: strings.ToLower(m[1])}
-		counts[key]++
+		counts[Match{Kind: KindLabelled, Label: strings.ToLower(v.label)}]++
 	}
 
 	for _, f := range formats {

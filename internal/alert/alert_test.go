@@ -84,6 +84,9 @@ func TestParseErrors(t *testing.T) {
 		{"service.down > 1", "yes/no condition"},
 		{"service.restarts", "is a number"},
 		{"host.disk.free_pct < lots", "not a number"},
+		{"host.disk.used_pct > -1", "cannot be negative"},
+		{"service.restarts >= -0.5", "cannot be negative"},
+		{"service.restarts > --1", "not a number"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.expr, func(t *testing.T) {
@@ -151,7 +154,7 @@ func TestThresholdsArePlainDecimals(t *testing.T) {
 		}
 	}
 	for _, v := range []string{
-		"NaN", "Inf", "infinity", "1_000", "0x1p4", "1e3", ".5", "5.", "+1", "-1",
+		"NaN", "Inf", "infinity", "1_000", "0x1p4", "1e3", ".5", "5.", "+1", "-1x",
 		"14d", "1h", "10%", "10GB", "ten",
 	} {
 		_, err := Parse("service.restarts > " + v)

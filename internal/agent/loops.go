@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
+	"github.com/Gandalf-Le-Dev/pilot/internal/journal"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
@@ -24,11 +25,18 @@ const (
 // StartLoops launches the agent's background work. It returns immediately; the
 // loops stop when ctx is cancelled.
 func (a *Agent) StartLoops(ctx context.Context) {
-	go a.driftLoop(ctx)
-	go a.observeLoop(ctx)
-	go a.alertLoop(ctx)
-	go a.metricsLoop(ctx)
-	go a.healthLoop(ctx)
+	for _, loop := range []func(context.Context){a.driftLoop, a.observeLoop, a.alertLoop, a.metricsLoop, a.healthLoop} {
+		a.spawn(func() { loop(ctx) })
+	}
+}
+
+// spawn runs f on its own goroutine, where a panic is logged at error level
+// before it kills the daemon.
+func (a *Agent) spawn(f func()) {
+	go func() {
+		defer journal.LogPanic(a.log())
+		f()
+	}()
 }
 
 // driftLoop periodically compares what is running against what should be.

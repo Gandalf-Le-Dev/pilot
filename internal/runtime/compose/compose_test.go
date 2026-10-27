@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"text/template"
@@ -392,6 +393,45 @@ func TestObserveKeepsAgesWhenAContainerVanished(t *testing.T) {
 	}
 	if !obs.Instances[1].Since.IsZero() {
 		t.Errorf("vanished container since = %v, want zero", obs.Instances[1].Since)
+	}
+}
+
+// Only a non-zero exit leaves stdout worth reading. A transport error, such as
+// a dropped connection, may have cut the output short, so no age is trusted.
+func TestObserveIgnoresInspectOutputAfterTransportError(t *testing.T) {
+	tg, rec := bgTarget(t, "green")
+	rec.inspectOut = `{"id":"aaa111ffff","name":"/web-green-web-1","running":true,"started":"2026-10-07T18:00:40Z","finished":"0001-01-01T00:00:00Z"}`
+	rec.inspectErr = errors.New("ssh: connection lost")
+
+	obs, err := New().Observe(context.Background(), tg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.State != runtime.StateRunning {
+		t.Errorf("state = %q, want running", obs.State)
+	}
+	if !obs.Instances[0].Since.IsZero() {
+		t.Errorf("since = %v, want zero after a transport error", obs.Instances[0].Since)
+	}
+}
+
+// Each observation dates containers afresh: an age from the last one must not
+// survive once inspect stops reporting the container.
+func TestObserveKeepsNoAgeFromAnEarlierObservation(t *testing.T) {
+	tg, rec := bgTarget(t, "green")
+	r := New()
+	rec.inspectOut = `{"id":"aaa111ffff","name":"/web-green-web-1","running":true,"started":"2026-10-07T18:00:40Z","finished":"0001-01-01T00:00:00Z"}`
+	if obs, err := r.Observe(context.Background(), tg); err != nil || obs.Instances[0].Since.IsZero() {
+		t.Fatalf("first observation: since = %v, err = %v; want an age", obs.Instances[0].Since, err)
+	}
+
+	rec.inspectOut = ""
+	obs, err := r.Observe(context.Background(), tg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !obs.Instances[0].Since.IsZero() {
+		t.Errorf("since = %v, want zero once inspect reports nothing", obs.Instances[0].Since)
 	}
 }
 

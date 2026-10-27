@@ -74,6 +74,8 @@ func newRoot(euid func() int, setLog func(*slog.Logger)) *cobra.Command {
 // loggedError is a daemon's fatal error, already in its log at error level.
 type loggedError struct{ error }
 
+func (e loggedError) Unwrap() error { return e.error }
+
 func report(w io.Writer, err error) {
 	if _, ok := errors.AsType[loggedError](err); ok {
 		return
@@ -88,21 +90,20 @@ func newServeCmd(setLog func(*slog.Logger)) *cobra.Command {
 		Use:   "serve",
 		Short: "Run the agent daemon",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			log := daemonLog(cmd, "pilotd", setLog)
+		RunE: daemon("pilotd", setLog, func(cmd *cobra.Command) error {
 			a, err := agent.New(agent.Options{
 				Root: root, Host: host, Build: version,
 				Caddyfile: caddyfile, Snippets: snippets, Admin: admin,
 			})
 			if err != nil {
-				return logExit(log, err)
+				return err
 			}
 
 			// Background loops start before the socket does, so the first
 			// status query already has something to report.
 			a.StartLoops(cmd.Context())
-			return logExit(log, a.Serve(cmd.Context(), socket))
-		},
+			return a.Serve(cmd.Context(), socket)
+		}),
 	}
 
 	cmd.Flags().StringVar(&socket, "socket", proto.DefaultSocket, "unix socket to listen on")
@@ -115,11 +116,22 @@ func newServeCmd(setLog func(*slog.Logger)) *cobra.Command {
 	return cmd
 }
 
+// daemon runs a daemon command with its log installed, and files the way it
+// ends, a returned error or a panic, in that log at error level.
+func daemon(name string, setLog func(*slog.Logger), run func(*cobra.Command) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, _ []string) error {
+		log := daemonLog(cmd, name, setLog)
+		defer journal.LogPanic(log)
+		return logExit(log, run(cmd))
+	}
+}
+
 // daemonLog sends this process's log, the log package's included, to stderr
 // as lines attributed to name. Only the daemons call it: ctl's stderr goes
 // back to the CLI over SSH, not the journal.
 func daemonLog(cmd *cobra.Command, name string, setLog func(*slog.Logger)) *slog.Logger {
-	log := slog.New(journal.NewHandler(cmd.ErrOrStderr(), name, journal.OnStderr()))
+	w := cmd.ErrOrStderr()
+	log := slog.New(journal.NewHandler(w, name, journal.OnJournal(w)))
 	setLog(log)
 	return log
 }
@@ -142,10 +154,9 @@ func newServerCmd(euid func() int, setLog func(*slog.Logger)) *cobra.Command {
 		Use:   "server",
 		Short: "Serve the public status page and take reports from agents",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			log := daemonLog(cmd, "pilotd server", setLog)
-			return logExit(log, runServer(cmd.Context(), euid, configPath))
-		},
+		RunE: daemon("pilotd server", setLog, func(cmd *cobra.Command) error {
+			return runServer(cmd.Context(), euid, configPath)
+		}),
 	}
 	cmd.Flags().StringVar(&configPath, "config", "",
 		"configuration file (default: "+server.CredentialName+" in $CREDENTIALS_DIRECTORY)")

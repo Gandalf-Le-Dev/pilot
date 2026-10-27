@@ -72,11 +72,11 @@ func (a *Agent) StartDeploy(req proto.DeployRequest) (*proto.Job, error) {
 	job := a.jobs.Create(kind, svc.Name, req.Release, from)
 	switch {
 	case req.Start:
-		go a.runStart(job.ID, svc, rt, req)
+		a.spawn(func() { a.runStart(job.ID, svc, rt, req) })
 	case svc.Rollout.IsBlueGreen():
-		go a.runBlueGreen(job.ID, svc, rt, req, from)
+		a.spawn(func() { a.runBlueGreen(job.ID, svc, rt, req, from) })
 	default:
-		go a.runDeploy(job.ID, svc, rt, req, from)
+		a.spawn(func() { a.runDeploy(job.ID, svc, rt, req, from) })
 	}
 	return job, nil
 }
@@ -400,13 +400,15 @@ func (a *Agent) StartRollback(req proto.RollbackRequest) (*proto.Job, error) {
 		// A blue-green rollback is the same dance in reverse: stand the target
 		// release up on the idle colour, verify it, then move the route. Going
 		// through the plain path would try to `up -d` a third, unrouted stack.
-		go a.runBlueGreen(job.ID, svc, rt, proto.DeployRequest{
-			Service: svc.Name, Release: to, Verify: true, By: req.By,
-			KeepReleases: svc.KeepReleases,
-		}, st.Current)
+		a.spawn(func() {
+			a.runBlueGreen(job.ID, svc, rt, proto.DeployRequest{
+				Service: svc.Name, Release: to, Verify: true, By: req.By,
+				KeepReleases: svc.KeepReleases,
+			}, st.Current)
+		})
 		return job, nil
 	}
-	go a.runRollback(job.ID, svc, rt, to, st.Current, req.By)
+	a.spawn(func() { a.runRollback(job.ID, svc, rt, to, st.Current, req.By) })
 	return job, nil
 }
 

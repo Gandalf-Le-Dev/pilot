@@ -72,6 +72,11 @@ type Agent struct {
 
 	diskWarnOnce sync.Once
 
+	// skippedMu guards skipped, the unparseable rules already warned about,
+	// keyed like alert.Rule.Key.
+	skippedMu sync.Mutex
+	skipped   map[string]bool
+
 	jobs   *JobStore
 	alerts *alert.Engine
 }

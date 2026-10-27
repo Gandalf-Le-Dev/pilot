@@ -155,8 +155,10 @@ func TestWriterDoesNotBufferForever(t *testing.T) {
 // TestTextAgreesWithScanOnSudoPWD — a line doctor calls clean must come through
 // redaction untouched, or the two disagree about what a secret is.
 func TestTextAgreesWithScanOnSudoPWD(t *testing.T) {
-	if got := Text(sudoAudit, nil); got != sudoAudit {
-		t.Errorf("Text altered a sudo audit line:\n got: %s\nwant: %s", got, sudoAudit)
+	for _, line := range []string{sudoAudit, sudoAuditJSON} {
+		if got := Text(line, nil); got != line {
+			t.Errorf("Text altered a sudo audit line:\n got: %s\nwant: %s", got, line)
+		}
 	}
 }
 
@@ -169,6 +171,162 @@ func TestTextStillRedactsPwdAsPassword(t *testing.T) {
 		"pwd=/cb?token=s3cr3tvalue":                  "pwd=" + Placeholder,
 		"PWD=/x:password=hunter22":                   "PWD=" + Placeholder,
 		`{"pwd":"/var/lib/x","password":"hunter22"}`: `{"pwd":"/var/lib/x","password":"` + Placeholder + `"}`,
+		`{"pwd":"\/cb\u003dhunter22"}`:               `{"pwd":"` + Placeholder + `"}`,
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+// A quoted value runs to its own closing quote. An escaped quote does not
+// close it, or the rest of the value would stay in the line. A backslash only
+// escapes the character after it, so an escaped backslash right before the
+// closing quote leaves that quote, and the next field, intact.
+func TestTextRedactsQuotedValuesWhole(t *testing.T) {
+	cases := map[string]string{
+		`{"pwd":"\/x\"=secret"}`:                 `{"pwd":"` + Placeholder + `"}`,
+		`{"password":"ab\"cd","user":"root"}`:    `{"password":"` + Placeholder + `","user":"root"}`,
+		`{"password":"abc\\","user":"root"}`:     `{"password":"` + Placeholder + `","user":"root"}`,
+		`{"password":"ab\\","user":"root"}`:      `{"password":"` + Placeholder + `","user":"root"}`,
+		`{"password":"a\\\"b\\","user":"root"}`:  `{"password":"` + Placeholder + `","user":"root"}`,
+		`password='ab\'cdefg' user=root`:         `password='` + Placeholder + `' user=root`,
+		`{"password":"ab&cdefgh","user":"root"}`: `{"password":"` + Placeholder + `","user":"root"}`,
+		`{"password":"hunter 22 x","n":1}`:       `{"password":"` + Placeholder + `","n":1}`,
+		`password: "a, b; c}" next`:              `password: "` + Placeholder + `" next`,
+		"password=\"hunter 22\nuser=root":        "password=\"" + Placeholder + "\nuser=root",
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+// A request body logged as a JSON string carries its own JSON one layer of
+// escapes down. Its values end at their own escaped quote, and the enclosing
+// string and the fields after it stay intact.
+func TestTextRedactsJSONInsideAJSONString(t *testing.T) {
+	cases := map[string]string{
+		`{"log":"{\"password\":\"hunter22\"}"}`:                          `{"log":"{\"password\":\"` + Placeholder + `\"}"}`,
+		`{"log":"{\"password\":\"ab\\\"c d\",\"user\":\"root\"}","n":1}`: `{"log":"{\"password\":\"` + Placeholder + `\",\"user\":\"root\"}","n":1}`,
+		`{"log":"{\"password\":\"hunter22\\\\\"}"}`:                      `{"log":"{\"password\":\"` + Placeholder + `\"}"}`,
+		`{"log":"{\"password\":\"hunter22"}`:                             `{"log":"{\"password\":\"` + Placeholder + `"}`,
+		`{"log":"{\"pwd\":\"/var/lib/x\"}"}`:                             `{"log":"{\"pwd\":\"/var/lib/x\"}"}`,
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+// A string inside a string inside a string is escaped twice over, and a
+// quoted value can be opened by an escaped single quote, as in a Python repr.
+// Each is read at its own depth and ends at its own quote.
+func TestTextRedactsQuotedValuesAtAnyDepth(t *testing.T) {
+	cases := map[string]string{
+		`password=\'hunter22\' user=root`:                                     `password=\'` + Placeholder + `\' user=root`,
+		`'password=\'hunter 22\'', 'x'`:                                       `'password=\'` + Placeholder + `\'', 'x'`,
+		`{"a":"{\"b\":\"{\\\"password\\\":\\\"hunter22\\\",\\\"u\\\":1}\"}"}`: `{"a":"{\"b\":\"{\\\"password\\\":\\\"` + Placeholder + `\\\",\\\"u\\\":1}\"}"}`,
+		`{"a":"{\"b\":\"{\\\"password\\\":\\\"hunter22\"}"}`:                  `{"a":"{\"b\":\"{\\\"password\\\":\\\"` + Placeholder + `\"}"}`,
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+// A single quote never closed is more likely an apostrophe, so the value is
+// read as unquoted rather than swallowing the rest of a structured line. A
+// double quote never closed still runs to the end of the line, CRLF or LF.
+func TestTextReadsAnUnclosedSingleQuoteAsUnquoted(t *testing.T) {
+	cases := map[string]string{
+		`{"msg":"token: 'abc def","user":"root"}`:     `{"msg":"token: 'abc def","user":"root"}`,
+		`{"msg":"token: 'abcdef ghi","user":"root"}`:  `{"msg":"token: '` + Placeholder + ` ghi","user":"root"}`,
+		`{"msg":"token: \'abcdef ghi","user":"root"}`: `{"msg":"token: \'` + Placeholder + ` ghi","user":"root"}`,
+		"password=\"hunter 22, x":                     "password=\"" + Placeholder,
+		"password=\"hunter 22, x\r\nnext":             "password=\"" + Placeholder + "\r\nnext",
+		"password=\"hunter 22, x\r":                   "password=\"" + Placeholder + "\r",
+		"password=\"hunter\r22\" next":                "password=\"" + Placeholder + "\" next",
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+// A quote after 2, 4, 5 or 6 backslashes opens no string at any depth, but
+// what follows it is still a value.
+func TestTextReadsAValueAfterAnOddEscapeAsUnquoted(t *testing.T) {
+	cases := map[string]string{
+		`password=\\"hunter22 more`:   `password=\\"` + Placeholder + ` more`,
+		`password=\\\\"hunter22,more`: `password=\\\\"` + Placeholder + `,more`,
+		`password=\\\\\"hunter22 x`:   `password=\\\\\"` + Placeholder + ` x`,
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+// Without a quote there is nothing to say where a value ends, so the usual
+// delimiters still do.
+func TestTextStopsUnquotedValuesAtDelimiters(t *testing.T) {
+	cases := map[string]string{
+		"password=hunter22 user=root":    "password=" + Placeholder + " user=root",
+		"/cb?token=abcdef&next=1":        "/cb?token=" + Placeholder + "&next=1",
+		"api_key=abcdef,user=root":       "api_key=" + Placeholder + ",user=root",
+		"secret: abcdef; user: root":     "secret: " + Placeholder + "; user: root",
+		`{"password":12345678,"n":1}`:    `{"password":` + Placeholder + `,"n":1}`,
+		"password=abc user=hunter22 xyz": "password=abc user=hunter22 xyz",
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+// A name can sit inside the value before it while its own value starts after
+// that one ends. Skipping it as part of the first value left its secret in the
+// line.
+func TestTextRedactsAValueThatStartsAfterTheOneBefore(t *testing.T) {
+	cases := map[string]string{
+		"password=\"abc token:\nhunter22":                 "password=\"" + Placeholder + "\n" + Placeholder,
+		"credentials=/etc/app/token: 4f9a8b7c":            "credentials=" + Placeholder + " " + Placeholder,
+		`Secret\':?api_key` + "\r" + `:password`:          `Secret\':` + Placeholder + "\r:" + Placeholder,
+		`api_key\":\/secret_key` + "\t\r" + `:api_key_\'`: `api_key\":` + Placeholder + "\t\r:" + Placeholder + "'",
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+// An Authorization header puts a space, not a separator, after Bearer. Prose
+// about bearer tokens must not lose its next word.
+func TestTextRedactsABearerHeader(t *testing.T) {
+	cases := map[string]string{
+		"Authorization: Bearer abcdefgh123":                "Authorization: Bearer " + Placeholder,
+		"authorization=bearer eyJhbGciOi.x.y, next":        "authorization=bearer " + Placeholder + ", next",
+		"Bearer abcdefghijklmnopqrstuvwxyz":                "Bearer " + Placeholder,
+		"Bearer: abcdefgh":                                 "Bearer: " + Placeholder,
+		"the request needs a Bearer token":                 "the request needs a Bearer token",
+		"Bearer authentication failed for user root":       "Bearer authentication failed for user root",
+		"rejected: Bearer <redacted>":                      "rejected: Bearer <redacted>",
+		"headers=map[Authorization:[Bearer abc123def456]]": "headers=map[Authorization:[Bearer " + Placeholder + "]]",
+		"(Bearer abc123def456)":                            "(Bearer " + Placeholder + ")",
+		"Bearer abc123def456==; next":                      "Bearer " + Placeholder + "; next",
+		"the request needs a Bearer token.":                "the request needs a Bearer token.",
+		"Bearer pwd==xyzhunter22 next":                     "Bearer pwd=" + Placeholder + " next",
+		"Bearer token=abc123def":                           "Bearer token=" + Placeholder,
+		"Bearer abc123==":                                  "Bearer " + Placeholder,
 	}
 	for line, want := range cases {
 		if got := Text(line, nil); got != want {

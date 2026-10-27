@@ -89,7 +89,6 @@ type hostView struct {
 	host     string
 	services map[string]proto.ServiceStatus
 	firing   []string
-	disk     *proto.DiskUsage
 
 	// degraded explains why the agent could not be used, empty when it could.
 	degraded string
@@ -141,7 +140,6 @@ func gatherHosts(ctx context.Context, a *app.App, hosts []string) hostViews {
 					for _, s := range st.Services {
 						hv.services[s.Name] = s
 					}
-					hv.disk = st.Disk
 				} else {
 					hv.degraded = err.Error()
 				}

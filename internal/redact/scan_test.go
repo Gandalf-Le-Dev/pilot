@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -184,9 +185,14 @@ func TestIsSecretNameRejectsLocations(t *testing.T) {
 // working directory, and reporting it trained people to ignore the check.
 const sudoAudit = `gh-runner : PWD=/var/lib/gh-runner/work/hopbox/hopbox ; USER=root ; COMMAND=/usr/bin/pkill -f foo`
 
+// sudoAuditJSON is the same line logged by a JSON encoder that escapes `/`.
+const sudoAuditJSON = `{"msg":"sudo","pwd":"\/var\/lib\/gh-runner\/work","user":"root"}`
+
 func TestSudoWorkingDirectoryIsNotAPassword(t *testing.T) {
-	if got := Scan(sudoAudit, nil); len(got) != 0 {
-		t.Errorf("reported sudo's working directory as a credential: %+v", got)
+	for _, line := range []string{sudoAudit, sudoAuditJSON} {
+		if got := Scan(line, nil); len(got) != 0 {
+			t.Errorf("reported sudo's working directory as a credential in %s: %+v", line, got)
+		}
 	}
 }
 
@@ -203,10 +209,99 @@ func TestPwdStillMeansPassword(t *testing.T) {
 		"pwd=/cb?token=s3cr3tvalue":                  "pwd",
 		"PWD=/x:password=hunter22":                   "pwd",
 		`{"pwd":"/var/lib/x","password":"hunter22"}`: "password",
+		// Only `\/` is read as a slash. Any other escape could stand for a
+		// character that would disqualify the path, such as \u003d for `=`.
+		`{"pwd":"\/cb\u003dhunter22"}`: "pwd",
+		`{"pwd":"\\/hunter22"}`:        "pwd",
+		`pwd=/x\u003dhunter22`:         "pwd",
+		`{"pwd":"\/x\"=secret"}`:       "pwd",
+		`{"pwd":"/var/lib x=secret"}`:  "pwd",
+		// A pair riding along one layer of escapes down still disqualifies.
+		`{"log":"{\"pwd\":\"\\/x\\\"=secret\"}"}`: "pwd",
 	}
 	for line, want := range cases {
 		got := Scan(line, nil)
 		if len(got) != 1 || got[0].Kind != KindLabelled || got[0].Label != want {
+			t.Errorf("Scan(%q) = %+v, want one labelled %s match", line, got, want)
+		}
+	}
+}
+
+// A quoted value runs to its closing quote, so a short first word, or an
+// escaped quote, does not hide the rest of it from doctor.
+func TestScanReadsQuotedValuesWhole(t *testing.T) {
+	for _, line := range []string{
+		`password='ab\'cdefg'`,
+		`{"password":"ab&cdefgh"}`,
+		`{"password":"ab cdefgh"}`,
+		`{"password":"ab\"cdefgh"}`,
+		`{"log":"{\"password\":\"hunter22\"}"}`,
+		`{"a":"{\"b\":\"{\\\"password\\\":\\\"hunter22\\\"}\"}"}`,
+		`password=\'hunter22\'`,
+		"password=\"ab\rcdefgh\"",
+		`password=\\"hunter22 more`,
+	} {
+		got := Scan(line, nil)
+		if len(got) != 1 || got[0].Kind != KindLabelled || got[0].Label != "password" {
+			t.Errorf("Scan(%q) = %+v, want one labelled password match", line, got)
+		}
+	}
+}
+
+// A name inside the value before it still counts when its own value starts
+// after that one ends.
+func TestScanCountsAValueThatStartsAfterTheOneBefore(t *testing.T) {
+	cases := map[string][]string{
+		"password=\"abc token:\nhunter22":      {"password", "token"},
+		"credentials=/etc/app/token: 4f9a8b7c": {"credentials", "token"},
+	}
+	for line, want := range cases {
+		var got []string
+		for _, m := range Scan(line, nil) {
+			got = append(got, m.Label)
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("Scan(%q) labels = %v, want %v", line, got, want)
+		}
+	}
+}
+
+// An apostrophe that never closes does not make the rest of the line a value.
+func TestScanReadsAnUnclosedSingleQuoteAsUnquoted(t *testing.T) {
+	if got := Scan(`{"msg":"token: 'abc def","user":"root"}`, nil); len(got) != 0 {
+		t.Errorf("reported %+v, want nothing: the value is abc, too short to count", got)
+	}
+}
+
+func TestScanFindsABearerHeader(t *testing.T) {
+	got := Scan("GET /api Authorization: Bearer abcdefgh123", nil)
+	if len(got) != 1 || got[0].Kind != KindLabelled || got[0].Label != "bearer" {
+		t.Errorf("got %+v, want one labelled bearer match", got)
+	}
+	for _, line := range []string{
+		"headers=map[Authorization:[Bearer abc123def456]]",
+		"(Bearer abc123def456)",
+		"Bearer abc123==",
+	} {
+		if got := Scan(line, nil); len(got) != 1 || got[0].Label != "bearer" {
+			t.Errorf("Scan(%q) = %+v, want one labelled bearer match", line, got)
+		}
+	}
+	if got := Scan("the request needs a Bearer token.", nil); len(got) != 0 {
+		t.Errorf("reported prose about bearer tokens: %+v", got)
+	}
+}
+
+// An `=` run followed by more is a separator, not padding, so the pair after
+// Bearer is reported under its own name.
+func TestScanLeavesAPairAfterBearerToItsName(t *testing.T) {
+	cases := map[string]string{
+		"Bearer pwd==xyzhunter22": "pwd",
+		"Bearer token=abc123def":  "token",
+	}
+	for line, want := range cases {
+		got := Scan(line, nil)
+		if len(got) != 1 || got[0].Label != want {
 			t.Errorf("Scan(%q) = %+v, want one labelled %s match", line, got, want)
 		}
 	}

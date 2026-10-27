@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,13 +29,17 @@ func NewHandler(w io.Writer, name string, priorities bool) slog.Handler {
 	}
 }
 
-// OnStderr reports whether stderr is connected to the journal. systemd sets
-// JOURNAL_STREAM to that stream's device and inode, and comparing them with
-// stderr's own tells a unit's stderr from a child that inherited the variable
-// but not the stream.
-func OnStderr() bool { return onJournal(os.Getenv("JOURNAL_STREAM"), os.Stderr) }
+// OnJournal reports whether w is the stream systemd connected to the journal.
+// systemd sets JOURNAL_STREAM to that stream's device and inode, and comparing
+// them with w's own tells a unit's stderr from a child that inherited the
+// variable but not the stream. Only an *os.File can be the stream.
+func OnJournal(w io.Writer) bool { return isStream(os.Getenv("JOURNAL_STREAM"), w) }
 
-func onJournal(stream string, f *os.File) bool {
+func isStream(stream string, w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
 	dev, ino, ok := strings.Cut(stream, ":")
 	if !ok {
 		return false
@@ -53,6 +58,19 @@ func onJournal(stream string, f *os.File) bool {
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	return ok && uint64(st.Dev) == wantDev && st.Ino == wantIno
+}
+
+// LogPanic, deferred at the top of a goroutine, logs a panic at error level
+// before letting it go on. The runtime's own report reaches the journal with
+// no priority, so `journalctl -p err` would miss it. A panic passes through
+// only the deferred calls of its own goroutine, so every goroutine a daemon
+// starts defers this, except http.Server.Serve: net/http recovers and logs
+// its handlers' panics itself.
+func LogPanic(log *slog.Logger) {
+	if v := recover(); v != nil {
+		log.Error("exiting on panic", "panic", v, "stack", string(debug.Stack()))
+		panic(v)
+	}
 }
 
 type handler struct {
