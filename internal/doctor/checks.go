@@ -8,7 +8,6 @@ import (
 	"net/netip"
 	"path"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -437,11 +436,13 @@ func checkDisk(ctx context.Context, env *Env) []Finding {
 			continue
 		}
 
-		res, err := client.Run(ctx, "df -P "+transport.Quote(layout.Root)+" 2>/dev/null || df -P /")
+		// The root alone, as the agent measures it: a missing root gives no
+		// finding rather than the figure of whatever volume holds its parent.
+		res, err := client.Run(ctx, "df -P "+transport.Quote(layout.Root))
 		if err != nil || !res.OK() {
 			continue
 		}
-		used, ok := parseDiskUsed(res.Stdout)
+		used, ok := release.ParseDiskUsed(res.Stdout)
 		if !ok {
 			continue
 		}
@@ -461,23 +462,6 @@ func checkDisk(ctx context.Context, env *Env) []Finding {
 		out = append(out, f)
 	}
 	return out
-}
-
-// parseDiskUsed reads the percentage column from `df -P` output.
-func parseDiskUsed(out string) (int, bool) {
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) < 2 {
-		return 0, false
-	}
-	fields := strings.Fields(lines[len(lines)-1])
-	for _, f := range fields {
-		if pct, ok := strings.CutSuffix(f, "%"); ok {
-			if n, err := strconv.Atoi(pct); err == nil {
-				return n, true
-			}
-		}
-	}
-	return 0, false
 }
 
 // checkEdge verifies that exposed domains resolve — to the right place, when

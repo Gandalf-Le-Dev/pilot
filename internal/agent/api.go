@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
@@ -75,9 +76,7 @@ func (a *Agent) handleStatus(w http.ResponseWriter, r *http.Request) {
 	for _, name := range a.ServiceNames() {
 		resp.Services = append(resp.Services, a.statusFor(r.Context(), name))
 	}
-	if d, err := a.diskUsage(); err == nil {
-		resp.Disk = d
-	}
+	resp.Disk = a.diskUsage(r.Context())
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -273,9 +272,7 @@ func (a *Agent) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	for _, name := range a.ServiceNames() {
 		resp.Status.Services = append(resp.Status.Services, a.statusFor(r.Context(), name))
 	}
-	if d, err := a.diskUsage(); err == nil {
-		resp.Status.Disk = d
-	}
+	resp.Status.Disk = a.diskUsage(r.Context())
 
 	resp.ServiceSamples, resp.HostSamples, resp.Capacity = a.MetricsSince(since)
 
@@ -298,29 +295,42 @@ func (a *Agent) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// diskUsage reports headroom on the volume holding releases.
-func (a *Agent) diskUsage() (*proto.DiskUsage, error) {
-	res, err := a.Exec.Run(context.Background(), "df -P "+a.Layout.Root+" 2>/dev/null || df -P /")
-	if err != nil || !res.OK() {
-		return nil, fmt.Errorf("df failed")
-	}
-	lines := strings.Split(strings.TrimSpace(res.Stdout), "\n")
-	if len(lines) < 2 {
-		return nil, fmt.Errorf("unexpected df output")
-	}
-	for _, f := range strings.Fields(lines[len(lines)-1]) {
-		if pct, ok := strings.CutSuffix(f, "%"); ok {
-			n, err := strconv.Atoi(pct)
-			if err != nil {
-				continue
-			}
-			if n < 0 || n > 100 {
-				return nil, fmt.Errorf("df reported %d%% used", n)
-			}
+// diskTimeout bounds one df, so a hung mount cannot stall the alert sweep or
+// a status request behind it.
+var diskTimeout = 10 * time.Second
+
+// diskUsage reports headroom on the volume holding releases, or nil when it
+// could not be read.
+func (a *Agent) diskUsage(ctx context.Context) *proto.DiskUsage {
+	d, _ := a.readDisk(ctx)
+	return d
+}
+
+// readDisk is diskUsage plus, on failure, the cause as slog attributes. No
+// fallback path: where the Pilot root is its own volume, another figure would
+// resolve a disk alert that nil leaves held.
+func (a *Agent) readDisk(ctx context.Context) (*proto.DiskUsage, []any) {
+	parent := ctx
+	ctx, cancel := context.WithTimeout(ctx, diskTimeout)
+	defer cancel()
+	res, err := a.Exec.Run(ctx, "df -P "+transport.Quote(a.Layout.Root))
+	if err == nil && res.OK() {
+		if n, ok := release.ParseDiskUsed(res.Stdout); ok {
 			return &proto.DiskUsage{Path: a.Layout.Root, UsedPercent: n}, nil
 		}
 	}
-	return nil, fmt.Errorf("no percentage in df output")
+
+	switch {
+	case parent.Err() != nil:
+		// A caller hanging up says nothing about the disk.
+		return nil, nil
+	case err != nil:
+		return nil, []any{"err", err}
+	case !res.OK():
+		return nil, []any{"exit_code", res.ExitCode, "stderr", strings.TrimSpace(res.Stderr)}
+	default:
+		return nil, []any{"stdout", strings.TrimSpace(res.Stdout)}
+	}
 }
 
 // httpServer sends net/http's own errors, a recovered handler panic among

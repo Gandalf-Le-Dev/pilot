@@ -208,14 +208,20 @@ func (a *Agent) evaluateAlerts(ctx context.Context) {
 
 // readings gathers the current value of every metric, keyed by subject. The
 // host-wide reading is keyed by the empty string. Memory is read only when a
-// rule asks for it, so a host where it cannot be read warns only when that
-// costs an alert.
+// rule asks for it, and an unreadable disk or memory figure warns only when a
+// rule reads it, which is when it costs an alert.
 func (a *Agent) readings(ctx context.Context, rules []alert.Rule) map[string]alert.Reading {
 	out := map[string]alert.Reading{}
 
 	host := alert.Reading{}
-	if d, err := a.diskUsage(); err == nil {
+	d, cause := a.readDisk(ctx)
+	if d != nil {
 		host.DiskUsedPct = &d.UsedPercent
+	} else if cause != nil && readsDisk(rules) {
+		a.diskWarnOnce.Do(func() {
+			a.log().Warn("host disk unreadable, host.disk alert rules will not evaluate",
+				append([]any{"path", a.Layout.Root}, cause...)...)
+		})
 	}
 	if readsMemory(rules) {
 		if pct, ok := a.memUsedPct(); ok {
@@ -262,6 +268,12 @@ func (a *Agent) readings(ctx context.Context, rules []alert.Rule) map[string]ale
 		out[name] = r
 	}
 	return out
+}
+
+func readsDisk(rules []alert.Rule) bool {
+	return slices.ContainsFunc(rules, func(r alert.Rule) bool {
+		return r.Cond.Metric == alert.DiskUsedPct || r.Cond.Metric == alert.DiskFreePct
+	})
 }
 
 func readsMemory(rules []alert.Rule) bool {

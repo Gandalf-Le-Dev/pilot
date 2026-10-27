@@ -1,11 +1,14 @@
 package local
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func ctx() context.Context { return context.Background() }
@@ -43,6 +46,72 @@ func TestRunSupportsPipesAndRedirection(t *testing.T) {
 	}
 	if res.Out() != "ab" {
 		t.Errorf("got %q; command lines with pipes must work, since that is what callers send", res.Out())
+	}
+}
+
+// Killing the shell on cancel leaves its sleep child holding stdout; without a
+// wait delay, Run would block until that child exits on its own.
+func TestCanceledRunReturnsDespiteHeldPipe(t *testing.T) {
+	saved := waitDelay
+	waitDelay = 100 * time.Millisecond
+	t.Cleanup(func() { waitDelay = saved })
+
+	c, cancel := context.WithTimeout(ctx(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := New("").Run(c, "sleep 3; true"); err == nil {
+		t.Error("a canceled command should report an error")
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("Run took %v after cancel, want it bounded by the wait delay", took)
+	}
+}
+
+// A command that succeeds but backgrounds a child still holding stdout is a
+// success: the wait delay must not turn it into "could not be run".
+func TestRunSucceedsDespiteBackgroundChild(t *testing.T) {
+	saved := waitDelay
+	waitDelay = 100 * time.Millisecond
+	t.Cleanup(func() { waitDelay = saved })
+	var logs bytes.Buffer
+	savedLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(savedLog) })
+
+	start := time.Now()
+	res, err := New("").Run(ctx(), "echo hi; sleep 3 &")
+	if err != nil {
+		t.Fatalf("a command that exited 0 should not be an error: %v", err)
+	}
+	if !res.OK() || res.Out() != "hi" {
+		t.Errorf("res = %+v, want exit 0 and %q", res, "hi")
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("Run took %v, want it bounded by the wait delay", took)
+	}
+	out := logs.String()
+	if n := strings.Count(out, "background child kept its output open"); n != 1 {
+		t.Errorf("logged %d warnings, want 1:\n%s", n, out)
+	}
+	if !strings.Contains(out, "cmd=echo") || strings.Contains(out, "sleep") {
+		t.Errorf("warning should name the program and nothing after it:\n%s", out)
+	}
+}
+
+func TestProgramNameDropsArguments(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-c", "df -P /opt/pilot"}, "df"},
+		{[]string{"-c", "TOKEN=s3cret curl -H x https://example.com"}, "curl"},
+		{[]string{"-s"}, "script"},
+		{nil, "script"},
+	}
+	for _, tc := range tests {
+		if got := programName(tc.args); got != tc.want {
+			t.Errorf("programName(%q) = %q, want %q", tc.args, got, tc.want)
+		}
 	}
 }
 

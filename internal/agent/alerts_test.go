@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/alert"
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
@@ -19,6 +20,15 @@ import (
 func memRules(t *testing.T) []alert.Rule {
 	t.Helper()
 	cond, err := alert.Parse("host.mem.used_pct > 90")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []alert.Rule{{Cond: cond}}
+}
+
+func diskRules(t *testing.T) []alert.Rule {
+	t.Helper()
+	cond, err := alert.Parse("host.disk.used_pct > 90")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,14 +111,15 @@ func TestHostReadingCarriesDisk(t *testing.T) {
 // use, which would resolve a full-disk alert that is still true.
 func TestHostReadingLeavesUnreadDiskUnset(t *testing.T) {
 	tests := map[string]dfFake{
-		"exec error":   {err: errors.New("fork failed")},
-		"df failed":    {res: transport.Result{ExitCode: 1, Stderr: "df: /opt/pilot: No such file"}},
-		"no output":    {},
-		"garbage":      {res: transport.Result{Stdout: "not\ndf output"}},
-		"header only":  {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n"}},
-		"dash percent": {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\nnone 0 0 0 -% /\n"}},
-		"negative":     {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 86 14 -5% /\n"}},
-		"over 100":     {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 86 14 105% /\n"}},
+		"exec error":             {err: errors.New("fork failed")},
+		"df failed":              {res: transport.Result{ExitCode: 1, Stderr: "df: /opt/pilot: No such file"}},
+		"df failed after output": {res: transport.Result{ExitCode: 1, Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 34 66 34% /\n"}},
+		"no output":              {},
+		"garbage":                {res: transport.Result{Stdout: "not\ndf output"}},
+		"header only":            {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n"}},
+		"dash percent":           {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\nnone 0 0 0 -% /\n"}},
+		"negative":               {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 86 14 -5% /\n"}},
+		"over 100":               {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 86 14 105% /\n"}},
 	}
 	for name, fake := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -118,6 +129,129 @@ func TestHostReadingLeavesUnreadDiskUnset(t *testing.T) {
 				t.Errorf("DiskUsedPct = %d, want unset", *got)
 			}
 		})
+	}
+}
+
+// With the Pilot root gone, the volume that held it is unknown; reading the
+// parent instead would report another disk's headroom as Pilot's.
+func TestDiskUnreadWhenRootMissing(t *testing.T) {
+	a := newAgent(t)
+	d := a.diskUsage(t.Context())
+	if d == nil || d.Path != a.Layout.Root {
+		t.Fatalf("diskUsage = %+v, want a reading for %s", d, a.Layout.Root)
+	}
+
+	if err := os.RemoveAll(a.Layout.Root); err != nil {
+		t.Fatal(err)
+	}
+	if d := a.diskUsage(t.Context()); d != nil {
+		t.Errorf("diskUsage = %+v with the root missing, want nil", d)
+	}
+}
+
+// hungDF stands in for df on a mount that never answers.
+type hungDF struct{ transport.Executor }
+
+func (hungDF) Run(ctx context.Context, _ string) (transport.Result, error) {
+	<-ctx.Done()
+	return transport.Result{}, ctx.Err()
+}
+
+func TestHungDiskReadIsBounded(t *testing.T) {
+	saved := diskTimeout
+	diskTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { diskTimeout = saved })
+
+	a := newAgent(t)
+	a.Exec = hungDF{}
+	done := make(chan *int, 1)
+	go func() { done <- a.readings(t.Context(), nil)[""].DiskUsedPct }()
+
+	select {
+	case got := <-done:
+		if got != nil {
+			t.Errorf("DiskUsedPct = %d, want unset", *got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("readings blocked on a hung df")
+	}
+}
+
+// A disk rule that can never evaluate should say so once, naming the path
+// and what df said, rather than stay silent or repeat every sweep.
+func TestUnreadDiskIsLoggedOnce(t *testing.T) {
+	var buf bytes.Buffer
+	a := newAgent(t)
+	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	a.Exec = dfFake{res: transport.Result{ExitCode: 1, Stderr: "df: /opt/pilot: No such file or directory\n"}}
+	a.readings(t.Context(), diskRules(t))
+	a.readings(t.Context(), diskRules(t))
+
+	out := buf.String()
+	if n := strings.Count(out, "host disk unreadable"); n != 1 {
+		t.Fatalf("logged %d times, want once:\n%s", n, out)
+	}
+	for _, want := range []string{"path=" + a.Layout.Root, "exit_code=1", `stderr="df: /opt/pilot: No such file or directory"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log should carry %s:\n%s", want, out)
+		}
+	}
+}
+
+// The warning is about alert rules, so only a sweep that has a disk rule to
+// lose gives it: not one without, and not a status or dashboard read.
+func TestUnreadDiskIsQuietWithoutDiskRule(t *testing.T) {
+	var buf bytes.Buffer
+	a := newAgent(t)
+	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	a.Exec = dfFake{err: errors.New("fork failed")}
+	a.fleet = &FleetConfig{Alerts: []config.Alert{{When: "host.disk.used_pct > 90"}}}
+
+	a.readings(t.Context(), nil)
+	if d := a.diskUsage(t.Context()); d != nil {
+		t.Errorf("diskUsage = %+v, want nil", d)
+	}
+	if strings.Contains(buf.String(), "host disk unreadable") {
+		t.Errorf("warned with no disk rule in the sweep:\n%s", buf.String())
+	}
+}
+
+// A sweep canceled mid-read, e.g. at shutdown, is not a disk fault, and must
+// not spend the one warning a real fault gets.
+func TestCanceledDiskReadIsNotLogged(t *testing.T) {
+	var buf bytes.Buffer
+	a := newAgent(t)
+	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	a.Exec = hungDF{}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if got := a.readings(ctx, diskRules(t))[""].DiskUsedPct; got != nil {
+		t.Errorf("DiskUsedPct = %d, want unset", *got)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("logged a canceled read:\n%s", buf.String())
+	}
+}
+
+func TestReadsDisk(t *testing.T) {
+	tests := map[string]bool{
+		"host.disk.used_pct > 90": true,
+		"host.disk.free_pct < 10": true,
+		"host.mem.used_pct > 90":  false,
+		"service.down":            false,
+	}
+	for when, want := range tests {
+		cond, err := alert.Parse(when)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := readsDisk([]alert.Rule{{Cond: cond}}); got != want {
+			t.Errorf("readsDisk(%q) = %v, want %v", when, got, want)
+		}
+	}
+	if readsDisk(nil) {
+		t.Error("readsDisk(nil) = true, want false")
 	}
 }
 
@@ -165,7 +299,7 @@ func TestUnreadMemoryIsQuietWithoutMemRule(t *testing.T) {
 	var buf bytes.Buffer
 	a := newAgent(t)
 	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
-	a.Exec = dfFake{err: errors.New("fork failed")}
+	a.Exec = dfFake{res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 34 66 34% /\n"}}
 	a.meminfo = func() ([]byte, error) {
 		t.Error("memory read with no host.mem rule")
 		return nil, errors.New("no such file")

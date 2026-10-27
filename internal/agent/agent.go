@@ -70,6 +70,8 @@ type Agent struct {
 	meminfo     func() ([]byte, error)
 	memWarnOnce sync.Once
 
+	diskWarnOnce sync.Once
+
 	jobs   *JobStore
 	alerts *alert.Engine
 }

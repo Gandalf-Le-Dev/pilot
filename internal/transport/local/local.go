@@ -13,11 +13,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
@@ -238,10 +240,15 @@ func (e *Executor) UploadDir(ctx context.Context, srcDir, dstDir string) error {
 	})
 }
 
+// waitDelay bounds how long Wait lingers on output pipes that a child left
+// behind still holds open, after a cancel kill or after the shell exits.
+var waitDelay = 5 * time.Second
+
 // runCommand distinguishes "the command ran and failed" (an exit code) from
 // "the command could not be run" (an error).
 func runCommand(ctx context.Context, bin string, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.WaitDelay = waitDelay
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -250,6 +257,17 @@ func runCommand(ctx context.Context, bin string, args []string, stdin io.Reader,
 	if err == nil {
 		return 0, nil
 	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The shell exited cleanly; only a child it backgrounded still held
+		// the pipes, so this is a success with possibly truncated output.
+		code := cmd.ProcessState.ExitCode()
+		if ctx.Err() != nil {
+			return code, ctx.Err()
+		}
+		slog.Warn("command exited but a background child kept its output open, output may be cut short",
+			"cmd", programName(args), "exit_code", code)
+		return code, nil
+	}
 	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 		if ctx.Err() != nil {
 			return ee.ExitCode(), ctx.Err()
@@ -257,6 +275,21 @@ func runCommand(ctx context.Context, bin string, args []string, stdin io.Reader,
 		return ee.ExitCode(), nil
 	}
 	return 0, err
+}
+
+// programName names a command for logs without its arguments, which a caller
+// may one day fill with a token; leading VAR=value words are skipped for the
+// same reason.
+func programName(args []string) string {
+	if len(args) < 2 || args[0] != "-c" {
+		return "script"
+	}
+	for _, f := range strings.Fields(args[1]) {
+		if !strings.Contains(f, "=") {
+			return f
+		}
+	}
+	return "script"
 }
 
 // Swap performs the atomic release swap in-process.
