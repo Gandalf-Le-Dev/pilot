@@ -307,13 +307,14 @@ func newRoutesCmd(g *globals) *cobra.Command {
 		Use:   "routes",
 		Short: "Show the Caddy routes Pilot manages",
 		Long: "Lists the generated route files on each host and flags any with no matching\n" +
-			"service — usually left behind when a service was removed from config.",
+			"service — usually left behind when a service was removed from config — and\n" +
+			"any shared site block with no routes in it, or routes with no site block.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRoutes(cmd.Context(), g, prune)
 		},
 	}
-	cmd.Flags().BoolVar(&prune, "prune", false, "remove orphaned routes and reload caddy")
+	cmd.Flags().BoolVar(&prune, "prune", false, "remove orphaned routes, repair shared site blocks, and reload caddy")
 	return cmd
 }
 
@@ -323,6 +324,11 @@ type routeRow struct {
 	Domains []string `json:"domains,omitempty"`
 	Orphan  bool     `json:"orphan,omitempty"`
 	Pruned  bool     `json:"pruned,omitempty"`
+
+	// Site names a shared site's file or handle directory that is broken, and
+	// Problem says how; such a row has no service.
+	Site    string `json:"site,omitempty"`
+	Problem string `json:"problem,omitempty"`
 }
 
 func runRoutes(ctx context.Context, g *globals, prune bool) error {
@@ -341,7 +347,7 @@ func runRoutes(ctx context.Context, g *globals, prune bool) error {
 			continue
 		}
 		installed, err := caddy.ListSnippets(ctx, client, paths)
-		if err != nil || len(installed) == 0 {
+		if err != nil {
 			continue
 		}
 
@@ -367,6 +373,26 @@ func runRoutes(ctx context.Context, g *globals, prune bool) error {
 			}
 			rows = append(rows, row)
 		}
+
+		// After the prune above, which takes each emptied site block with it.
+		empty, headless, err := caddy.SiteProblems(ctx, client, paths)
+		if err != nil || len(empty)+len(headless) == 0 {
+			continue
+		}
+		tidied := false
+		if prune {
+			if _, err := caddy.TidySites(ctx, client, paths); err != nil {
+				fmt.Fprintf(os.Stderr, "  ✖ %s: repairing shared sites: %v\n", host, err)
+			} else {
+				tidied = true
+			}
+		}
+		for _, f := range empty {
+			rows = append(rows, routeRow{Host: host, Site: f, Problem: "site block with no routes in it", Orphan: true, Pruned: tidied})
+		}
+		for _, h := range headless {
+			rows = append(rows, routeRow{Host: host, Site: h.Dir + "/", Problem: "routes with no site block", Orphan: true, Pruned: tidied})
+		}
 	}
 
 	if g.json {
@@ -385,6 +411,11 @@ func runRoutes(ctx context.Context, g *globals, prune bool) error {
 	orphans := 0
 	for _, r := range rows {
 		switch {
+		case r.Site != "" && r.Pruned:
+			fmt.Printf("  ✔ %s  %s  repaired (%s)\n", r.Host, r.Site, r.Problem)
+		case r.Site != "":
+			orphans++
+			fmt.Printf("  ⚠ %s  %s  %s\n", r.Host, r.Site, r.Problem)
 		case r.Pruned:
 			fmt.Printf("  ✔ %s  %s  pruned\n", r.Host, r.Service)
 		case r.Orphan:
