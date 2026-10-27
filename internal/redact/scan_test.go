@@ -213,6 +213,7 @@ func TestPwdStillMeansPassword(t *testing.T) {
 		`{"pwd":"\/cb\u003dhunter22"}`: "pwd",
 		`{"pwd":"\\/hunter22"}`:        "pwd",
 		`pwd=/x\u003dhunter22`:         "pwd",
+		`{"pwd":"\/x\"=secret"}`:       "pwd",
 	}
 	for line, want := range cases {
 		got := Scan(line, nil)

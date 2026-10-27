@@ -62,10 +62,12 @@ type Match struct {
 // value back as a placeholder while leaving `api_key=` intact. A log line that
 // says a key was passed and does not say which is still useful for debugging;
 // one with the whole pair removed is not.
+// The value takes `\"` and `\\` as one character each, so a JSON string with an
+// escaped quote is redacted whole rather than up to that quote.
 var labelled = regexp.MustCompile(`(?i)\b(api[_-]?keys?|apikey|access[_-]?token|refresh[_-]?token|` +
 	`id[_-]?token|auth[_-]?token|bearer|token|passwords?|passwd|pwd|secrets?|client[_-]?secret|` +
 	`private[_-]?key|secret[_-]?key|signature|sessionid|session[_-]?token|credentials?)` +
-	`(["']?\s*[=:]\s*["']?)([^"'\s&,;}]{4,})`)
+	`(["']?\s*[=:]\s*["']?)((?:\\["\\]|[^"'\s&,;}]){4,})`)
 
 // formats are values that cannot plausibly be anything but a credential.
 //

@@ -179,3 +179,20 @@ func TestTextStillRedactsPwdAsPassword(t *testing.T) {
 		}
 	}
 }
+
+// An escaped quote is part of a JSON string, so stopping there would leave the
+// rest of the value in the line. An escaped backslash before the closing quote
+// must still end it, or the redaction would run on into the next field.
+func TestTextRedactsJSONValuesWithEscapes(t *testing.T) {
+	cases := map[string]string{
+		`{"pwd":"\/x\"=secret"}`:                `{"pwd":"` + Placeholder + `"}`,
+		`{"password":"ab\"cd","user":"root"}`:   `{"password":"` + Placeholder + `","user":"root"}`,
+		`{"password":"abc\\","user":"root"}`:    `{"password":"` + Placeholder + `","user":"root"}`,
+		`{"password":"a\\\"b\\","user":"root"}`: `{"password":"` + Placeholder + `","user":"root"}`,
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
