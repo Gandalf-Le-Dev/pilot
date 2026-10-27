@@ -165,7 +165,7 @@ func ObserveColor(ctx context.Context, t *runtime.Target, c config.Color) (runti
 		return obs, nil
 	}
 
-	instances, err := ParsePS([]byte(res.Stdout))
+	instances, err := containers(ctx, t, res.Stdout)
 	if err != nil {
 		return obs, err
 	}
