@@ -41,7 +41,7 @@ func (r *recorder) Run(ctx context.Context, cmd string) (transport.Result, error
 		return transport.Result{Stdout: r.inspectOut}, nil
 	case strings.HasPrefix(cmd, "readlink"):
 		return transport.Result{Stdout: "releases/0001-aaaaaaa\n"}, nil
-	case strings.HasPrefix(cmd, "cat "):
+	case strings.HasPrefix(cmd, "cat ") || strings.Contains(cmd, "|| cat "):
 		for p, v := range r.files {
 			if strings.Contains(cmd, p) {
 				return transport.Result{Stdout: v}, nil

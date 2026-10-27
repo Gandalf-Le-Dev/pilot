@@ -95,6 +95,10 @@ type StageInput struct {
 	// exposed. A copy lives in the release so a rollback restores routing and
 	// code together.
 	Snippet string
+
+	// ColorSnippets holds a blue-green release's route once per colour, keyed
+	// by colour, each pointing at that colour's host port.
+	ColorSnippets map[string]string
 }
 
 // State is a service's coarse condition, uniform across runtimes.

@@ -47,6 +47,10 @@ type Plan struct {
 	Snippet   string `json:"-"`
 	RouteHash string `json:"route_hash,omitempty"`
 
+	// ColorRoutes is a blue-green service's route per colour, keyed by
+	// colour; Snippet is then the blue one.
+	ColorRoutes map[string]string `json:"-"`
+
 	Activation map[string]string `json:"activation,omitempty"`
 
 	Hosts []HostPlan `json:"hosts"`
@@ -133,19 +137,20 @@ func Compute(ctx context.Context, in Input) (*Plan, error) {
 			"deploy it explicitly with --force if you really mean to", s.Name)
 	}
 
-	snippet, err := renderRoute(s, in.Fleet, in.Layout)
+	snippet, colorRoutes, err := renderRoute(s, in.Fleet, in.Layout)
 	if err != nil {
 		return nil, err
 	}
 
 	p := &Plan{
-		Service:   s,
-		Commit:    in.Build.Commit,
-		Artifacts: in.Build.Artifacts,
-		Snippet:   snippet,
-		LocalDir:  in.Build.Dir,
-		EnvKeys:   sortedKeys(in.Env),
-		EnvHash:   release.HashMap(in.Env),
+		Service:     s,
+		Commit:      in.Build.Commit,
+		Artifacts:   in.Build.Artifacts,
+		Snippet:     snippet,
+		ColorRoutes: colorRoutes,
+		LocalDir:    in.Build.Dir,
+		EnvKeys:     sortedKeys(in.Env),
+		EnvHash:     release.HashMap(in.Env),
 
 		Activation: activation(s),
 
@@ -153,6 +158,9 @@ func Compute(ctx context.Context, in Input) (*Plan, error) {
 	}
 	if snippet != "" {
 		p.RouteHash = release.HashBytes([]byte(snippet))
+		if green, ok := colorRoutes[string(config.ColorGreen)]; ok {
+			p.RouteHash = release.HashBytes([]byte(snippet + "\x00" + green))
+		}
 	}
 
 	// The release hash covers everything that defines the release. Two deploys
@@ -309,14 +317,24 @@ func startable(s *config.Service) bool {
 func planRoute(ctx context.Context, in Input, p *Plan, t *runtime.Target) (RouteAction, error) {
 	read := func(file string) ([]byte, error) { return t.Client.ReadFile(ctx, file) }
 	paths := caddy.Paths{SnippetDir: in.Fleet.Caddy.SnippetDir}
-	_, state := caddy.Installed(read, paths, p.Service.Name, p.Snippet)
+	want := p.Snippet
+	if p.ColorRoutes != nil {
+		// A guessed colour could read the live route as changed, and turn a
+		// start of a stopped stack into a flip onto the stack that serves.
+		color, err := runtime.ActiveColor(ctx, t)
+		if err != nil {
+			return RouteNone, fmt.Errorf("%s: %w", t.Host.Name, err)
+		}
+		want = p.ColorRoutes[string(color)]
+	}
+	_, state := caddy.Installed(read, paths, p.Service.Name, want)
 	if state == caddy.RouteMatches {
 		return RouteNone, nil
 	}
 
 	// Refused here rather than at install, which for a changed route comes
 	// after activation and would roll the code back over a routing conflict.
-	if err := caddy.CheckSites(ctx, t.Client, paths, p.Service.Name, p.Snippet); err != nil {
+	if err := caddy.CheckSites(ctx, t.Client, paths, p.Service.Name, want); err != nil {
 		return RouteNone, fmt.Errorf("%s: %w", t.Host.Name, err)
 	}
 	if state == caddy.RouteMissing {
@@ -506,17 +524,39 @@ func describeEnvChange(before, after []string) string {
 }
 
 // renderRoute produces the Caddy snippet for a service, if it is exposed.
-func renderRoute(s *config.Service, f *config.Fleet, layout release.Layout) (string, error) {
+//
+// A blue-green route points at whichever colour serves, and expose.upstream
+// is the container port behind both colours, so the route is rendered once
+// per colour at that colour's host port. The blue one stands for the release
+// where one route is wanted: the release's caddy.snippet and its hash.
+func renderRoute(s *config.Service, f *config.Fleet, layout release.Layout) (string, map[string]string, error) {
 	if s.Expose == nil {
-		return "", nil
+		return "", nil, nil
 	}
-	return caddy.Render(caddy.Input{
+	in := caddy.Input{
 		Service: s.Name,
 		Expose:  s.Expose,
 		Root:    layout.Current(s.Name),
 		Bind:    f.CaddyBindFor(s.Hosts),
 		Shared:  f.SharesSite(s),
-	})
+	}
+	if !s.Rollout.IsBlueGreen() {
+		out, err := caddy.Render(in)
+		return out, nil, err
+	}
+
+	colors := map[string]string{}
+	for _, c := range []config.Color{config.ColorBlue, config.ColorGreen} {
+		e := *s.Expose
+		e.Upstream = s.Rollout.PortFor(c)
+		in.Expose = &e
+		out, err := caddy.Render(in)
+		if err != nil {
+			return "", nil, err
+		}
+		colors[string(c)] = out
+	}
+	return colors[string(config.ColorBlue)], colors, nil
 }
 
 // Manifest builds the manifest recorded with a release on one host.

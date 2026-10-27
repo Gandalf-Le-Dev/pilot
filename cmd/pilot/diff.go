@@ -169,10 +169,13 @@ func computeConfigDrift(ctx context.Context, a *app.App, s *config.Service, t *r
 // routeTexts returns the route that shipped with the release and the one
 // actually installed.
 func routeTexts(ctx context.Context, a *app.App, t *runtime.Target, service, current string) (before, after string, differs bool) {
-	deployed, err := t.Client.ReadFile(ctx, a.Layout.Snippet(service, current))
+	live := *t
+	live.Release = current
+	route, err := runtime.ExpectedRoute(ctx, &live, a.Fleet.Caddy.SnippetDir, a.Fleet.CaddyBindFor([]string{t.Host.Name}))
 	if err != nil {
 		return "", "", false
 	}
+	deployed := []byte(route)
 	read := func(file string) ([]byte, error) { return t.Client.ReadFile(ctx, file) }
 	installed, state := caddy.Installed(read, a.CaddyPaths(), service, string(deployed))
 	if state != caddy.RouteMatches && caddy.Shared(string(deployed)) {

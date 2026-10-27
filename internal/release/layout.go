@@ -91,6 +91,16 @@ func (l Layout) Snippet(name, id string) string {
 	return path.Join(l.Release(name, id), SnippetFile)
 }
 
+// ColorSnippetFile is a blue-green release's route for one colour, pointing
+// at that colour's host port. The flip installs the one for the colour it
+// moves to. A release staged before routes were kept per colour has none.
+func ColorSnippetFile(color string) string { return "caddy." + color + ".snippet" }
+
+// ColorSnippet is the release's route for one colour; see ColorSnippetFile.
+func (l Layout) ColorSnippet(name, id, color string) string {
+	return path.Join(l.Release(name, id), ColorSnippetFile(color))
+}
+
 // CurrentTarget is the symlink's value: relative to the service directory, so
 // the whole tree can be moved or mounted elsewhere without breaking.
 func CurrentTarget(id string) string { return path.Join(ReleasesDir, id) }

@@ -86,6 +86,7 @@ func (a *Agent) checkServiceDrift(ctx context.Context, name string) {
 	if err != nil {
 		return
 	}
+	began := time.Now()
 
 	t := a.Target(s, "")
 	current, err := runtime.ReadCurrent(ctx, t)
@@ -113,11 +114,12 @@ func (a *Agent) checkServiceDrift(ctx context.Context, name string) {
 	}
 
 	// Route drift: the installed snippet versus the copy that shipped with the
-	// release.
+	// release, for the colour that serves when the release has one per colour.
 	if s.Expose != nil {
-		want, err := os.ReadFile(a.Layout.Snippet(name, current))
+		live := a.Target(s, current)
+		want, err := runtime.ExpectedRoute(ctx, live, a.Caddy.SnippetDir, a.CaddyBind())
 		if err == nil {
-			if _, state := caddy.Installed(os.ReadFile, a.Caddy, name, string(want)); state != caddy.RouteMatches {
+			if _, state := caddy.Installed(os.ReadFile, a.Caddy, name, want); state != caddy.RouteMatches {
 				rec.route = true
 				if rec.detail == "" {
 					rec.detail = "installed route differs from the one deployed with this release"
@@ -128,6 +130,11 @@ func (a *Agent) checkServiceDrift(ctx context.Context, name string) {
 		}
 	}
 
+	// A job that ran while this looked may have moved the route, the colour
+	// or the release between two of its reads; the next pass sees it whole.
+	if a.jobs.TouchedSince(name, began) {
+		return
+	}
 	if !rec.config && !rec.route {
 		a.setDrift(name, nil)
 		return

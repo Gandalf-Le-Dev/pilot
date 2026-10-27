@@ -115,8 +115,10 @@ func (a *Agent) runStart(jobID string, svc *config.Service, rt runtime.Runtime, 
 	// colour, and the route already points at it.
 	verifyStarted := func() error { return a.verify(ctx, jobID, rt, t) }
 	if svc.Rollout.IsBlueGreen() {
-		active := a.activeColor(svc.Name)
-		err = compose.StartColor(ctx, t, active, t.ReleaseDir())
+		var active config.Color
+		if active, err = a.activeColor(ctx, svc); err == nil {
+			err = compose.StartColor(ctx, t, active, t.ReleaseDir())
+		}
 		verifyStarted = func() error { return a.verifyColor(ctx, jobID, rt, t, active) }
 	} else {
 		err = rt.Activate(ctx, t)
@@ -316,9 +318,9 @@ func (a *Agent) installRoute(ctx context.Context, jobID, service, snippet string
 
 // record updates the service's state.json.
 func (a *Agent) record(ctx context.Context, t *runtime.Target, svc *config.Service, req proto.DeployRequest, from string, started time.Time, outcome release.Outcome, cause error) {
-	st, err := runtime.ReadState(ctx, t)
-	if err != nil {
-		st = release.NewState(svc.Name)
+	st, ok := runtime.StateToRecord(ctx, t, a.log().Warn)
+	if !ok {
+		return
 	}
 
 	switch outcome {
@@ -374,9 +376,18 @@ func (a *Agent) StartRollback(req proto.RollbackRequest) (*proto.Job, error) {
 
 	ctx := context.Background()
 	t := a.Target(svc, "")
-	st, err := runtime.ReadState(ctx, t)
+	st, unreadable, err := runtime.ReadStateOrBlank(ctx, t)
 	if err != nil {
 		return nil, err
+	}
+	if unreadable != nil {
+		// The serving colour lives only in the state, and a guess could
+		// start the rollback on the stack that serves.
+		if svc.Rollout.IsBlueGreen() {
+			return nil, unreadable
+		}
+		a.log().Warn("state cannot be read; rolling back from the current symlink",
+			"service", svc.Name, "file", unreadable.Path, "err", unreadable.Err)
 	}
 	if _, err := runtime.Reconcile(ctx, t, st); err != nil {
 		return nil, err
@@ -448,18 +459,16 @@ func (a *Agent) runRollback(jobID string, svc *config.Service, rt runtime.Runtim
 		return
 	}
 
-	st, err := runtime.ReadState(ctx, t)
-	if err != nil {
-		st = release.NewState(svc.Name)
-	}
-	st.Promote(to)
-	st.Record(release.DeployRecord{
-		Release: to, From: from, Host: a.Host, By: by,
-		StartedAt: started, FinishedAt: time.Now().UTC(),
-		Outcome: release.OutcomeOK, Reason: "manual rollback",
-	})
-	if err := runtime.WriteState(ctx, t, st); err != nil {
-		a.log().Error("could not record state", "service", svc.Name, "err", err)
+	if st, ok := runtime.StateToRecord(ctx, t, a.log().Warn); ok {
+		st.Promote(to)
+		st.Record(release.DeployRecord{
+			Release: to, From: from, Host: a.Host, By: by,
+			StartedAt: started, FinishedAt: time.Now().UTC(),
+			Outcome: release.OutcomeOK, Reason: "manual rollback",
+		})
+		if err := runtime.WriteState(ctx, t, st); err != nil {
+			a.log().Error("could not record state", "service", svc.Name, "err", err)
+		}
 	}
 
 	a.setDrift(svc.Name, nil)

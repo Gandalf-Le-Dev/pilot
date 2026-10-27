@@ -137,6 +137,24 @@ func TestStageCommonWritesEnvFile(t *testing.T) {
 	}
 }
 
+// A blue-green release keeps its route once per colour, because the flip
+// installs the copy for the colour it moves to.
+func TestStageCommonWritesARoutePerColour(t *testing.T) {
+	exec := &fakeExec{writes: map[string][]byte{}}
+	tg := target(t, "0001-abc1234")
+	tg.Client = exec
+
+	in := StageInput{Snippet: "blue", ColorSnippets: map[string]string{"blue": "blue", "green": "green"}}
+	if err := StageCommon(context.Background(), tg, in); err != nil {
+		t.Fatal(err)
+	}
+	for color, want := range in.ColorSnippets {
+		if got := string(exec.writes[tg.Layout.ColorSnippet(tg.Service.Name, tg.Release, color)]); got != want {
+			t.Errorf("%s route = %q, want %q", color, got, want)
+		}
+	}
+}
+
 func TestRenderEnv(t *testing.T) {
 	t.Run("sorted and stable", func(t *testing.T) {
 		got, err := RenderEnv(map[string]string{"ZED": "3", "ALPHA": "1", "MID": "2"})

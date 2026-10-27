@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
@@ -147,10 +148,11 @@ func (e *Executor) deployHost(ctx context.Context, p *Plan, hp HostPlan) Outcome
 	// service still untouched.
 	e.Log("  %s: staging %s", hp.Host, p.Release)
 	stageIn := runtime.StageInput{
-		LocalDir: p.LocalDir,
-		Env:      e.Env,
-		Manifest: p.Manifest(hp.Host),
-		Snippet:  p.Snippet,
+		LocalDir:      p.LocalDir,
+		Env:           e.Env,
+		Manifest:      p.Manifest(hp.Host),
+		Snippet:       p.Snippet,
+		ColorSnippets: p.ColorRoutes,
 	}
 	if err := e.Runtime.Stage(ctx, t, stageIn); err != nil {
 		out.Err = err
@@ -327,9 +329,10 @@ func (e *Executor) rollback(ctx context.Context, t *runtime.Target, p *Plan, hp 
 
 // commit records the successful deploy and prunes superseded releases.
 func (e *Executor) commit(ctx context.Context, t *runtime.Target, p *Plan, hp HostPlan, started time.Time) {
-	st, err := runtime.ReadState(ctx, t)
-	if err != nil {
-		st = release.NewState(p.Service.Name)
+	st, ok := runtime.StateToRecord(ctx, t, slog.Warn)
+	if !ok {
+		// Without the state, GC cannot tell which releases a rollback needs.
+		return
 	}
 	st.Promote(hp.To)
 	rec := release.DeployRecord{
@@ -342,6 +345,7 @@ func (e *Executor) commit(ctx context.Context, t *runtime.Target, p *Plan, hp Ho
 	st.Record(rec)
 	if err := runtime.WriteState(ctx, t, st); err != nil {
 		e.Log("  %s: could not record state: %v", hp.Host, err)
+		return
 	}
 
 	// A start adds no release, so there is nothing new to make room for.
@@ -364,9 +368,9 @@ func (e *Executor) commit(ctx context.Context, t *runtime.Target, p *Plan, hp Ho
 }
 
 func (e *Executor) recordFailure(ctx context.Context, t *runtime.Target, p *Plan, hp HostPlan, started time.Time, outcome release.Outcome, cause error) {
-	st, err := runtime.ReadState(ctx, t)
-	if err != nil {
-		st = release.NewState(p.Service.Name)
+	st, ok := runtime.StateToRecord(ctx, t, slog.Warn)
+	if !ok {
+		return
 	}
 	if outcome == release.OutcomeRolledBack && hp.From != "" {
 		st.Current = hp.From
@@ -381,9 +385,17 @@ func (e *Executor) recordFailure(ctx context.Context, t *runtime.Target, p *Plan
 
 // Rollback activates an earlier release, restoring its route alongside it.
 func Rollback(ctx context.Context, rt runtime.Runtime, t *runtime.Target, paths caddy.Paths, to string, log Logger) error {
-	st, err := runtime.ReadState(ctx, t)
+	st, unreadable, err := runtime.ReadStateOrBlank(ctx, t)
 	if err != nil {
 		return err
+	}
+	if unreadable != nil {
+		// The serving colour lives only in the state, and a guess could
+		// start the rollback on the stack that serves.
+		if t.Service.Rollout.IsBlueGreen() {
+			return unreadable
+		}
+		log("  %s: %s cannot be read (%v); rolling back from the current symlink", t.Host.Name, unreadable.Path, unreadable.Err)
 	}
 	if _, err := runtime.Reconcile(ctx, t, st); err != nil {
 		return err

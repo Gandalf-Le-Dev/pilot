@@ -78,6 +78,26 @@ func liveInput(t *testing.T, s *config.Service) (Input, string) {
 	return in, first.Release
 }
 
+// serveGreen makes green the serving colour of a blue-green service, with
+// green's route installed, as a flip leaves it.
+func serveGreen(t *testing.T, in Input) {
+	t.Helper()
+	p, err := Compute(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, path.Join(in.Fleet.Caddy.SnippetDir, caddy.SnippetName(in.Service.Name)), p.ColorRoutes["green"])
+	target := in.Targets["web-1"]
+	st, err := runtime.ReadState(t.Context(), target)
+	if err != nil {
+		st = release.NewState(in.Service.Name)
+	}
+	st.ActiveColor = "green"
+	if err := runtime.WriteState(t.Context(), target, st); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func write(t *testing.T, p, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -129,6 +149,7 @@ func TestPlanStartsAStoppedService(t *testing.T) {
 		err            error
 		agent          bool
 		skewed         bool
+		green          bool
 		routeChanged   bool
 		wantStart      bool
 		wantNotStarted string
@@ -146,12 +167,18 @@ func TestPlanStartsAStoppedService(t *testing.T) {
 		{name: "oneshot whose last run failed", svc: oneshot, obs: runtime.Observation{State: runtime.StateFailed, Instances: exited}},
 		{name: "static site has nothing to start", svc: static, obs: stoppedWith(exited)},
 		{name: "blue-green with an agent", svc: blueGreen, obs: stoppedWith(exited), agent: true, wantStart: true},
+		// Green serves green's route, which is the release's route for the
+		// serving colour: a start, not a flip.
+		{name: "blue-green serving green", svc: blueGreen, obs: stoppedWith(exited), agent: true, green: true, wantStart: true},
 		{name: "blue-green without an agent", svc: blueGreen, obs: stoppedWith(exited), wantNotStarted: "pilot bootstrap web-1"},
 		{name: "blue-green with a skewed agent", svc: blueGreen, obs: stoppedWith(exited), skewed: true, wantNotStarted: "pilot agent upgrade web-1"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			in, live := liveInput(t, tc.svc())
+			if tc.green {
+				serveGreen(t, in)
+			}
 			in.Runtime = observer{stubRuntime: stubRuntime{tc.obs}, err: tc.err}
 			if tc.agent {
 				in.Agents = map[string]*remote.Client{"web-1": {}}

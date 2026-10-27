@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
@@ -316,6 +317,53 @@ func TestRollbackJob(t *testing.T) {
 	current, _ := os.Readlink(a.Layout.Current("blog"))
 	if filepath.Base(current) != "0001-aaaaaaa" {
 		t.Errorf("current = %q, want the previous release", filepath.Base(current))
+	}
+}
+
+// Rollback is the incident tool, so a state.json that cannot be read must not
+// stop it: it rolls back from the current symlink. Only blue-green refuses,
+// since the serving colour lives only in that file.
+func TestRollbackSurvivesAnUnreadableState(t *testing.T) {
+	a := newAgent(t)
+	stageRelease(t, a, "blog", "0001-aaaaaaa", map[string]string{"index.html": "v1"})
+	stageRelease(t, a, "blog", "0002-bbbbbbb", map[string]string{"index.html": "v2"})
+	for _, id := range []string{"0001-aaaaaaa", "0002-bbbbbbb"} {
+		job, err := a.StartDeploy(proto.DeployRequest{Service: "blog", Release: id, Spec: staticSpec})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitDone(t, a, job.ID)
+	}
+	state := filepath.Join(a.Layout.Service("blog"), release.StateFile)
+	if err := os.WriteFile(state, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := a.StartRollback(proto.RollbackRequest{Service: "blog", To: "0001-aaaaaaa"})
+	if err != nil {
+		t.Fatalf("an unreadable state stopped the rollback: %v", err)
+	}
+	if got := waitDone(t, a, job.ID); got.State != proto.JobSucceeded {
+		t.Fatalf("rollback failed: %s\n%s", got.Error, formatEvents(got))
+	}
+	st, err := release.ReadState(a.Layout.Service("blog"), "blog")
+	if err != nil || st.Current != "0001-aaaaaaa" {
+		t.Errorf("state after the rollback = %+v, %v; want it rebuilt on 0001", st, err)
+	}
+
+	a.services["api"] = &config.Service{
+		Name: "api", Runtime: config.RuntimeCompose,
+		Expose:  &config.Expose{Domains: []string{"api.example.com"}, Upstream: 8080},
+		Rollout: &config.Rollout{Strategy: config.StrategyBlueGreen, Service: "web", Ports: []int{18080, 18081}},
+	}
+	if err := os.MkdirAll(a.Layout.Service("api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(a.Layout.Service("api"), release.StateFile), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.StartRollback(proto.RollbackRequest{Service: "api", To: "0001-aaaaaaa"}); err == nil || !strings.Contains(err.Error(), "active_color") {
+		t.Errorf("a blue-green rollback guessed the serving colour: %v", err)
 	}
 }
 
