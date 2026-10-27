@@ -75,7 +75,7 @@ func (a *Agent) handleStatus(w http.ResponseWriter, r *http.Request) {
 	for _, name := range a.ServiceNames() {
 		resp.Services = append(resp.Services, a.statusFor(r.Context(), name))
 	}
-	resp.Disk = a.diskUsage()
+	resp.Disk = a.diskUsage(r.Context())
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -271,7 +271,7 @@ func (a *Agent) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	for _, name := range a.ServiceNames() {
 		resp.Status.Services = append(resp.Status.Services, a.statusFor(r.Context(), name))
 	}
-	resp.Status.Disk = a.diskUsage()
+	resp.Status.Disk = a.diskUsage(r.Context())
 
 	resp.ServiceSamples, resp.HostSamples, resp.Capacity = a.MetricsSince(since)
 
@@ -294,11 +294,17 @@ func (a *Agent) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// diskTimeout bounds one df, so a hung mount cannot stall the alert sweep or
+// a status request behind it.
+var diskTimeout = 10 * time.Second
+
 // diskUsage reports headroom on the volume holding releases, or nil when it
 // could not be read. No fallback path: where the Pilot root is its own volume,
 // another figure would resolve a disk alert that nil leaves held.
-func (a *Agent) diskUsage() *proto.DiskUsage {
-	res, err := a.Exec.Run(context.Background(), "df -P "+transport.Quote(a.Layout.Root))
+func (a *Agent) diskUsage(ctx context.Context) *proto.DiskUsage {
+	ctx, cancel := context.WithTimeout(ctx, diskTimeout)
+	defer cancel()
+	res, err := a.Exec.Run(ctx, "df -P "+transport.Quote(a.Layout.Root))
 	if err != nil || !res.OK() {
 		return nil
 	}

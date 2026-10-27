@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/alert"
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
@@ -126,7 +127,7 @@ func TestHostReadingLeavesUnreadDiskUnset(t *testing.T) {
 // parent instead would report another disk's headroom as Pilot's.
 func TestDiskUnreadWhenRootMissing(t *testing.T) {
 	a := newAgent(t)
-	d := a.diskUsage()
+	d := a.diskUsage(t.Context())
 	if d == nil || d.Path != a.Layout.Root {
 		t.Fatalf("diskUsage = %+v, want a reading for %s", d, a.Layout.Root)
 	}
@@ -134,8 +135,36 @@ func TestDiskUnreadWhenRootMissing(t *testing.T) {
 	if err := os.RemoveAll(a.Layout.Root); err != nil {
 		t.Fatal(err)
 	}
-	if d := a.diskUsage(); d != nil {
+	if d := a.diskUsage(t.Context()); d != nil {
 		t.Errorf("diskUsage = %+v with the root missing, want nil", d)
+	}
+}
+
+// hungDF stands in for df on a mount that never answers.
+type hungDF struct{ transport.Executor }
+
+func (hungDF) Run(ctx context.Context, _ string) (transport.Result, error) {
+	<-ctx.Done()
+	return transport.Result{}, ctx.Err()
+}
+
+func TestHungDiskReadIsBounded(t *testing.T) {
+	saved := diskTimeout
+	diskTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { diskTimeout = saved })
+
+	a := newAgent(t)
+	a.Exec = hungDF{}
+	done := make(chan *int, 1)
+	go func() { done <- a.readings(t.Context(), nil)[""].DiskUsedPct }()
+
+	select {
+	case got := <-done:
+		if got != nil {
+			t.Errorf("DiskUsedPct = %d, want unset", *got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("readings blocked on a hung df")
 	}
 }
 
