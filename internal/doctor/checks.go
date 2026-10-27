@@ -34,6 +34,7 @@ func Standard() []Check {
 		{Name: "caddy-import", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyImport},
 		{Name: "caddy-routes", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyRoutes},
 		{Name: "caddy-bind", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyBind},
+		{Name: "caddy-paths", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyPaths},
 		{Name: "disk", Scope: ScopeHost, NeedsNetwork: true, Run: checkDisk},
 		{Name: "status-server", Scope: ScopeHost, NeedsNetwork: true, Run: checkStatusServer},
 		{Name: "dns-tls", Scope: ScopeEdge, NeedsNetwork: true, Run: checkEdge},
@@ -386,6 +387,39 @@ func checkCaddyBind(ctx context.Context, env *Env) []Finding {
 				Status: StatusOK, Scope: ScopeHost, Host: name,
 				Title: "routes carry the Caddyfile's explicit bind",
 			})
+		}
+	}
+	return out
+}
+
+// checkCaddyPaths finds installed routes whose path matches only itself, a
+// route that deploys green, passes health and TLS, and answers every real
+// request with an empty 200.
+func checkCaddyPaths(ctx context.Context, env *Env) []Finding {
+	var out []Finding
+	paths := hostPaths(env.Fleet)
+
+	for _, name := range env.Fleet.HostNames() {
+		client := env.Client(name)
+		if client == nil {
+			continue
+		}
+		for _, s := range env.ServicesOn(name) {
+			if s.Expose == nil || s.Expose.Path == "" {
+				continue
+			}
+			snippet, err := client.ReadFile(ctx, path.Join(paths.SnippetDir, caddy.SnippetName(s.Name)))
+			if err != nil {
+				continue // not installed yet; the next deploy renders a prefix
+			}
+			if exact := caddy.ExactPaths(string(snippet)); len(exact) > 0 {
+				out = append(out, Finding{
+					Status: StatusFail, Scope: ScopeHost, Host: name,
+					Title:  "route for " + s.Name + " matches only " + strings.Join(exact, ", "),
+					Detail: "a path in a Caddy site address is an exact match, so every request below it gets an empty 200",
+					Hint:   "redeploy " + s.Name + " to install a route that matches the whole path prefix",
+				})
+			}
 		}
 	}
 	return out

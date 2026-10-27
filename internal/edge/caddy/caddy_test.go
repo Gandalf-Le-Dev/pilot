@@ -613,3 +613,44 @@ func TestBindUsage(t *testing.T) {
 		})
 	}
 }
+
+func TestExactPaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		snippet string
+		want    []string
+	}{
+		{"no path", "api.example.com {\n\treverse_proxy :8080\n}\n", nil},
+		{"old exact render", "# managed by pilot\napi.example.com/v1, b.example.com/v1 {\n\tencode gzip zstd\n}\n",
+			[]string{"api.example.com/v1", "b.example.com/v1"}},
+		{"exact root", "api.example.com/ {\n}\n", []string{"api.example.com/"}},
+		{"prefix pair", "api.example.com/v1, api.example.com/v1/* {\n}\n", nil},
+		{"wildcard only", "api.example.com/v1/* {\n}\n", nil},
+		{"nested block is not a site", "api.example.com {\n\thandle /v1 {\n\t\trespond ok\n\t}\n}\n", nil},
+		{"commented header", "# api.example.com/v1 {\napi.example.com {\n}\n", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExactPaths(tc.snippet)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("ExactPaths = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Whatever Render produces must pass the check that flags the old bug.
+func TestRenderedPathsAreNeverExact(t *testing.T) {
+	for _, path := range []string{"", "/", "/*", "/v1", "/v1/", "/v1/*"} {
+		got, err := Render(Input{
+			Service: "api",
+			Expose:  &config.Expose{Domains: []string{"a.example.com", "b.example.com"}, Path: path, Upstream: 8080},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if exact := ExactPaths(got); len(exact) > 0 {
+			t.Errorf("path %q rendered exact matchers %v", path, exact)
+		}
+	}
+}
