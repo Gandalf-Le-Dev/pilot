@@ -378,12 +378,12 @@ func (a *Agent) Serve(ctx context.Context, socketPath string) error {
 
 	srv := a.httpServer()
 
-	go func() {
+	a.spawn(func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
-	}()
+	})
 
 	a.log().Info("listening", "socket", socketPath, "protocol", proto.Version, "build", a.Build)
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {

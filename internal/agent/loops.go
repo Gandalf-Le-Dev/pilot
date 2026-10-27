@@ -26,11 +26,17 @@ const (
 // loops stop when ctx is cancelled.
 func (a *Agent) StartLoops(ctx context.Context) {
 	for _, loop := range []func(context.Context){a.driftLoop, a.observeLoop, a.alertLoop, a.metricsLoop, a.healthLoop} {
-		go func() {
-			defer journal.LogPanic(a.log())
-			loop(ctx)
-		}()
+		a.spawn(func() { loop(ctx) })
 	}
+}
+
+// spawn runs f on its own goroutine, where a panic is logged at error level
+// before it kills the daemon.
+func (a *Agent) spawn(f func()) {
+	go func() {
+		defer journal.LogPanic(a.log())
+		f()
+	}()
 }
 
 // driftLoop periodically compares what is running against what should be.

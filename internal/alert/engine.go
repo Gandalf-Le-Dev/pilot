@@ -3,10 +3,13 @@ package alert
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Gandalf-Le-Dev/pilot/internal/journal"
 )
 
 // DefaultCooldown is how long a firing rule stays quiet before repeating
@@ -310,6 +313,7 @@ func (e *Engine) startWorker() {
 	e.workerOnce.Do(func() {
 		e.queue = make(chan delivery, QueueDepth)
 		go func() {
+			defer journal.LogPanic(slog.Default())
 			for d := range e.queue {
 				err := e.Sender.Send(context.Background(), d.notifier, d.msg)
 				if err != nil {

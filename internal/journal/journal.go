@@ -63,8 +63,9 @@ func isStream(stream string, w io.Writer) bool {
 // LogPanic, deferred at the top of a goroutine, logs a panic at error level
 // before letting it go on. The runtime's own report reaches the journal with
 // no priority, so `journalctl -p err` would miss it. A panic passes through
-// only the deferred calls of its own goroutine, so each long-lived one needs
-// this.
+// only the deferred calls of its own goroutine, so every goroutine a daemon
+// starts defers this, except http.Server.Serve: net/http recovers and logs
+// its handlers' panics itself.
 func LogPanic(log *slog.Logger) {
 	if v := recover(); v != nil {
 		log.Error("exiting on panic", "panic", v, "stack", string(debug.Stack()))
