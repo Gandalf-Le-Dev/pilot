@@ -39,8 +39,8 @@ func Text(s string, known map[string]string) string {
 	// Labelled parameters: keep the name and separator, replace the value.
 	s = labelled.ReplaceAllStringFunc(s, func(match string) string {
 		m := labelled.FindStringSubmatch(match)
-		if placeholders[strings.ToLower(strings.Trim(m[3], `"'`))] {
-			return match // already redacted; rewriting it would churn
+		if harmless(m[1], m[3]) {
+			return match // already redacted, or not a secret; rewriting it would churn
 		}
 		return m[1] + m[2] + Placeholder
 	})

@@ -96,6 +96,17 @@ var placeholders = map[string]bool{
 	"<redacted>": true, "[redacted]": true, "changeme": true, "your_api_key": true,
 }
 
+// harmless reports whether a labelled match reveals nothing. A pwd that is a
+// bare path is sudo's working directory; `=`, `?` or `:` mean a pair rode along.
+func harmless(label, raw string) bool {
+	value := strings.Trim(raw, `"'`)
+	if placeholders[strings.ToLower(value)] {
+		return true
+	}
+	return strings.EqualFold(label, "pwd") && strings.HasPrefix(value, "/") &&
+		!strings.ContainsAny(value, "=?:")
+}
+
 // minKnownLength is the shortest supplied value worth searching for.
 //
 // A short secret is still a secret, but a two- or three-character value occurs
@@ -115,8 +126,7 @@ func Scan(text string, known map[string]string) []Match {
 	counts := map[Match]int{}
 
 	for _, m := range labelled.FindAllStringSubmatch(text, -1) {
-		value := strings.Trim(m[3], `"'`)
-		if placeholders[strings.ToLower(value)] {
+		if harmless(m[1], m[3]) {
 			continue
 		}
 		key := Match{Kind: KindLabelled, Label: strings.ToLower(m[1])}

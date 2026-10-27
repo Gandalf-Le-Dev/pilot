@@ -151,3 +151,28 @@ func TestWriterDoesNotBufferForever(t *testing.T) {
 		t.Errorf("buffer is %d bytes, above the %d cap", len(w.buf), maxLine)
 	}
 }
+
+// TestTextAgreesWithScanOnSudoPWD — a line doctor calls clean must come through
+// redaction untouched, or the two disagree about what a secret is.
+func TestTextAgreesWithScanOnSudoPWD(t *testing.T) {
+	if got := Text(sudoAudit, nil); got != sudoAudit {
+		t.Errorf("Text altered a sudo audit line:\n got: %s\nwant: %s", got, sudoAudit)
+	}
+}
+
+func TestTextStillRedactsPwdAsPassword(t *testing.T) {
+	cases := map[string]string{
+		"pwd=hunter22":                               "pwd=" + Placeholder,
+		"PWD=hunter22":                               "PWD=" + Placeholder,
+		"password=/notapath123":                      "password=" + Placeholder,
+		"token=/notapath123":                         "token=" + Placeholder,
+		"pwd=/cb?token=s3cr3tvalue":                  "pwd=" + Placeholder,
+		"PWD=/x:password=hunter22":                   "PWD=" + Placeholder,
+		`{"pwd":"/var/lib/x","password":"hunter22"}`: `{"pwd":"/var/lib/x","password":"` + Placeholder + `"}`,
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
