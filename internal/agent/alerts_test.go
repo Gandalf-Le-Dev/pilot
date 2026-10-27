@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -47,5 +50,28 @@ func TestHostReadingExhaustedMemory(t *testing.T) {
 	}
 	if got := a.readings(t.Context())[""].MemUsedPct; got == nil || *got != 100 {
 		t.Errorf("MemUsedPct = %v, want 100", got)
+	}
+}
+
+// A memory rule that can never evaluate, e.g. in an LXC container reporting
+// MemAvailable above MemTotal, should say so once rather than stay silent or
+// repeat every sweep.
+func TestUnreadMemoryIsLoggedOnce(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	a := newAgent(t)
+	a.meminfo = func() ([]byte, error) { return []byte("MemTotal: 100 kB\nMemAvailable: 200 kB\n"), nil }
+	a.readings(t.Context())
+	a.readings(t.Context())
+
+	out := buf.String()
+	if n := strings.Count(out, "host memory unreadable"); n != 1 {
+		t.Fatalf("logged %d times, want once:\n%s", n, out)
+	}
+	if !strings.Contains(out, "mem_total=102400") || !strings.Contains(out, "mem_available=204800") {
+		t.Errorf("log should carry the figures it rejected:\n%s", out)
 	}
 }

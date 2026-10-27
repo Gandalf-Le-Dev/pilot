@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -264,6 +265,10 @@ func (a *Agent) readings(ctx context.Context) map[string]alert.Reading {
 func (a *Agent) memUsedPct() (pct int, ok bool) {
 	total, avail, ok := a.readMeminfo()
 	if !ok || total == 0 || avail > total {
+		a.memWarnOnce.Do(func() {
+			slog.Warn("host memory unreadable, host.mem alert rules will not evaluate",
+				"source", "/proc/meminfo", "mem_total", total, "mem_available", avail)
+		})
 		return 0, false
 	}
 	return int(math.Round(float64(total-avail) * 100 / float64(total))), true
