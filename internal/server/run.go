@@ -18,11 +18,12 @@ const BindRetry = 30 * time.Second
 
 // Run serves the page and ingest until ctx is cancelled.
 //
-// Loopback listeners must bind or the server exits: without them there is no
-// page and no report from this host's own agent. The tailnet one is retried
-// in the background instead, because its absence is a problem with the
-// tailnet, not with the server — and a server that is down cannot say which
-// hosts have gone quiet.
+// The page and ingest loopback listeners must bind or the server exits:
+// without them there is no page and no report from this host's own agent.
+// The tailnet one is retried in the background instead, because its absence
+// is a problem with the tailnet, not with the server — and a server that is
+// down cannot say which hosts have gone quiet. The local view is only for
+// doctor, so failing to bind it is logged and nothing more.
 func Run(ctx context.Context, cfg Config) error {
 	publicLn, err := net.Listen("tcp", loopback(statuspage.PublicPort))
 	if err != nil {
@@ -33,6 +34,11 @@ func Run(ctx context.Context, cfg Config) error {
 		publicLn.Close()
 		return err
 	}
+	localLn, err := net.Listen("tcp", loopback(statuspage.LocalPort))
+	if err != nil {
+		slog.Error("cannot bind the host view, so pilot doctor cannot name silent hosts", "err", err)
+		localLn = nil
+	}
 
 	var tailnet func(context.Context) (net.Listener, error)
 	if cfg.Listen != "" {
@@ -41,12 +47,13 @@ func Run(ctx context.Context, cfg Config) error {
 			return listenRetry(ctx, addr, BindRetry, func(a string) (net.Listener, error) { return net.Listen("tcp", a) })
 		}
 	}
-	return serve(ctx, New(cfg, nil, nil), publicLn, ingestLn, tailnet)
+	return serve(ctx, New(cfg, nil, nil), publicLn, ingestLn, localLn, tailnet)
 }
 
 // serve runs the server on listeners already bound, until ctx is cancelled
-// or a listener fails. Split from Run so a test can bind port 0.
-func serve(ctx context.Context, s *Server, publicLn, ingestLn net.Listener, tailnet func(context.Context) (net.Listener, error)) error {
+// or a listener fails. Split from Run so a test can bind port 0. A nil
+// localLn serves no host view.
+func serve(ctx context.Context, s *Server, publicLn, ingestLn, localLn net.Listener, tailnet func(context.Context) (net.Listener, error)) error {
 	// Everything started here stops with this context, whichever way serve
 	// ends: a listener failing must not leave the silence loop or the
 	// tailnet retry running into a shutdown.
@@ -55,8 +62,9 @@ func serve(ctx context.Context, s *Server, publicLn, ingestLn net.Listener, tail
 
 	public := newHTTPServer(s.PublicHandler(), slog.Default())
 	ingest := newHTTPServer(s.IngestHandler(), slog.Default())
+	local := newHTTPServer(s.LocalHandler(), slog.Default())
 
-	errc := make(chan error, 3)
+	errc := make(chan error, 4)
 	run := func(srv *http.Server, ln net.Listener) {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
@@ -64,6 +72,9 @@ func serve(ctx context.Context, s *Server, publicLn, ingestLn net.Listener, tail
 	}
 	go run(public, publicLn)
 	go run(ingest, ingestLn)
+	if localLn != nil {
+		go run(local, localLn)
+	}
 
 	if tailnet != nil {
 		go func() {
@@ -91,6 +102,7 @@ func serve(ctx context.Context, s *Server, publicLn, ingestLn net.Listener, tail
 	defer stop()
 	_ = public.Shutdown(shutdownCtx)
 	_ = ingest.Shutdown(shutdownCtx)
+	_ = local.Shutdown(shutdownCtx)
 
 	// An alert already decided must not die with the process, and one being
 	// decided must finish deciding before the queue is drained.

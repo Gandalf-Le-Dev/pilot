@@ -12,15 +12,14 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/server"
-	"github.com/Gandalf-Le-Dev/pilot/internal/statuspage"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
-// statusHost fakes the status host: the unit's state, the page's JSON, and
-// the files under the snippet directory.
+// statusHost fakes the status host: the unit's state, the server's host
+// view, and the files under the snippet directory.
 type statusHost struct {
 	active string
-	page   string
+	view   string
 	files  map[string][]byte
 	cmds   []string
 }
@@ -31,7 +30,10 @@ func (h *statusHost) Run(_ context.Context, cmd string) (transport.Result, error
 	case strings.HasPrefix(cmd, "systemctl is-active"):
 		return transport.Result{Stdout: h.active + "\n"}, nil
 	case strings.HasPrefix(cmd, "curl"):
-		return transport.Result{Stdout: h.page}, nil
+		if !strings.Contains(cmd, "127.0.0.1:7382/v1/hosts") {
+			return transport.Result{ExitCode: 7, Stderr: "curl: (7) Failed to connect"}, nil
+		}
+		return transport.Result{Stdout: h.view}, nil
 	}
 	return transport.Result{}, nil
 }
@@ -65,9 +67,9 @@ func statusFleet() *config.Fleet {
 	}
 }
 
-func pageJSON(t *testing.T, services ...statuspage.Service) string {
+func viewJSON(t *testing.T, hosts ...server.HostState) string {
 	t.Helper()
-	b, err := json.Marshal(statuspage.Page{Title: "t", Services: services})
+	b, err := json.Marshal(server.HostsView{Hosts: hosts})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +84,7 @@ func healthyStatusHost(t *testing.T, f *config.Fleet) *statusHost {
 	}
 	return &statusHost{
 		active: "active",
-		page:   pageJSON(t, statuspage.Service{Label: "Notes", State: statuspage.Up}),
+		view:   viewJSON(t, server.HostState{Host: "ks", Reported: true}, server.HostState{Host: "vps", Reported: true}),
 		files:  map[string][]byte{path.Join(statusPaths.SnippetDir, "_status.caddy"): []byte(route)},
 	}
 }
@@ -110,19 +112,48 @@ func TestStatusServerNotRunning(t *testing.T) {
 	}
 }
 
-// The page names labels, never hosts; doctor names the hosts, because the
-// operator needs to know which machine to go and look at.
+// The page names labels, never hosts; doctor names the hosts from the
+// server's own view, because the operator needs to know which machine to go
+// and look at. Labels cannot say: hosts share them, and a host with nothing
+// on the page has none.
 func TestStatusServerNamesSilentHosts(t *testing.T) {
 	f := statusFleet()
+	f.Hosts["bare"] = &config.Host{Name: "bare"}
 	h := healthyStatusHost(t, f)
-	h.page = pageJSON(t,
-		statuspage.Service{Label: "Notes", State: statuspage.NotReporting, NotReportingSince: time.Now()},
-		statuspage.Service{Label: "site", State: statuspage.Up},
+	since := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	h.view = viewJSON(t,
+		server.HostState{Host: "bare", Silent: true},
+		server.HostState{Host: "ks", Reported: true},
+		server.HostState{Host: "vps", Silent: true, Reported: true, LastReport: since},
 	)
 	got := inspectStatusServer(context.Background(), h, f, statusPaths)
-	if len(got) != 1 || got[0].Status != StatusFail || !strings.HasSuffix(got[0].Title, ": vps") {
-		t.Errorf("findings = %+v, want vps named as not reporting", got)
+	if len(got) != 1 || got[0].Status != StatusFail || !strings.HasSuffix(got[0].Title, ": bare, vps") {
+		t.Fatalf("findings = %+v, want bare and vps named as not reporting", got)
 	}
+	for _, want := range []string{"bare has not reported since the server started", "vps last reported at 2026-10-05T12:00:00Z"} {
+		if !strings.Contains(got[0].Detail, want) {
+			t.Errorf("detail %q lacks %q", got[0].Detail, want)
+		}
+	}
+}
+
+// A server from before the host view answers nothing on its port; that is a
+// warning pointing at the upgrade, not a clean bill.
+func TestStatusServerWithoutHostView(t *testing.T) {
+	f := statusFleet()
+	got := readHostView(context.Background(), &oldServer{healthyStatusHost(t, f)}, f)
+	if got.Status != StatusWarn || !strings.Contains(got.Hint, "pilot agent upgrade ks") {
+		t.Errorf("finding = %+v, want a warning naming the upgrade", got)
+	}
+}
+
+type oldServer struct{ *statusHost }
+
+func (o *oldServer) Run(ctx context.Context, cmd string) (transport.Result, error) {
+	if strings.HasPrefix(cmd, "curl") {
+		return transport.Result{ExitCode: 7, Stderr: "curl: (7) Failed to connect to 127.0.0.1 port 7382"}, nil
+	}
+	return o.statusHost.Run(ctx, cmd)
 }
 
 func TestStatusRouteDriftIsFixed(t *testing.T) {

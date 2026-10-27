@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -30,7 +31,7 @@ func (brokenListener) Accept() (net.Conn, error) { return nil, errors.New("liste
 
 func TestServeStopsWhenCancelled(t *testing.T) {
 	s, _, _ := testServer(t)
-	publicLn, ingestLn := listenLocal(t), listenLocal(t)
+	publicLn, ingestLn, localLn := listenLocal(t), listenLocal(t), listenLocal(t)
 
 	tailnetStopped := make(chan struct{})
 	tailnet := func(ctx context.Context) (net.Listener, error) {
@@ -41,7 +42,7 @@ func TestServeStopsWhenCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, s, publicLn, ingestLn, tailnet) }()
+	go func() { done <- serve(ctx, s, publicLn, ingestLn, localLn, tailnet) }()
 
 	resp, err := http.Get("http://" + publicLn.Addr().String() + "/healthz")
 	if err != nil {
@@ -51,6 +52,17 @@ func TestServeStopsWhenCancelled(t *testing.T) {
 	resp.Body.Close()
 	if string(body) != "ok\n" {
 		t.Fatalf("healthz = %q", body)
+	}
+
+	resp, err = http.Get("http://" + localLn.Addr().String() + HostsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var view HostsView
+	err = json.NewDecoder(resp.Body).Decode(&view)
+	resp.Body.Close()
+	if err != nil || len(view.Hosts) != 2 {
+		t.Fatalf("host view = %+v, %v; want both hosts", view, err)
 	}
 
 	cancel()
@@ -69,6 +81,36 @@ func TestServeStopsWhenCancelled(t *testing.T) {
 	}
 }
 
+// The host view is for doctor alone; without its listener the page and
+// ingest still serve.
+func TestServeWithoutTheHostView(t *testing.T) {
+	s, _, _ := testServer(t)
+	publicLn := listenLocal(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- serve(ctx, s, publicLn, listenLocal(t), nil, nil) }()
+
+	resp, err := http.Get("http://" + publicLn.Addr().String() + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("healthz = %d without the host view", resp.StatusCode)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("serve returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not return after cancellation")
+	}
+}
+
 // A listener failing ends serve with its error, and stops everything else it
 // started on the way out rather than leaving it running into the shutdown.
 func TestServeReturnsAListenerFailure(t *testing.T) {
@@ -84,7 +126,7 @@ func TestServeReturnsAListenerFailure(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(context.Background(), s, brokenListener{listenLocal(t)}, ingestLn, tailnet)
+		done <- serve(context.Background(), s, brokenListener{listenLocal(t)}, ingestLn, listenLocal(t), tailnet)
 	}()
 
 	select {

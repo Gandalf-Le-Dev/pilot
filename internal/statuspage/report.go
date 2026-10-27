@@ -30,8 +30,11 @@ const (
 
 	// PublicPort is where Caddy reaches the page, on loopback only.
 	// IngestPort takes reports, on loopback and the tailnet address.
+	// LocalPort serves the per-host view to doctor, on loopback only and
+	// never through Caddy.
 	PublicPort = 7380
 	IngestPort = 7381
+	LocalPort  = 7382
 )
 
 // State is a service's condition as the public sees it.
