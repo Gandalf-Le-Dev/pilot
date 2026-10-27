@@ -3,6 +3,7 @@ package alert
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -94,6 +95,73 @@ func TestParseErrors(t *testing.T) {
 				t.Errorf("error %q should mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// KnownOps feeds the schema digest, so an operator the parser takes but the
+// list omits would reach an old agent unannounced. Trying every short run of
+// operator-like characters catches a parse path that bypasses the table, or an
+// alias such as `=` read as `==`.
+func TestKnownOpsAreExactlyWhatParseAccepts(t *testing.T) {
+	const chars = "<>=!~&|^%*/+-:"
+	var candidates []string
+	for _, a := range chars {
+		candidates = append(candidates, string(a))
+		for _, b := range chars {
+			candidates = append(candidates, string(a)+string(b))
+			for _, c := range chars {
+				candidates = append(candidates, string(a)+string(b)+string(c))
+			}
+		}
+	}
+	known := KnownOps()
+	for _, tok := range candidates {
+		_, err := Parse("service.restarts " + tok + " 3")
+		accepted := err == nil
+		if listed := slices.Contains(known, tok); accepted != listed {
+			t.Errorf("Parse accepts %q: %v, KnownOps lists it: %v", tok, accepted, listed)
+		}
+	}
+}
+
+// An operator the parser takes but compare does not handle would be a rule
+// that validates and never fires.
+func TestEveryKnownOpCompares(t *testing.T) {
+	for _, op := range KnownOps() {
+		var sawTrue, sawFalse bool
+		for _, got := range []float64{1, 2, 3} {
+			if compare(got, Op(op), 2) {
+				sawTrue = true
+			} else {
+				sawFalse = true
+			}
+		}
+		if !sawTrue || !sawFalse {
+			t.Errorf("compare treats %q as a constant", op)
+		}
+	}
+}
+
+// Every numeric metric is a count or a percentage, so a threshold is digits
+// with an optional fraction. NaN would make a rule that never fires.
+func TestThresholdsArePlainDecimals(t *testing.T) {
+	for _, v := range []string{"0", "10", "100", "15.5", "0.25"} {
+		if _, err := Parse("service.restarts > " + v); err != nil {
+			t.Errorf("Parse rejects %q: %v", v, err)
+		}
+	}
+	for _, v := range []string{
+		"NaN", "Inf", "infinity", "1_000", "0x1p4", "1e3", ".5", "5.", "+1", "-1",
+		"14d", "1h", "10%", "10GB", "ten",
+	} {
+		_, err := Parse("service.restarts > " + v)
+		if err == nil {
+			t.Errorf("Parse accepts %q", v)
+			continue
+		}
+		if !strings.Contains(err.Error(), "not a number") || !strings.Contains(err.Error(), "15.5") {
+			t.Errorf("error for %q should say it is not a number and show the form: %v", v, err)
+		}
 	}
 }
 

@@ -10,6 +10,13 @@ alert.metric host.silent
 alert.metric service.degraded
 alert.metric service.down
 alert.metric service.restarts
+alert.op !=
+alert.op <
+alert.op <=
+alert.op ==
+alert.op >
+alert.op >=
+alert.value ^[0-9]+(\.[0-9]+)?$
 fleet.alerts []struct
 fleet.alerts.cooldown int64
 fleet.alerts.for int64

@@ -83,7 +83,7 @@ const Version = 12
 //     decodes): update this digest alone.
 //
 // The choice is deliberately yours. What is not optional is making it.
-const SchemaDigest = "64cf8c6b9e453e6e"
+const SchemaDigest = "dc7b32233c04cc9d"
 
 const (
 	// DefaultSocket is where the daemon listens. A Unix socket rather than a

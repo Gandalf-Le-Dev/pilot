@@ -36,7 +36,8 @@ func SchemaFingerprint() string {
 }
 
 // SchemaFields returns the fingerprint's input: one `path type` line per
-// decodable field, plus one `alert.metric name` line per rule metric, sorted.
+// decodable field, one `alert.metric` and `alert.op` line per rule metric and
+// operator, and one `alert.value` line for the threshold pattern, sorted.
 //
 // Exported so the test that pins the fingerprint can diff against a recorded
 // copy and name the field that moved. "The schema changed, bump the version"
@@ -52,10 +53,15 @@ func SchemaFields() []string {
 		walkSchema(t, strings.ToLower(t.Name()), map[reflect.Type]bool{}, &lines)
 	}
 	// A rule's `when` is only a string to the walk, but the agent parses it,
-	// and an older agent drops a rule whose metric it does not know.
+	// and an older agent drops a rule whose metric, operator, or threshold form
+	// it does not know.
 	for _, m := range alert.KnownMetrics() {
 		lines = append(lines, "alert.metric "+m)
 	}
+	for _, op := range alert.KnownOps() {
+		lines = append(lines, "alert.op "+op)
+	}
+	lines = append(lines, "alert.value "+alert.ThresholdPattern)
 	sort.Strings(lines)
 	return lines
 }

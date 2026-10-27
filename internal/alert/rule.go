@@ -9,6 +9,7 @@ package alert
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,6 +112,25 @@ const (
 
 var ops = []Op{OpGTE, OpLTE, OpNEQ, OpEQ, OpGT, OpLT} // longest first, so >= beats >
 
+// KnownOps lists every comparison the parser accepts, sorted. It reads the
+// table split uses, so the two cannot disagree.
+func KnownOps() []string {
+	out := make([]string, 0, len(ops))
+	for _, op := range ops {
+		out = append(out, string(op))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ThresholdPattern is the only form a numeric rule's value may take. Every
+// numeric metric is a count or a percentage, so there is no sign; and
+// strconv.ParseFloat alone would also take NaN, which makes a rule that never
+// fires.
+const ThresholdPattern = `^[0-9]+(\.[0-9]+)?$`
+
+var threshold = regexp.MustCompile(ThresholdPattern)
+
 // Condition is a parsed rule expression.
 type Condition struct {
 	Metric Metric
@@ -148,9 +168,12 @@ func Parse(expr string) (Condition, error) {
 		if op == OpNone {
 			return Condition{}, fmt.Errorf("%s is a number; compare it, e.g. `%s > 3`", name, name)
 		}
+		if !threshold.MatchString(valueStr) {
+			return Condition{}, fmt.Errorf("%q is not a number in %q; write digits, e.g. 10 or 15.5", valueStr, raw)
+		}
 		v, err := strconv.ParseFloat(valueStr, 64)
 		if err != nil {
-			return Condition{}, fmt.Errorf("%q is not a number in %q", valueStr, raw)
+			return Condition{}, fmt.Errorf("%q is out of range in %q", valueStr, raw)
 		}
 		c.Value = v
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Gandalf-Le-Dev/pilot/internal/alert"
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 )
 
@@ -173,5 +174,19 @@ func TestSchemaCoversAlertMetrics(t *testing.T) {
 		if !slices.ContainsFunc(fields, func(f string) bool { return strings.HasSuffix(f, " "+m) }) {
 			t.Errorf("schema does not record the alert metric %q", m)
 		}
+	}
+}
+
+// TestSchemaCoversAlertGrammar: the same holds for the rest of `when`. An old
+// agent drops a rule whose operator or threshold form it cannot parse.
+func TestSchemaCoversAlertGrammar(t *testing.T) {
+	fields := config.SchemaFields()
+	for _, op := range alert.KnownOps() {
+		if !slices.Contains(fields, "alert.op "+op) {
+			t.Errorf("schema does not record the alert operator %q", op)
+		}
+	}
+	if !slices.Contains(fields, "alert.value "+alert.ThresholdPattern) {
+		t.Errorf("schema does not record the threshold pattern %q", alert.ThresholdPattern)
 	}
 }
