@@ -172,7 +172,7 @@ taken first and restored if Caddy then rejects the result.
 expose:
   domains: [api.example.com]
   upstream: 8080            # the container's loopback port
-  path: /v1/*
+  path: /v1/*               # /v1 and everything under it; /v1 means the same
 
   timeouts: {read: 60s, write: 60s}
 

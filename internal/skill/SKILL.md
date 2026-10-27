@@ -155,6 +155,12 @@ units, or prune images for a Pilot-managed service by hand. `pilot deploy`,
   field. It is host-local, so it only works for single-host services —
   multi-host fleets use `default_bind` in each host's Caddyfile instead.
 
+The same symptom on a service with `expose.path` can come from a route that
+predates prefix matching and matches only the literal path. `pilot doctor`
+reports it as a `caddy-paths` finding, and redeploying the service fixes it.
+A rollback to a release deployed before the fix restores that release's route,
+so the finding comes back until the next deploy.
+
 ## Diagnosing, in order
 
 Every command takes `--json`. Use it — the human tables are for humans and are
