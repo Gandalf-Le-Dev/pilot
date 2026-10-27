@@ -43,9 +43,15 @@ type Input struct {
 	// reaches. Empty means no bind line, which is right for hosts that don't
 	// bind explicitly.
 	Bind []string
+
+	// Shared renders the route as handles inside Pilot's site block for each
+	// domain, because another service on one of its hosts serves a path on
+	// one of its domains. A route with a path is always shared.
+	Shared bool
 }
 
-// Render produces the complete contents of <snippet_dir>/<service>.caddy.
+// Render produces a service's route: a site block per domain, or for a shared
+// route, the handles installed under each domain's shared site block.
 func Render(in Input) (string, error) {
 	e := in.Expose
 	if e == nil {
@@ -61,12 +67,27 @@ func Render(in Input) (string, error) {
 		return "", fmt.Errorf("service %q is a proxy route with no upstream port", in.Service)
 	}
 
+	prefix := e.PathPrefix()
+	shared := in.Shared || prefix != ""
+	if shared {
+		if d := e.SiteDirective(); d != "" {
+			return "", fmt.Errorf("service %q shares its domains with other routes, so its expose.raw cannot use `%s`: "+
+				"that configures the whole site, which Pilot's shared site block serves for every service on the domain", in.Service, d)
+		}
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "# managed by pilot — service: %s — do not edit\n", in.Service)
 	fmt.Fprintf(&b, "# edits are reverted on the next deploy; change services/%s.yaml instead\n", in.Service)
+	if shared {
+		fmt.Fprintf(&b, "%s%s\n", sharedMarker, strings.Join(e.Domains, " "))
+		if len(in.Bind) > 0 {
+			fmt.Fprintf(&b, "%s%s\n", sharedBindMarker, strings.Join(in.Bind, " "))
+		}
+	}
 
 	var body strings.Builder
-	if len(in.Bind) > 0 {
+	if len(in.Bind) > 0 && !shared {
 		fmt.Fprintf(&body, "\tbind %s\n", strings.Join(in.Bind, " "))
 	}
 	body.WriteString("\tencode gzip zstd\n")
@@ -98,31 +119,34 @@ func Render(in Input) (string, error) {
 		writeRaw(&body, raw)
 	}
 
-	// One block per domain, because Caddy orders site blocks by their longest
-	// host before their longest path. A block holding a long second domain
-	// would outrank a deeper path on a shorter shared one, and a bare-domain
-	// block would swallow every path service on that domain.
+	if shared {
+		// A path matcher matches exactly and `/v1/*` does not match bare
+		// `/v1`, so a prefix takes both; `/v1*` would also catch `/v1beta`.
+		// They are two handles rather than one with both paths because Caddy
+		// sorts handles deepest first only when each has a single path, and
+		// that order is what lets another service's /v1/admin beat /v1.
+		matchers := []string{""}
+		if prefix != "" {
+			matchers = []string{prefix + " ", prefix + "/* "}
+		}
+		for i, m := range matchers {
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			fmt.Fprintf(&b, "handle %s{\n%s}\n", m, body.String())
+		}
+		return b.String(), nil
+	}
+
+	// One block per domain, the form these routes always had: a domain nobody
+	// shares keeps a byte-identical route, and its next deploy needs no reload.
 	for i, d := range e.Domains {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		fmt.Fprintf(&b, "%s {\n%s}\n", siteAddress(d, e.PathPrefix()), body.String())
+		fmt.Fprintf(&b, "%s {\n%s}\n", d, body.String())
 	}
 	return b.String(), nil
-}
-
-// siteAddress builds the Caddyfile site address line for one domain.
-//
-// A path in a site address matches exactly, and `/v1/*` does not match bare
-// `/v1`, so a prefix takes both addresses; `/v1*` would also catch `/v1beta`.
-// The path stays in the address rather than in a `handle` because services
-// sharing a domain each own a file, and two blocks for one bare domain is a
-// Caddy error.
-func siteAddress(domain, prefix string) string {
-	if prefix == "" {
-		return domain
-	}
-	return domain + prefix + ", " + domain + prefix + "/*"
 }
 
 func renderProxy(b *strings.Builder, e *config.Expose) {

@@ -291,32 +291,32 @@ func TestValidateExpose(t *testing.T) {
 		{
 			"path with a newline",
 			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1\\n}\", upstream: 8080}\n",
-			"expose.path", "cannot sit in a Caddy site address",
+			"expose.path", "cannot sit in a Caddy path matcher",
 		},
 		{
 			"path with a quote",
 			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1\\\"x\", upstream: 8080}\n",
-			"expose.path", "cannot sit in a Caddy site address",
+			"expose.path", "cannot sit in a Caddy path matcher",
 		},
 		{
 			"path with a backtick",
 			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1`x\", upstream: 8080}\n",
-			"expose.path", "cannot sit in a Caddy site address",
+			"expose.path", "cannot sit in a Caddy path matcher",
 		},
 		{
 			"path with a control character",
 			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1\\tx\", upstream: 8080}\n",
-			"expose.path", "cannot sit in a Caddy site address",
+			"expose.path", "cannot sit in a Caddy path matcher",
 		},
 		{
 			"path with a query",
 			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1?a=b\", upstream: 8080}\n",
-			"expose.path", "cannot sit in a Caddy site address",
+			"expose.path", "cannot sit in a Caddy path matcher",
 		},
 		{
 			"path with a space",
 			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1 /v2\", upstream: 8080}\n",
-			"expose.path", "cannot sit in a Caddy site address",
+			"expose.path", "cannot sit in a Caddy path matcher",
 		},
 	}
 	for _, tc := range tests {
@@ -336,7 +336,7 @@ func TestValidateExposePathHintsPercentEncoding(t *testing.T) {
 		"x.yaml": "name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\n" +
 			"expose: {domains: [a.com], path: \"/café\", upstream: 8080}\n",
 	})
-	d := findDiag(ds, "expose.path", "cannot sit in a Caddy site address")
+	d := findDiag(ds, "expose.path", "cannot sit in a Caddy path matcher")
 	if d == nil {
 		t.Fatalf("want an expose.path error; got:\n%v", ds.Sorted())
 	}
@@ -735,6 +735,69 @@ hosts:
 	}
 	if got := f.CaddyBindFor([]string{"nope"}); got != nil {
 		t.Errorf("CaddyBindFor of an unknown host = %v, want nil", got)
+	}
+}
+
+// A whole-domain route that starts sharing its domain moves its raw block
+// into a handle, so a site-wide directive there is caught by validation,
+// before a deploy renders it.
+func TestValidateSharedRaw(t *testing.T) {
+	svc := func(name, path, raw string) string {
+		return "name: " + name + "\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\n" +
+			"health: {http: {url: \"http://localhost:8080/\"}}\n" +
+			"expose:\n  domains: [example.com]\n  upstream: " + map[string]string{"site": "8080", "api": "8081"}[name] + "\n" +
+			path + "  raw: |\n    " + strings.ReplaceAll(raw, "\n", "\n    ") + "\n"
+	}
+	const tls = "tls {\n  dns ovh\n}"
+
+	_, ds := load(t, baseFleet, map[string]string{"site.yaml": svc("site", "", tls)})
+	if findDiag(ds, "expose.raw", "configures the whole site") != nil {
+		t.Error("a domain nobody shares may set tls")
+	}
+
+	_, ds = load(t, baseFleet, map[string]string{
+		"site.yaml": svc("site", "", tls),
+		"api.yaml":  svc("api", "  path: /v1\n", "header X-A b"),
+	})
+	d := findDiag(ds, "expose.raw", "`tls` configures the whole site")
+	if d == nil || d.Severity != SevError || !strings.Contains(d.Hint, "acme_dns") || !strings.HasSuffix(d.File, "site.yaml") {
+		t.Errorf("want an error on site naming acme_dns, got %+v in %v", d, ds)
+	}
+}
+
+func TestSharesSite(t *testing.T) {
+	expose := func(path string, domains ...string) *Expose {
+		return &Expose{Domains: domains, Path: path, Upstream: 8080}
+	}
+	f := &Fleet{
+		Services: map[string]*Service{
+			"site":    {Name: "site", Hosts: []string{"web-1", "web-2"}, Expose: expose("", "example.com", "www.example.com")},
+			"api":     {Name: "api", Hosts: []string{"web-1"}, Expose: expose("/v1/*", "example.com")},
+			"alone":   {Name: "alone", Hosts: []string{"web-1"}, Expose: expose("", "alone.example.com")},
+			"elsewhr": {Name: "elsewhr", Hosts: []string{"web-3"}, Expose: expose("", "other.example.com")},
+			"otherpt": {Name: "otherpt", Hosts: []string{"web-1"}, Expose: expose("/p", "other.example.com")},
+			"status":  {Name: "status", Hosts: []string{"ks"}, Expose: expose("/hooks", "status.example.com")},
+			"worker":  {Name: "worker", Hosts: []string{"web-1"}},
+		},
+		Status: &Status{Domain: "status.example.com", Host: "ks"},
+	}
+	for name, want := range map[string]bool{
+		"site":    true,  // api serves a path on example.com from web-1
+		"api":     true,  // a path is always shared
+		"alone":   false, // nobody else on its domain
+		"elsewhr": false, // the path service on its domain is on another host
+		"worker":  false,
+	} {
+		if got := f.SharesSite(f.Services[name]); got != want {
+			t.Errorf("SharesSite(%s) = %v, want %v", name, got, want)
+		}
+	}
+	if !f.StatusSharesSite() {
+		t.Error("the status page shares its domain with a path route on its host")
+	}
+	f.Status.Host = "web-1"
+	if f.StatusSharesSite() {
+		t.Error("no path route serves the status domain on web-1")
 	}
 }
 

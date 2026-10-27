@@ -3,10 +3,13 @@ package agent
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
+	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
@@ -121,11 +124,11 @@ func TestRenderColorRoute(t *testing.T) {
 		},
 	}
 
-	blue, err := a.renderColorRoute(svc, config.ColorBlue)
+	blue, err := a.renderColorRoute(svc, config.ColorBlue, "0001-aaaaaaa")
 	if err != nil {
 		t.Fatal(err)
 	}
-	green, err := a.renderColorRoute(svc, config.ColorGreen)
+	green, err := a.renderColorRoute(svc, config.ColorGreen, "0001-aaaaaaa")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +155,7 @@ func TestRenderColorRoute(t *testing.T) {
 func TestRenderColorRouteNeedsExpose(t *testing.T) {
 	a := newAgent(t)
 	svc := &config.Service{Name: "worker", Rollout: &config.Rollout{Ports: []int{1, 2}}}
-	if _, err := a.renderColorRoute(svc, config.ColorBlue); err == nil {
+	if _, err := a.renderColorRoute(svc, config.ColorBlue, "0001-aaaaaaa"); err == nil {
 		t.Error("a service with no route has nothing to flip")
 	}
 }
@@ -246,11 +249,53 @@ func TestRenderColorRouteCarriesBind(t *testing.T) {
 		},
 	}
 
-	green, err := a.renderColorRoute(svc, config.ColorGreen)
+	green, err := a.renderColorRoute(svc, config.ColorGreen, "0001-aaaaaaa")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(green, "bind 37.187.24.219") {
 		t.Errorf("flipped route lost the bind:\n%s", green)
 	}
+}
+
+// A rollback renders its route on the host, where the agent cannot see the
+// other services. A whole-domain route on a shared domain must still come out
+// as handles, or the install would refuse a second block for the domain and
+// the rollback would fail.
+func TestRenderColorRouteJoinsTheSharedSite(t *testing.T) {
+	svc := &config.Service{
+		Name:    "site",
+		Runtime: config.RuntimeCompose,
+		Expose:  &config.Expose{Domains: []string{"example.com"}, Upstream: 8080},
+		Rollout: &config.Rollout{Strategy: config.StrategyBlueGreen, Service: "web", Ports: []int{18080, 18081}},
+	}
+	shared := func(route string) bool { return strings.Contains(route, "\n# shared site: example.com\n") }
+
+	a := newAgent(t)
+	if got, _ := a.renderColorRoute(svc, config.ColorBlue, "0001-aaaaaaa"); shared(got) {
+		t.Errorf("a domain nobody shares keeps its own block:\n%s", got)
+	}
+
+	t.Run("the release's route is shared", func(t *testing.T) {
+		a := newAgent(t)
+		stageRelease(t, a, "site", "0001-aaaaaaa", map[string]string{
+			"caddy.snippet": "# managed by pilot — service: site — do not edit\n# shared site: example.com\nhandle {\n}\n",
+		})
+		if got, _ := a.renderColorRoute(svc, config.ColorBlue, "0001-aaaaaaa"); !shared(got) {
+			t.Errorf("want handles, got:\n%s", got)
+		}
+	})
+
+	t.Run("the domain already has a shared site", func(t *testing.T) {
+		a := newAgent(t)
+		if err := os.MkdirAll(a.Caddy.SnippetDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(a.Caddy.SnippetDir, caddy.SiteFile("example.com")), []byte("example.com {\n}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := a.renderColorRoute(svc, config.ColorBlue, "0001-aaaaaaa"); !shared(got) {
+			t.Errorf("want handles, got:\n%s", got)
+		}
+	})
 }

@@ -28,6 +28,7 @@ func Route(f *config.Fleet) (string, error) {
 		Service: SnippetName,
 		Expose:  &config.Expose{Domains: []string{st.Domain}, Upstream: statuspage.PublicPort},
 		Bind:    f.CaddyBindFor([]string{st.Host}),
+		Shared:  f.StatusSharesSite(),
 	})
 	if err != nil {
 		return "", err

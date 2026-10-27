@@ -252,6 +252,48 @@ func (f *Fleet) CaddyBindFor(hostNames []string) []string {
 	return nil
 }
 
+// SharesSite reports whether a service's route must render as handles inside
+// Pilot's site block for each of its domains, rather than as blocks of its
+// own: it serves a path, or another service on one of its hosts serves a path
+// on one of its domains. Caddy accepts one block per domain, and deprecates a
+// path in a site address.
+func (f *Fleet) SharesSite(s *Service) bool {
+	if s.Expose == nil {
+		return false
+	}
+	if s.Expose.PathPrefix() != "" {
+		return true
+	}
+	for _, h := range s.Hosts {
+		for _, d := range s.Expose.Domains {
+			if f.pathRouted(h, d, s.Name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// StatusSharesSite is SharesSite for the status page's route.
+func (f *Fleet) StatusSharesSite() bool {
+	st := f.Status
+	return st != nil && f.pathRouted(st.Host, st.Domain, "")
+}
+
+// pathRouted reports whether a service other than except serves a path on
+// domain from host.
+func (f *Fleet) pathRouted(host, domain, except string) bool {
+	for name, o := range f.Services {
+		if name == except || o.Expose == nil || o.Expose.PathPrefix() == "" || !slices.Contains(o.Hosts, host) {
+			continue
+		}
+		if slices.Contains(o.Expose.Domains, domain) {
+			return true
+		}
+	}
+	return false
+}
+
 type SSH struct {
 	ProxyJump    string `yaml:"proxy_jump"`
 	IdentityFile string `yaml:"identity_file"`
@@ -425,8 +467,8 @@ func (u *Unit) LinkPaths() []string {
 	return paths
 }
 
-// Expose declares the service's front door. Pilot renders it into a Caddy
-// snippet at /etc/caddy/pilot.d/<service>.caddy.
+// Expose declares the service's front door. Pilot renders it into the
+// service's Caddy route: see caddy.Render.
 type Expose struct {
 	Domains  []string `yaml:"domains"`
 	Path     string   `yaml:"path"`
@@ -470,6 +512,49 @@ func (e *Expose) IsStatic() bool { return e.Static != nil }
 // means the whole domain.
 func (e *Expose) PathPrefix() string {
 	return strings.TrimRight(strings.TrimSuffix(e.Path, "/*"), "/")
+}
+
+// SiteDirectives configure a whole Caddy site, so Caddy refuses them inside a
+// `handle`, which is where the raw block of a shared route goes.
+var SiteDirectives = []string{"bind", "handle_errors", "log", "tls"}
+
+// SiteDirective returns the first top-level directive of the raw block that
+// only a whole site may hold, or "" when there is none.
+func (e *Expose) SiteDirective() string {
+	depth := 0
+	for line := range strings.SplitSeq(e.Raw, "\n") {
+		code, delta := caddyfileLine(line)
+		if f := strings.Fields(code); depth == 0 && len(f) > 0 && slices.Contains(SiteDirectives, f[0]) {
+			return f[0]
+		}
+		depth += delta
+	}
+	return ""
+}
+
+// caddyfileLine strips a Caddyfile comment from a line and returns the net
+// change in block depth, ignoring braces inside quotes.
+func caddyfileLine(line string) (code string, delta int) {
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		switch c := line[i]; {
+		case quote != 0:
+			if c == '\\' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '`':
+			quote = c
+		case c == '#' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+			return line[:i], delta
+		case c == '{':
+			delta++
+		case c == '}':
+			delta--
+		}
+	}
+	return line, delta
 }
 
 // Routes returns each domain joined with PathPrefix: the claims collision
