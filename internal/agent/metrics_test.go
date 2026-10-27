@@ -92,9 +92,12 @@ func TestParseProcStat(t *testing.T) {
 }
 
 func TestParseMeminfo(t *testing.T) {
-	total, avail := parseMeminfo("MemTotal:        8000000 kB\nMemFree:         100 kB\nMemAvailable:    6000000 kB\n")
-	if total != 8000000*1024 || avail != 6000000*1024 {
-		t.Errorf("total=%d avail=%d", total, avail)
+	total, avail, ok := parseMeminfo("MemTotal:        8000000 kB\nMemFree:         100 kB\nMemAvailable:    6000000 kB\n")
+	if total != 8000000*1024 || avail != 6000000*1024 || !ok {
+		t.Errorf("total=%d avail=%d ok=%v", total, avail, ok)
+	}
+	if _, _, ok := parseMeminfo("MemTotal:        8000000 kB\nMemFree:         100 kB\n"); ok {
+		t.Error("a kernel without MemAvailable should not report it as 0")
 	}
 }
 
@@ -150,5 +153,29 @@ func TestComposeUsagePrefersLabels(t *testing.T) {
 	}
 	if _, ok := out["unlabeled-mystery"]; ok {
 		t.Error("a container with no label and no known prefix must not appear")
+	}
+}
+
+// The dashboard reads memory through the same seam as alerting, and keeps its
+// old figures: a kernel without MemAvailable still reports total as used.
+func TestDashboardMemoryUsesSharedRead(t *testing.T) {
+	a := &Agent{meminfo: func() ([]byte, error) {
+		return []byte("MemTotal: 8000000 kB\nMemAvailable: 2000000 kB\n"), nil
+	}}
+	if got := a.memTotal(); got != 8000000*1024 {
+		t.Errorf("memTotal = %d", got)
+	}
+	if got := a.memUsed(); got != 6000000*1024 {
+		t.Errorf("memUsed = %d", got)
+	}
+
+	a.meminfo = func() ([]byte, error) { return []byte("MemTotal: 8000000 kB\n"), nil }
+	if got := a.memUsed(); got != 8000000*1024 {
+		t.Errorf("memUsed without MemAvailable = %d, want total as before", got)
+	}
+
+	a.meminfo = func() ([]byte, error) { return []byte("MemTotal: 100 kB\nMemAvailable: 200 kB\n"), nil }
+	if got := a.memUsed(); got != 0 {
+		t.Errorf("memUsed with available > total = %d, want 0 as before", got)
 	}
 }

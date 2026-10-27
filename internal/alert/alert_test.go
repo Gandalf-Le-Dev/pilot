@@ -34,6 +34,8 @@ func TestParseNumericMetrics(t *testing.T) {
 		{"host.disk.used_pct == 100", OpEQ, 100},
 		{"service.restarts!=0", OpNEQ, 0},
 		{"  host.disk.free_pct   <   15.5  ", OpLT, 15.5},
+		{"host.mem.used_pct > 90", OpGT, 90},
+		{"host.mem.free_pct < 10", OpLT, 10},
 	}
 	for _, tc := range tests {
 		t.Run(tc.expr, func(t *testing.T) {
@@ -112,6 +114,11 @@ func TestScope(t *testing.T) {
 	if DiskFreePct.Scope() != ScopeHost {
 		t.Error("host.disk.free_pct should be host-wide")
 	}
+	for _, m := range []Metric{MemUsedPct, MemFreePct} {
+		if m.Scope() != ScopeHost || m.Kind() != Numeric {
+			t.Errorf("%s should be a host-wide number", m)
+		}
+	}
 	if HostSilent.Scope() != ScopeServer {
 		t.Error("host.silent should belong to the status server")
 	}
@@ -120,6 +127,7 @@ func TestScope(t *testing.T) {
 func TestEval(t *testing.T) {
 	r := Reading{
 		ServiceDown: true, Restarts: 5, DiskUsedPct: 88, DriftDetected: true,
+		MemUsedPct: new(93),
 	}
 	tests := []struct {
 		expr string
@@ -135,6 +143,10 @@ func TestEval(t *testing.T) {
 		// free_pct is derived, so it must agree with used_pct.
 		{"host.disk.free_pct < 15", true},
 		{"host.disk.free_pct < 10", false},
+		{"host.mem.used_pct > 90", true},
+		{"host.mem.used_pct > 95", false},
+		{"host.mem.free_pct < 10", true},
+		{"host.mem.free_pct < 5", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.expr, func(t *testing.T) {
@@ -146,6 +158,62 @@ func TestEval(t *testing.T) {
 				t.Errorf("Eval = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A memory figure the agent could not read is not 0% in use: no comparison
+// holds against it, in either direction.
+func TestEvalUnreadMemoryHoldsNothing(t *testing.T) {
+	for _, expr := range []string{
+		"host.mem.used_pct < 50", "host.mem.used_pct > 50",
+		"host.mem.free_pct < 50", "host.mem.free_pct > 50",
+	} {
+		c, err := Parse(expr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Eval(Reading{}) {
+			t.Errorf("%q held against an unread reading", expr)
+		}
+		if c.Observed(Reading{}) {
+			t.Errorf("%q counts an unread reading as observed", expr)
+		}
+	}
+}
+
+func TestValue(t *testing.T) {
+	r := Reading{Restarts: 2, DiskUsedPct: 88, MemUsedPct: new(87)}
+	tests := []struct {
+		expr string
+		want float64
+		ok   bool
+	}{
+		{"service.restarts > 1", 2, true},
+		{"host.disk.used_pct > 85", 88, true},
+		{"host.disk.free_pct < 15", 12, true},
+		{"host.mem.used_pct > 85", 87, true},
+		{"host.mem.free_pct < 15", 13, true},
+		{"service.down", 0, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
+			c, err := Parse(tc.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, ok := c.Value_(r)
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("Value_ = %v, %v; want %v, %v", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+
+	c, err := Parse("host.mem.used_pct > 85")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.Value_(Reading{}); ok {
+		t.Error("an unread memory figure should have no value to report")
 	}
 }
 
@@ -332,6 +400,69 @@ func TestNotificationCarriesTheObservedValue(t *testing.T) {
 	}
 	if sent[0].Service != "" {
 		t.Errorf("a host rule should have no service: %q", sent[0].Service)
+	}
+}
+
+// A failed read of /proc/meminfo must not pass for 0% in use and resolve a
+// memory alert that is still true.
+func TestUnreadMemoryDoesNotResolve(t *testing.T) {
+	e, cap, clk := newEngine(t)
+	r := rule(t, "", "host.mem.used_pct > 90", 0)
+	ctx := context.Background()
+
+	e.Evaluate(ctx, []Rule{r}, map[string]Reading{"": {MemUsedPct: new(95)}})
+	clk.add(time.Minute)
+	e.Evaluate(ctx, []Rule{r}, map[string]Reading{"": {}})
+	e.Flush()
+
+	sent := cap.all()
+	if len(sent) != 1 || sent[0].Severity != SevFiring {
+		t.Fatalf("got %+v, want only the original firing", sent)
+	}
+	if !strings.Contains(sent[0].Detail, "currently 95") {
+		t.Errorf("detail should report the figure, got %q", sent[0].Detail)
+	}
+	if len(e.Firing()) != 1 {
+		t.Error("the rule should still be considered firing")
+	}
+
+	clk.add(time.Minute)
+	e.Evaluate(ctx, []Rule{r}, map[string]Reading{"": {MemUsedPct: new(40)}})
+	e.Flush()
+	if sent := cap.all(); len(sent) != 2 || sent[1].Severity != SevResolved {
+		t.Errorf("a real reading below the threshold should resolve, got %+v", sent)
+	}
+}
+
+// An unread round neither advances nor resets a pending `for:` timer: the rule
+// fires at the deadline set by the first reading, not earlier and not later.
+func TestUnreadMemoryKeepsPendingTimer(t *testing.T) {
+	e, cap, clk := newEngine(t)
+	r := rule(t, "", "host.mem.used_pct > 90", 10*time.Minute)
+	high := map[string]Reading{"": {MemUsedPct: new(95)}}
+	ctx := context.Background()
+	start := clk.now()
+
+	e.Evaluate(ctx, []Rule{r}, high)
+	clk.add(9 * time.Minute)
+	e.Evaluate(ctx, []Rule{r}, high)
+	clk.add(30 * time.Second)
+	e.Evaluate(ctx, []Rule{r}, map[string]Reading{"": {}})
+	e.Flush()
+	if n := len(cap.all()); n != 0 {
+		t.Fatalf("fired before the deadline (%d sent)", n)
+	}
+
+	clk.add(30 * time.Second)
+	e.Evaluate(ctx, []Rule{r}, high)
+	e.Flush()
+
+	sent := cap.all()
+	if len(sent) != 1 || sent[0].Severity != SevFiring {
+		t.Fatalf("got %+v, want one firing at the original deadline", sent)
+	}
+	if !sent[0].Since.Equal(start) {
+		t.Errorf("since = %v, want %v: the unread round reset the timer", sent[0].Since, start)
 	}
 }
 

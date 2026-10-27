@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/Gandalf-Le-Dev/pilot/internal/alert"
 )
 
 // SchemaFingerprint is a digest of the configuration schema the agent parses.
@@ -34,7 +36,7 @@ func SchemaFingerprint() string {
 }
 
 // SchemaFields returns the fingerprint's input: one `path type` line per
-// decodable field, sorted.
+// decodable field, plus one `alert.metric name` line per rule metric, sorted.
 //
 // Exported so the test that pins the fingerprint can diff against a recorded
 // copy and name the field that moved. "The schema changed, bump the version"
@@ -48,6 +50,11 @@ func SchemaFields() []string {
 	for _, root := range []any{Fleet{}, Service{}, FleetConfig{}} {
 		t := reflect.TypeOf(root)
 		walkSchema(t, strings.ToLower(t.Name()), map[reflect.Type]bool{}, &lines)
+	}
+	// A rule's `when` is only a string to the walk, but the agent parses it,
+	// and an older agent drops a rule whose metric it does not know.
+	for _, m := range alert.KnownMetrics() {
+		lines = append(lines, "alert.metric "+m)
 	}
 	sort.Strings(lines)
 	return lines

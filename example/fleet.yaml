@@ -91,6 +91,12 @@ alerts:
   - when: host.disk.free_pct < 10
     notify: [phone, chat]
 
+  # Memory counts reclaimable page cache as free, so this means RAM is really
+  # short, not that the kernel is caching files.
+  - when: host.mem.used_pct > 90
+    for: 5m
+    notify: [phone]
+
 # A public status page at status.example.com, served by `pilotd server` on
 # box-1. Every agent posts its services' health there every 30s over the
 # tailnet; a host that stops posting shows "not reporting" and fires an alert,

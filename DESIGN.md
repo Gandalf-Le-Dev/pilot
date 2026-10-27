@@ -980,7 +980,8 @@ The configuration travels between the two processes just as the wire format
 does, so it is part of the contract. Two things enforce that now:
 
 - **`proto.SchemaDigest`** pins a fingerprint of every field the agent decodes,
-  computed by reflection over `config.Fleet` and `config.Service`. A test fails
+  computed by reflection over `config.Fleet` and `config.Service`, plus the
+  alert metric names a rule's `when` may use. A test fails
   on any schema change and names the field that moved, forcing a choice: bump
   the version (the agent must understand it) or update the digest alone (it
   never sees it). The decision is yours; making it is not optional.

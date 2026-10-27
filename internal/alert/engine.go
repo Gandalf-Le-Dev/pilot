@@ -120,9 +120,9 @@ func (e *Engine) now() time.Time {
 func (e *Engine) Evaluate(ctx context.Context, rules []Rule, readings map[string]Reading) {
 	for _, r := range rules {
 		reading, ok := readings[r.Subject]
-		if !ok {
-			// No observation for this subject this round. Absence of data is
-			// not evidence of health, so leave any existing state alone rather
+		if !ok || !r.Cond.Observed(reading) {
+			// No observation for this subject, or for this rule's metric, this
+			// round. Absence of data is not evidence of health, so leave any existing state alone rather
 			// than resolving on a gap.
 			continue
 		}

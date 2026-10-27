@@ -29,6 +29,8 @@ const (
 	// Host-wide metrics.
 	DiskUsedPct Metric = "host.disk.used_pct"
 	DiskFreePct Metric = "host.disk.free_pct"
+	MemUsedPct  Metric = "host.mem.used_pct"
+	MemFreePct  Metric = "host.mem.free_pct"
 
 	// Status server metrics.
 	HostSilent Metric = "host.silent"
@@ -69,6 +71,8 @@ var metrics = map[Metric]metricInfo{
 	DriftDetected:   {Boolean, ScopeService, "live configuration no longer matches the manifest"},
 	DiskUsedPct:     {Numeric, ScopeHost, "percentage of the Pilot volume in use"},
 	DiskFreePct:     {Numeric, ScopeHost, "percentage of the Pilot volume still free"},
+	MemUsedPct:      {Numeric, ScopeHost, "percentage of the host's memory in use"},
+	MemFreePct:      {Numeric, ScopeHost, "percentage of the host's memory still available"},
 	HostSilent:      {Boolean, ScopeServer, "the host stopped reporting to the status server"},
 }
 
@@ -190,6 +194,10 @@ type Reading struct {
 	DiskUsedPct     int
 	HostSilent      bool
 
+	// MemUsedPct is nil when the host's memory could not be read, so a failed
+	// read cannot pass for an idle host and resolve an alert that still holds.
+	MemUsedPct *int
+
 	// Detail is the runtime's own one-line explanation of the state, e.g.
 	// "last succeeded 60d ago, past the 48h freshness bound".
 	//
@@ -229,8 +237,22 @@ func (c Condition) Eval(r Reading) bool {
 		return compare(float64(r.DiskUsedPct), c.Op, c.Value)
 	case DiskFreePct:
 		return compare(float64(100-r.DiskUsedPct), c.Op, c.Value)
+	case MemUsedPct, MemFreePct:
+		v, ok := c.Value_(r)
+		return ok && compare(v, c.Op, c.Value)
 	}
 	return false
+}
+
+// Observed reports whether the reading holds a value for the condition's
+// metric. The engine leaves a rule's state alone when it does not, as it does
+// for a subject with no reading at all.
+func (c Condition) Observed(r Reading) bool {
+	switch c.Metric {
+	case MemUsedPct, MemFreePct:
+		return r.MemUsedPct != nil
+	}
+	return true
 }
 
 // Value returns the observed number a numeric condition was compared against,
@@ -243,6 +265,14 @@ func (c Condition) Value_(r Reading) (float64, bool) {
 		return float64(r.DiskUsedPct), true
 	case DiskFreePct:
 		return float64(100 - r.DiskUsedPct), true
+	case MemUsedPct:
+		if r.MemUsedPct != nil {
+			return float64(*r.MemUsedPct), true
+		}
+	case MemFreePct:
+		if r.MemUsedPct != nil {
+			return float64(100 - *r.MemUsedPct), true
+		}
 	}
 	return 0, false
 }

@@ -238,6 +238,9 @@ alerts:                          # host-wide; per-service rules live on a servic
     for: 10m
     cooldown: 6h
     notify: [phone]
+  - when: host.mem.used_pct > 90
+    for: 5m
+    notify: [phone]
 ```
 
 Types are `ntfy`, `slack`, `discord`, `webhook`, and `command` — the last runs a local
