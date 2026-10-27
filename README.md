@@ -386,7 +386,13 @@ pilot doctor --json        findings with severity, scope, and hints
 pilot diff --json          what diverged
 pilot releases api --json  full release state, history included
 pilot logs api --json      newline-delimited, one object per line
+pilot deploy api --plan --json   the plan, before anything changes
 ```
+
+Under `--json`, stdout carries only JSON, and progress lines go to stderr. A
+`deploy` selector that names more than one service, such as `@prod`, writes one
+plan document per service, one after another. Read them as a stream of JSON
+values, not as one document.
 
 `logs` is NDJSON because a followed stream never ends and a document that never
 closes cannot be parsed. `top` refuses `--json` rather than ignoring it, and

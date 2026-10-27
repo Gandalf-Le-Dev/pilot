@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -103,7 +104,7 @@ func runDeploy(ctx context.Context, g *globals, selector string, opts deployOpts
 				"this guard exists so a fleet-wide deploy cannot recreate your database\n"+
 				"if you really mean to, run: pilot deploy %s --force", s.Name, s.Name)
 		default:
-			fmt.Printf("  skipping %s (manage: observe)\n", s.Name)
+			fmt.Fprintf(progressOut(g.json), "  skipping %s (manage: observe)\n", s.Name)
 		}
 	}
 	if len(deployable) == 0 {
@@ -158,7 +159,8 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 		targets[host] = t
 	}
 
-	log := func(format string, args ...any) { fmt.Printf(format+"\n", args...) }
+	out := progressOut(asJSON)
+	log := func(format string, args ...any) { fmt.Fprintf(out, format+"\n", args...) }
 
 	// Find the agents up front, so the plan can say which hosts will have the
 	// deploy owned by a daemon and which will not.
@@ -246,7 +248,7 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 		fmt.Println()
 	}
 
-	if len(agentless) > 0 && !asJSON {
+	if len(agentless) > 0 {
 		// Name the right remedy. A skewed agent is present and running, so
 		// "no agent … pilot bootstrap" sends someone to install what is
 		// already there; the fix is to upgrade it, or to stop passing
@@ -255,14 +257,14 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 		for _, h := range agentless {
 			hosts = append(hosts, h.host)
 		}
-		fmt.Printf("  ! no usable agent on %s — the deploy will run from here, so losing\n",
+		fmt.Fprintf(out, "  ! no usable agent on %s — the deploy will run from here, so losing\n",
 			strings.Join(hosts, ", "))
-		fmt.Printf("    this terminal mid-deploy leaves nothing to finish the rollback.\n")
+		fmt.Fprintf(out, "    this terminal mid-deploy leaves nothing to finish the rollback.\n")
 
 		if agentless[0].skewed {
-			fmt.Printf("    fix with: pilot agent upgrade %s\n\n", agentless[0].host)
+			fmt.Fprintf(out, "    fix with: pilot agent upgrade %s\n\n", agentless[0].host)
 		} else {
-			fmt.Printf("    fix with: pilot bootstrap %s\n\n", agentless[0].host)
+			fmt.Fprintf(out, "    fix with: pilot bootstrap %s\n\n", agentless[0].host)
 		}
 	}
 
@@ -275,7 +277,7 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 	}
 
 	if plan.NoOp() {
-		render.NothingToDo(os.Stdout, plan)
+		render.NothingToDo(out, plan)
 
 		// The release is unchanged; the definition may not be. `health`,
 		// `manage`, rollout pacing and `alerts` are all outside the release hash, so
@@ -287,7 +289,7 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 		// it entirely, because a wholly-unchanged plan never reaches there.
 		refreshSpecs(ctx, agents, s.Name, spec)
 
-		fmt.Println()
+		fmt.Fprintln(out)
 		return nil
 	}
 
@@ -298,14 +300,23 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 	}
 
 	outcomes, runErr := exec.Run(ctx, plan)
-	fmt.Println()
-	render.Outcomes(os.Stdout, outcomes)
-	fmt.Println()
+	fmt.Fprintln(out)
+	render.Outcomes(out, outcomes)
+	fmt.Fprintln(out)
 
 	if runErr != nil {
 		return exitWith(1)
 	}
 	return nil
+}
+
+// progressOut is where a command writes everything that is not its result.
+// Under --json, stdout carries the document alone, or a caller cannot parse it.
+func progressOut(asJSON bool) io.Writer {
+	if asJSON {
+		return os.Stderr
+	}
+	return os.Stdout
 }
 
 // resolveEnv expands secret references in the service's environment.
