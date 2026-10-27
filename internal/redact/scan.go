@@ -160,7 +160,7 @@ func valueEnd(s string, i int, sep string) int {
 	}
 	depth, ok := escapeDepth(len(sep) - 1 - len(strings.TrimRight(sep[:len(sep)-1], `\`)))
 	if !ok {
-		return i
+		return unquotedEnd(s, i)
 	}
 	start := i
 	escaped := false
@@ -191,7 +191,8 @@ func unquotedEnd(s string, i int) int {
 
 // escapeDepth is how many strings deep a quote preceded by n backslashes
 // sits: each layer escapes the backslashes of the one inside it too, so n is
-// 0, 1, 3, 7 and so on. Any other n is not a quote that opens a value.
+// 0, 1, 3, 7 and so on. Any other n is not a quote that opens a value, and
+// what follows it is read as unquoted.
 func escapeDepth(n int) (int, bool) {
 	depth := 0
 	for ; n > 0; n = (n - 1) / 2 {

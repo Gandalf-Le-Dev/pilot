@@ -259,6 +259,21 @@ func TestTextReadsAnUnclosedSingleQuoteAsUnquoted(t *testing.T) {
 	}
 }
 
+// A quote after 2, 4, 5 or 6 backslashes opens no string at any depth, but
+// what follows it is still a value.
+func TestTextReadsAValueAfterAnOddEscapeAsUnquoted(t *testing.T) {
+	cases := map[string]string{
+		`password=\\"hunter22 more`:   `password=\\"` + Placeholder + ` more`,
+		`password=\\\\"hunter22,more`: `password=\\\\"` + Placeholder + `,more`,
+		`password=\\\\\"hunter22 x`:   `password=\\\\\"` + Placeholder + ` x`,
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
 // Without a quote there is nothing to say where a value ends, so the usual
 // delimiters still do.
 func TestTextStopsUnquotedValuesAtDelimiters(t *testing.T) {
