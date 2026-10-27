@@ -241,13 +241,14 @@ func TestTextRedactsQuotedValuesAtAnyDepth(t *testing.T) {
 
 // A single quote never closed is more likely an apostrophe, so the value is
 // read as unquoted rather than swallowing the rest of a structured line. A
-// double quote never closed still runs to the end of the line.
+// double quote never closed still runs to the end of the line, CRLF or LF.
 func TestTextReadsAnUnclosedSingleQuoteAsUnquoted(t *testing.T) {
 	cases := map[string]string{
 		`{"msg":"token: 'abc def","user":"root"}`:     `{"msg":"token: 'abc def","user":"root"}`,
 		`{"msg":"token: 'abcdef ghi","user":"root"}`:  `{"msg":"token: '` + Placeholder + ` ghi","user":"root"}`,
 		`{"msg":"token: \'abcdef ghi","user":"root"}`: `{"msg":"token: \'` + Placeholder + ` ghi","user":"root"}`,
 		"password=\"hunter 22, x":                     "password=\"" + Placeholder,
+		"password=\"hunter 22, x\r\nnext":             "password=\"" + Placeholder + "\r\nnext",
 	}
 	for line, want := range cases {
 		if got := Text(line, nil); got != want {

@@ -179,7 +179,7 @@ const (
 // index after it. It stops at the end of the line, or at a bare quote q in a
 // shallower layer, where an enclosing string ends.
 func read(s string, i, depth int, q byte) (c byte, next int, end readEnd) {
-	if i >= len(s) || s[i] == '\n' {
+	if i >= len(s) || s[i] == '\n' || s[i] == '\r' {
 		return 0, i, lineEnd
 	}
 	if depth == 0 {
