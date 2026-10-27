@@ -296,8 +296,10 @@ func TestScanFindsABearerHeader(t *testing.T) {
 // Bearer is reported under its own name.
 func TestScanLeavesAPairAfterBearerToItsName(t *testing.T) {
 	cases := map[string]string{
-		"Bearer pwd==xyzhunter22": "pwd",
-		"Bearer token=abc123def":  "token",
+		"Bearer pwd==xyzhunter22":              "pwd",
+		"Bearer token=abc123def":               "token",
+		"bearer\tSecret==?hunter22tokenBearer": "secret",
+		"Bearer Secret==\u00e9hunter22 next":   "secret",
 	}
 	for line, want := range cases {
 		got := Scan(line, nil)
