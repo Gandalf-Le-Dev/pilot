@@ -74,6 +74,8 @@ func newRoot(euid func() int, setLog func(*slog.Logger)) *cobra.Command {
 // loggedError is a daemon's fatal error, already in its log at error level.
 type loggedError struct{ error }
 
+func (e loggedError) Unwrap() error { return e.error }
+
 func report(w io.Writer, err error) {
 	if _, ok := errors.AsType[loggedError](err); ok {
 		return

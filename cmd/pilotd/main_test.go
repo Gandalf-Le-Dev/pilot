@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -97,5 +98,13 @@ func TestReportPrintsUnloggedErrors(t *testing.T) {
 	report(&buf, errors.New("boom"))
 	if got, want := buf.String(), "pilotd: boom\n"; got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestLoggedErrorKeepsItsCause(t *testing.T) {
+	cause := os.ErrNotExist
+	err := logExit(slog.New(slog.DiscardHandler), fmt.Errorf("loading: %w", cause))
+	if !errors.Is(err, cause) {
+		t.Errorf("errors.Is(%v, %v) = false, want the cause visible through the logged error", err, cause)
 	}
 }
