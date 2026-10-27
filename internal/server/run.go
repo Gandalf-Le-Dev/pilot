@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -77,7 +78,7 @@ func serve(ctx context.Context, s *Server, publicLn, ingestLn net.Listener, tail
 		defer close(watching)
 		s.WatchSilence(ctx)
 	}()
-	logf("serving the page on %s and reports on %s (%d hosts)", publicLn.Addr(), ingestLn.Addr(), len(s.hosts))
+	slog.Info("serving", "page", publicLn.Addr(), "reports", ingestLn.Addr(), "hosts", len(s.hosts))
 
 	var err error
 	select {
@@ -123,12 +124,12 @@ func listenRetry(ctx context.Context, addr string, every time.Duration, listen f
 		ln, err := listen(addr)
 		if err == nil {
 			if failing {
-				logf("bound %s; reports from other hosts can arrive", addr)
+				slog.Info("bound; reports from other hosts can arrive", "addr", addr)
 			}
 			return ln, nil
 		}
 		if !failing {
-			logf("cannot bind %s, retrying every %s: %v", addr, every, err)
+			slog.Warn("cannot bind, retrying", "addr", addr, "every", every, "err", err)
 			failing = true
 		}
 		select {

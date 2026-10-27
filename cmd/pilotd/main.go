@@ -116,6 +116,7 @@ func newServerCmd(euid func() int) *cobra.Command {
 		Short: "Serve the public status page and take reports from agents",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			logTo("pilotd server")
 			if err := server.RefuseRoot(euid()); err != nil {
 				return err
 			}

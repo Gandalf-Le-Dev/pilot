@@ -16,8 +16,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"fmt"
-	"os"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -92,7 +91,7 @@ func New(cfg Config, sender alert.Sender, now func() time.Time) *Server {
 		e := alert.NewEngine(name, sender)
 		e.Now = now
 		e.OnError = func(rule, notifier string, err error) {
-			logf("alert %q: notifier %q failed: %v", rule, notifier, err)
+			slog.Error("alert notification failed", "rule", rule, "notifier", notifier, "err", err)
 		}
 		s.silenceFrom[name] = e
 	}
@@ -246,10 +245,4 @@ func (s *Server) Flush() {
 	for _, e := range s.silenceFrom {
 		e.Flush()
 	}
-}
-
-// logf writes a log line in the same form as the agent's, to the journal by
-// way of stderr.
-func logf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "pilotd server: "+format+"\n", args...)
 }

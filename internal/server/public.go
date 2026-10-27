@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/statuspage"
@@ -24,7 +25,7 @@ func (s *Server) PublicHandler() http.Handler {
 func (s *Server) handlePage(w http.ResponseWriter, _ *http.Request) {
 	var buf bytes.Buffer
 	if err := statuspage.Render(&buf, s.Page()); err != nil {
-		logf("rendering the page: %v", err)
+		slog.Error("rendering the page", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
