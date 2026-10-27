@@ -744,6 +744,10 @@ generate 400 messages.
 each `pilot.d/*.caddy` file. Catches the classic small-fleet failure: someone SSH'd in and
 hand-edited a compose file or a route at 2am, and the next deploy would silently revert it.
 
+Only a deploy that ships a new release resets drift. A deploy with nothing new to ship
+keeps the live release and its manifest, so drift on it stays reported until a real
+change ships or somebody puts the host back. This holds for services with no route too.
+
 ---
 
 ## 9. Configuration

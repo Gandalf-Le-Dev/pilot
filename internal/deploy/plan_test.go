@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Gandalf-Le-Dev/pilot/internal/build"
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 )
 
 // A plan is printed to a terminal and may end up in CI output, so it must name
@@ -209,6 +211,77 @@ func TestShortDigest(t *testing.T) {
 		if got := shortDigest(tc.in); got != tc.want {
 			t.Errorf("shortDigest(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// A service with no route has no route to leave unchanged. Requiring one made
+// every systemd unit and worker redeploy identical content under a new sequence
+// number, restarting it each time.
+func TestPlanUnexposedServiceCanBeANoOp(t *testing.T) {
+	daemon := func() *config.Service {
+		return &config.Service{Name: "worker", Runtime: config.RuntimeCompose, Hosts: []string{"web-1"}}
+	}
+	oneshot := func() *config.Service {
+		return &config.Service{
+			Name: "backup", Runtime: config.RuntimeSystemd, Hosts: []string{"web-1"},
+			Unit: &config.Unit{Name: "backup.service", Kind: config.UnitOneshot, Timer: "backup.timer"},
+		}
+	}
+	runner := func() *config.Service {
+		return &config.Service{
+			Name: "gh-runner", Runtime: config.RuntimeSystemd, Hosts: []string{"web-1"},
+			Unit: &config.Unit{Name: "gh-runner.service", Kind: config.UnitService},
+		}
+	}
+	exited := []runtime.Instance{{Name: "worker-1", State: "exited"}}
+	running := runtime.Observation{State: runtime.StateRunning}
+
+	tests := []struct {
+		name      string
+		svc       func() *config.Service
+		obs       runtime.Observation
+		digest    string
+		edit      func(*config.Service)
+		wantNoOp  bool
+		wantStart bool
+	}{
+		{"unchanged and running", daemon, running, "", nil, true, false},
+		{"unchanged and stopped", daemon, runtime.Observation{State: runtime.StateStopped, Instances: exited}, "", nil, false, true},
+		{"oneshot between runs", oneshot, runtime.Observation{State: runtime.StateStopped, Instances: exited}, "", nil, true, false},
+		{"new image", daemon, running, "sha256:bbbb", nil, false, false},
+		{"unit unchanged", runner, running, "", nil, true, false},
+		// Before a service with no route could be a no-op, this applied only
+		// because every deploy restarted the unit.
+		{"unit links changed", runner, running, "", func(s *config.Service) {
+			s.Unit.Links = map[string]string{"/usr/local/bin/runner": "bin/runner"}
+		}, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			in, live := liveInput(t, tc.svc())
+			in.Runtime = observer{stubRuntime: stubRuntime{tc.obs}}
+			if tc.digest != "" {
+				in.Build = &build.Result{Artifacts: []release.Artifact{{Name: "image", Digest: tc.digest}}}
+			}
+			if tc.edit != nil {
+				tc.edit(in.Service)
+			}
+
+			p, err := Compute(t.Context(), in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hp := p.Hosts[0]
+			if hp.NoOp != tc.wantNoOp || hp.Start != tc.wantStart {
+				t.Fatalf("noop=%v start=%v, want noop=%v start=%v", hp.NoOp, hp.Start, tc.wantNoOp, tc.wantStart)
+			}
+			if hp.Route != RouteNotExposed {
+				t.Errorf("route = %q, want %q", hp.Route, RouteNotExposed)
+			}
+			if (tc.wantNoOp || tc.wantStart) && hp.To != live {
+				t.Errorf("to = %q, want the live release %q", hp.To, live)
+			}
+		})
 	}
 }
 

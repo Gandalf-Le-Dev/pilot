@@ -232,7 +232,7 @@ func planHost(ctx context.Context, in Input, p *Plan, host string) (HostPlan, er
 
 	hp.Changes = diff(prev, p)
 	hp.Warnings = leftBehind(in.Service, hp.Changes)
-	if len(hp.Changes) == 0 && hp.Route == RouteNone {
+	if len(hp.Changes) == 0 && (hp.Route == RouteNone || hp.Route == RouteNotExposed) {
 		// Nothing new ships, so the release that stays live is the current
 		// one, not the sequence number this plan would have used.
 		hp.To = current

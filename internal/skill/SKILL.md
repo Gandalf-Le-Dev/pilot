@@ -115,8 +115,10 @@ inventing field names — a test loads it, so it is accurate, which prose is not
 
 Fixing a symptom on the host instead of its cause in the repository is how
 drift is *created*. Everything below is regenerated or replaced by the next
-deploy, so a hand-edit does not fix anything — it schedules a regression and
-raises a drift alert in the meantime.
+deploy that ships a release, so a hand-edit does not fix anything — it schedules
+a regression and raises a drift alert in the meantime. A deploy with nothing new
+to ship does not clear that alert. Drift stays reported until a real change
+ships.
 
 ```
 /opt/pilot/services/<svc>/releases/   immutable releases — never edit, chmod, or chown one
