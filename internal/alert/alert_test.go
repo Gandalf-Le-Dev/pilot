@@ -152,13 +152,25 @@ func TestEveryValueFormParses(t *testing.T) {
 	}
 }
 
-// Value forms cannot be enumerated from the parser, so this pins the boundary
-// instead: if one of these starts parsing, it is a new form an old agent would
-// reject, and it belongs in valueForms so the schema digest moves.
-func TestUnacceptedValueFormsAreRejected(t *testing.T) {
-	for _, v := range []string{"14d", "1h", "10%", "10GB", "ten"} {
-		if _, err := Parse("service.restarts > " + v); err == nil {
-			t.Errorf("Parse accepts %q; name its form in valueForms", v)
+// Every numeric metric is a count or a percentage, so a threshold is digits
+// with an optional fraction. NaN would make a rule that never fires.
+func TestThresholdsArePlainDecimals(t *testing.T) {
+	for _, v := range []string{"0", "10", "100", "15.5", "0.25"} {
+		if _, err := Parse("service.restarts > " + v); err != nil {
+			t.Errorf("Parse rejects %q: %v", v, err)
+		}
+	}
+	for _, v := range []string{
+		"NaN", "Inf", "infinity", "1_000", "0x1p4", "1e3", ".5", "5.", "+1", "-1",
+		"14d", "1h", "10%", "10GB", "ten",
+	} {
+		_, err := Parse("service.restarts > " + v)
+		if err == nil {
+			t.Errorf("Parse accepts %q", v)
+			continue
+		}
+		if !strings.Contains(err.Error(), "not a number") || !strings.Contains(err.Error(), "15.5") {
+			t.Errorf("error for %q should say it is not a number and show the form: %v", v, err)
 		}
 	}
 }

@@ -9,6 +9,7 @@ package alert
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,17 +123,19 @@ func KnownOps() []string {
 	return out
 }
 
-// valueForms names each shape of threshold the parser accepts, which is
-// whatever strconv.ParseFloat takes. The examples are tested to parse.
+// ThresholdPattern is the only form a numeric rule's value may take. Every
+// numeric metric is a count or a percentage, so there is no sign; and
+// strconv.ParseFloat alone would also take NaN, which makes a rule that never
+// fires.
+const ThresholdPattern = `^[0-9]+(\.[0-9]+)?$`
+
+var threshold = regexp.MustCompile(ThresholdPattern)
+
+// valueForms names each shape of threshold the parser accepts. The examples
+// are tested to parse.
 var valueForms = []struct{ name, example string }{
 	{"integer", "10"},
 	{"decimal", "15.5"},
-	{"signed", "-1"},
-	{"exponent", "1e3"},
-	{"digit-separated", "1_000"},
-	{"hex-float", "0x1p4"},
-	{"infinity", "Inf"},
-	{"nan", "NaN"},
 }
 
 // ValueForms lists the names of the threshold forms the parser accepts, sorted.
@@ -182,9 +185,12 @@ func Parse(expr string) (Condition, error) {
 		if op == OpNone {
 			return Condition{}, fmt.Errorf("%s is a number; compare it, e.g. `%s > 3`", name, name)
 		}
+		if !threshold.MatchString(valueStr) {
+			return Condition{}, fmt.Errorf("%q is not a number in %q; write digits, e.g. 10 or 15.5", valueStr, raw)
+		}
 		v, err := strconv.ParseFloat(valueStr, 64)
 		if err != nil {
-			return Condition{}, fmt.Errorf("%q is not a number in %q", valueStr, raw)
+			return Condition{}, fmt.Errorf("%q is out of range in %q", valueStr, raw)
 		}
 		c.Value = v
 	}
