@@ -324,6 +324,9 @@ func TestTextRedactsABearerHeader(t *testing.T) {
 		"(Bearer abc123def456)":                            "(Bearer " + Placeholder + ")",
 		"Bearer abc123def456==; next":                      "Bearer " + Placeholder + "; next",
 		"the request needs a Bearer token.":                "the request needs a Bearer token.",
+		"Bearer pwd==xyzhunter22 next":                     "Bearer pwd=" + Placeholder + " next",
+		"Bearer token=abc123def":                           "Bearer token=" + Placeholder,
+		"Bearer abc123==":                                  "Bearer " + Placeholder,
 	}
 	for line, want := range cases {
 		if got := Text(line, nil); got != want {

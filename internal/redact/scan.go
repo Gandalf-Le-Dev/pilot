@@ -76,16 +76,26 @@ var labelHead = regexp.MustCompile(`(?i)\b(?:(api[_-]?keys?|apikey|access[_-]?to
 
 // token68End returns where the token68 run at i ends, the form RFC 6750 gives
 // a bearer token. Whatever follows it, such as the `]]` of a printed
-// http.Header or a closing parenthesis, is not part of the token.
+// http.Header or a closing parenthesis, is not part of the token. A run of `=`
+// is padding only at the end: followed by more, as in `Bearer pwd==x`, it is
+// a separator, and the pair is left for labelHead.
 func token68End(s string, i int) int {
-	for i < len(s) && (s[i] >= 'a' && s[i] <= 'z' || s[i] >= 'A' && s[i] <= 'Z' ||
-		s[i] >= '0' && s[i] <= '9' || strings.IndexByte("._~+/-", s[i]) >= 0) {
+	for i < len(s) && token68Char(s[i]) {
 		i++
 	}
-	for i < len(s) && s[i] == '=' {
-		i++
+	j := i
+	for j < len(s) && s[j] == '=' {
+		j++
 	}
-	return i
+	if j < len(s) && token68Char(s[j]) {
+		return i
+	}
+	return j
+}
+
+func token68Char(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+		strings.IndexByte("._~+/-", c) >= 0
 }
 
 // bearerToken reports whether the token68 run after `Bearer ` is a token

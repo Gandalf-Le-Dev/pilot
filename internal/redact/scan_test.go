@@ -281,6 +281,7 @@ func TestScanFindsABearerHeader(t *testing.T) {
 	for _, line := range []string{
 		"headers=map[Authorization:[Bearer abc123def456]]",
 		"(Bearer abc123def456)",
+		"Bearer abc123==",
 	} {
 		if got := Scan(line, nil); len(got) != 1 || got[0].Label != "bearer" {
 			t.Errorf("Scan(%q) = %+v, want one labelled bearer match", line, got)
@@ -288,5 +289,20 @@ func TestScanFindsABearerHeader(t *testing.T) {
 	}
 	if got := Scan("the request needs a Bearer token.", nil); len(got) != 0 {
 		t.Errorf("reported prose about bearer tokens: %+v", got)
+	}
+}
+
+// An `=` run followed by more is a separator, not padding, so the pair after
+// Bearer is reported under its own name.
+func TestScanLeavesAPairAfterBearerToItsName(t *testing.T) {
+	cases := map[string]string{
+		"Bearer pwd==xyzhunter22": "pwd",
+		"Bearer token=abc123def":  "token",
+	}
+	for line, want := range cases {
+		got := Scan(line, nil)
+		if len(got) != 1 || got[0].Label != want {
+			t.Errorf("Scan(%q) = %+v, want one labelled %s match", line, got, want)
+		}
 	}
 }
