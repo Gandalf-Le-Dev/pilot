@@ -147,7 +147,7 @@ func TestRenderRoute(t *testing.T) {
 	fleet := &config.Fleet{}
 
 	t.Run("unexposed service has no route", func(t *testing.T) {
-		got, err := renderRoute(&config.Service{Name: "worker"}, fleet, layout)
+		got, _, err := renderRoute(&config.Service{Name: "worker"}, fleet, layout)
 		if err != nil || got != "" {
 			t.Errorf("got %q, %v", got, err)
 		}
@@ -162,7 +162,7 @@ func TestRenderRoute(t *testing.T) {
 				Static:  &config.StaticExpose{Index: "index.html"},
 			},
 		}
-		got, err := renderRoute(s, fleet, layout)
+		got, _, err := renderRoute(s, fleet, layout)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -176,6 +176,28 @@ func TestRenderRoute(t *testing.T) {
 		}
 	})
 
+	t.Run("a blue-green route is rendered per colour, shared when its domain is", func(t *testing.T) {
+		site := &config.Service{Name: "site", Hosts: []string{"web-1"},
+			Expose:  &config.Expose{Domains: []string{"example.com"}, Upstream: 8080},
+			Rollout: &config.Rollout{Strategy: config.StrategyBlueGreen, Service: "web", Ports: []int{18080, 18081}}}
+		api := &config.Service{Name: "api", Hosts: []string{"web-1"}, Expose: &config.Expose{Domains: []string{"example.com"}, Path: "/v1", Upstream: 8081}}
+		fleet := &config.Fleet{Services: map[string]*config.Service{"site": site, "api": api}}
+
+		blue, colors, err := renderRoute(site, fleet, layout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if blue != colors["blue"] || len(colors) != 2 {
+			t.Fatalf("the release's single route must be blue's, got %d colours", len(colors))
+		}
+		for color, port := range map[string]string{"blue": "18080", "green": "18081"} {
+			got := colors[color]
+			if !strings.Contains(got, "\n# shared site: example.com\n") || !strings.Contains(got, "reverse_proxy 127.0.0.1:"+port+" ") {
+				t.Errorf("%s route should be a shared handle at %s:\n%s", color, port, got)
+			}
+		}
+	})
+
 	// The whole-domain service must leave the site block to Pilot as soon as
 	// a path service shares its domain, or Caddy would see two blocks for it.
 	t.Run("a whole-domain route beside a path route is shared", func(t *testing.T) {
@@ -184,7 +206,7 @@ func TestRenderRoute(t *testing.T) {
 		fleet := &config.Fleet{Services: map[string]*config.Service{"site": site, "api": api}}
 
 		for _, s := range []*config.Service{site, api} {
-			got, err := renderRoute(s, fleet, layout)
+			got, _, err := renderRoute(s, fleet, layout)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -583,5 +605,90 @@ func TestPlanWarnsAboutAHeldRouteLock(t *testing.T) {
 	write(t, filepath.Join(fleet.Caddy.SnippetDir, ".pilot-lock", "owner"), "abc\n")
 	if !warned() {
 		t.Error("no warning while another Pilot holds the route lock")
+	}
+}
+
+// Under blue-green, expose.upstream is the container port and only the colours'
+// host ports are reachable, so no route may point at the container port. The
+// plan compares the installed route with the serving colour's, so a host that
+// already serves this release is a no-op whichever colour serves it.
+func TestPlanRoutesBlueGreenToTheColourPorts(t *testing.T) {
+	root := t.TempDir()
+	layout := release.NewLayout(filepath.Join(root, "pilot"))
+	api := &config.Service{Name: "api", Runtime: config.RuntimeCompose, Hosts: []string{"web-1"},
+		Expose:  &config.Expose{Domains: []string{"api.example.com"}, Upstream: 8080},
+		Rollout: &config.Rollout{Strategy: config.StrategyBlueGreen, Service: "web", Ports: []int{18080, 18081}}}
+	fleet := &config.Fleet{
+		Caddy:    config.Caddy{SnippetDir: filepath.Join(root, "pilot.d")},
+		Services: map[string]*config.Service{"api": api},
+	}
+	target := &runtime.Target{Service: api, Host: &config.Host{Name: "web-1"}, Layout: layout, Client: local.New("web-1")}
+	in := Input{
+		Service: api, Fleet: fleet, Layout: layout,
+		Build:   &build.Result{Artifacts: []release.Artifact{{Name: "image", Digest: "sha256:aaaa"}}},
+		Targets: map[string]*runtime.Target{"web-1": target},
+	}
+
+	p, err := Compute(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(p.Snippet, "127.0.0.1:8080 ") || !strings.Contains(p.Snippet, "127.0.0.1:18080 ") {
+		t.Fatalf("the plan's route must point at a colour's host port, not the container port:\n%s", p.Snippet)
+	}
+
+	green := strings.Replace(p.Snippet, "127.0.0.1:18080 ", "127.0.0.1:18081 ", 1)
+	write(t, filepath.Join(fleet.Caddy.SnippetDir, "api.caddy"), green)
+	st := release.NewState("api")
+	st.ActiveColor = "green"
+	if err := runtime.WriteState(t.Context(), target, st); err != nil {
+		t.Fatal(err)
+	}
+	if p, err = Compute(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Hosts[0].Route; got != RouteNone {
+		t.Errorf("green serves and the installed route is green's, yet the plan says %q", got)
+	}
+
+	st.ActiveColor = "blue"
+	if err := runtime.WriteState(t.Context(), target, st); err != nil {
+		t.Fatal(err)
+	}
+	if p, err = Compute(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Hosts[0].Route; got != RouteUpdate {
+		t.Errorf("blue serves but green's route is installed, yet the plan says %q", got)
+	}
+
+	// Guessing blue for an unreadable state would read green's live route as
+	// changed, and flip onto the stack that serves.
+	write(t, layout.State("api"), "{not json")
+	if _, err := Compute(t.Context(), in); err == nil || !strings.Contains(err.Error(), "state") {
+		t.Errorf("an unreadable state was guessed: %v", err)
+	}
+}
+
+// A route hash that changed for services that are not blue-green would make
+// every one of them ship a new release on the next deploy for no reason.
+func TestRouteHashIsUnchangedOutsideBlueGreen(t *testing.T) {
+	root := t.TempDir()
+	layout := release.NewLayout(filepath.Join(root, "pilot"))
+	api := &config.Service{Name: "api", Runtime: config.RuntimeCompose, Hosts: []string{"web-1"},
+		Expose: &config.Expose{Domains: []string{"api.example.com"}, Upstream: 8080}}
+	in := Input{
+		Service: api, Fleet: &config.Fleet{Caddy: config.Caddy{SnippetDir: filepath.Join(root, "pilot.d")}}, Layout: layout,
+		Build: &build.Result{Artifacts: []release.Artifact{{Name: "image", Digest: "sha256:aaaa"}}},
+		Targets: map[string]*runtime.Target{"web-1": {
+			Service: api, Host: &config.Host{Name: "web-1"}, Layout: layout, Client: local.New("web-1"),
+		}},
+	}
+	p, err := Compute(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.RouteHash != release.HashBytes([]byte(p.Snippet)) {
+		t.Error("the route hash of a service that is not blue-green must be the hash of its route alone")
 	}
 }

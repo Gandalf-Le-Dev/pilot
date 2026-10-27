@@ -82,7 +82,13 @@ import (
 // domain's _site.<domain>/ beside a site block Pilot writes for it. An older
 // agent would install the handles as a file of their own, which Caddy
 // refuses: it reads a top-level `handle` as a site address.
-const Version = 14
+//
+// Version 15 stages a blue-green release's route once per colour, as
+// caddy.<colour>.snippet in the release, each at that colour's host port, and
+// the agent's flip installs the one for the colour it moves to. An older agent
+// would install the deploy's `route`, which cannot name a colour, and compare
+// drift against it.
+const Version = 15
 
 // SchemaDigest pins the configuration schema this protocol version speaks.
 //

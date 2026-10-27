@@ -24,16 +24,16 @@ func ActiveProject(ctx context.Context, t *runtime.Target) string {
 	return ColorProject(t.Service.Name, ActiveColor(ctx, t))
 }
 
-// ActiveColor reports which color currently serves.
-//
-// The default is blue so that a service with no recorded state deploys to
-// green first, which matches what the agent does.
+// ActiveColor reports which color currently serves, for asking Docker about
+// the live stack. A state that cannot be read is guessed as blue here, which
+// at worst misreports a status; route decisions use runtime.ActiveColor,
+// which stops instead.
 func ActiveColor(ctx context.Context, t *runtime.Target) config.Color {
-	st, err := runtime.ReadState(ctx, t)
-	if err != nil || st.ActiveColor == "" {
+	c, err := runtime.ActiveColor(ctx, t)
+	if err != nil {
 		return config.ColorBlue
 	}
-	return config.Color(st.ActiveColor)
+	return c
 }
 
 // ActiveDir returns the release directory and override to use for the live

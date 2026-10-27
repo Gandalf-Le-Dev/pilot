@@ -34,6 +34,7 @@ func Standard() []Check {
 		{Name: "caddy-routes", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyRoutes},
 		{Name: "caddy-bind", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyBind},
 		{Name: "caddy-paths", Scope: ScopeHost, NeedsNetwork: true, Run: checkCaddyPaths},
+		{Name: "bluegreen-route", Scope: ScopeHost, NeedsNetwork: true, Run: checkBlueGreenRoutes},
 		{Name: "disk", Scope: ScopeHost, NeedsNetwork: true, Run: checkDisk},
 		{Name: "status-server", Scope: ScopeHost, NeedsNetwork: true, Run: checkStatusServer},
 		{Name: "dns-tls", Scope: ScopeEdge, NeedsNetwork: true, Run: checkEdge},
@@ -513,6 +514,54 @@ func caddyPathFindings(host string, services []*config.Service, own map[string]s
 		}
 	}
 	return out
+}
+
+// checkBlueGreenRoutes finds blue-green routes that proxy to expose.upstream,
+// the container port behind both colours, which nothing on the host listens
+// on. Pilot installed such a route at every flip before it kept a route per
+// colour, and it stays until the service is next deployed.
+func checkBlueGreenRoutes(ctx context.Context, env *Env) []Finding {
+	var out []Finding
+	paths := hostPaths(env.Fleet)
+
+	for _, name := range env.Fleet.HostNames() {
+		client := env.Client(name)
+		if client == nil {
+			continue
+		}
+		for _, s := range env.ServicesOn(name) {
+			if !s.Rollout.IsBlueGreen() || s.Expose == nil {
+				continue
+			}
+			files := []string{caddy.SnippetName(s.Name)}
+			for _, d := range s.Expose.Domains {
+				files = append(files, caddy.HandlesFile(d, s.Name))
+			}
+			for _, f := range files {
+				route, err := client.ReadFile(ctx, path.Join(paths.SnippetDir, f))
+				if err == nil && proxiesToUpstream(s, string(route)) {
+					out = append(out, bluegreenRouteFinding(name, s))
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+// proxiesToUpstream reports whether a blue-green service's installed route
+// sends traffic to expose.upstream rather than to a colour's host port.
+func proxiesToUpstream(s *config.Service, route string) bool {
+	return strings.Contains(route, fmt.Sprintf("reverse_proxy 127.0.0.1:%d {", s.Expose.Upstream))
+}
+
+func bluegreenRouteFinding(host string, s *config.Service) Finding {
+	return Finding{
+		Status: StatusFail, Scope: ScopeHost, Host: host,
+		Title:  fmt.Sprintf("route for %s proxies to the container port %d", s.Name, s.Expose.Upstream),
+		Detail: "under blue-green, expose.upstream is the container port behind both colours; nothing on the host listens on it, so Caddy answers 502",
+		Hint:   "redeploy " + s.Name + ": its flip installs the route of the serving colour, at its port from rollout.ports",
+	}
 }
 
 // checkDisk warns before releases and images fill the volume, since that

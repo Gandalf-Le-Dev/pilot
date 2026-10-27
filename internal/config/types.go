@@ -719,6 +719,16 @@ func (c Color) Other() Color {
 	return ColorGreen
 }
 
+// ServingColor is the color a blue-green service serves from, given the one
+// its state records: blue until a flip records another, so a service with no
+// state deploys to green first.
+func ServingColor(recorded string) Color {
+	if recorded == "" {
+		return ColorBlue
+	}
+	return Color(recorded)
+}
+
 // AllColors is both colors, in the order ports are assigned.
 var AllColors = []Color{ColorBlue, ColorGreen}
 

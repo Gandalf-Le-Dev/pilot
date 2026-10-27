@@ -77,3 +77,23 @@ func TestCaddyRouteFindings(t *testing.T) {
 		t.Errorf("fixes ran as %v, want the removals first", ran)
 	}
 }
+
+func TestProxiesToUpstream(t *testing.T) {
+	s := &config.Service{
+		Name:    "api",
+		Expose:  &config.Expose{Domains: []string{"api.example.com"}, Upstream: 8080},
+		Rollout: &config.Rollout{Strategy: config.StrategyBlueGreen, Service: "web", Ports: []int{18080, 18081}},
+	}
+	for route, want := range map[string]bool{
+		"api.example.com {\n\treverse_proxy 127.0.0.1:8080 {\n\t}\n}\n":  true,
+		"api.example.com {\n\treverse_proxy 127.0.0.1:18081 {\n\t}\n}\n": false,
+		"handle {\n\treverse_proxy 127.0.0.1:8080 {\n\t}\n}\n":           true,
+	} {
+		if got := proxiesToUpstream(s, route); got != want {
+			t.Errorf("proxiesToUpstream(%q) = %v, want %v", route, got, want)
+		}
+	}
+	if f := bluegreenRouteFinding("web-1", s); f.Status != StatusFail || !strings.HasPrefix(f.Hint, "redeploy api") {
+		t.Errorf("finding = %+v", f)
+	}
+}

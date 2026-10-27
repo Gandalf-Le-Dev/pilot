@@ -131,6 +131,21 @@ func MarshalState(s *State) ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
+// StateError is a state.json that exists but cannot be read or parsed. A
+// missing one is not an error: it is a service never deployed.
+type StateError struct {
+	Path string
+	Err  error
+}
+
+func (e *StateError) Error() string {
+	return fmt.Sprintf("%s cannot be read: %v\n"+
+		"move it aside: Pilot rebuilds `current` from the symlink; "+
+		"for blue-green, also set active_color in the new state.json by hand to the colour that serves", e.Path, e.Err)
+}
+
+func (e *StateError) Unwrap() error { return e.Err }
+
 func UnmarshalState(b []byte) (*State, error) {
 	var s State
 	if err := json.Unmarshal(b, &s); err != nil {

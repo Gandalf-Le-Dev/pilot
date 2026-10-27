@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
-	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/compose"
@@ -37,7 +35,11 @@ func (a *Agent) runBlueGreen(jobID string, svc *config.Service, rt runtime.Runti
 	}
 	defer unlock()
 
-	active := a.activeColor(svc.Name)
+	active, err := a.activeColor(ctx, svc)
+	if err != nil {
+		a.jobs.Finish(jobID, err, false)
+		return
+	}
 	target := active.Other()
 	newRelease := a.Target(svc, req.Release)
 
@@ -83,13 +85,10 @@ func (a *Agent) runBlueGreen(jobID string, svc *config.Service, rt runtime.Runti
 
 	// ---- 4. the flip. A Caddy reload is graceful, so in-flight requests
 	// finish against the old upstream and new ones go to the new color.
-	snippet := req.Route
-	if snippet == "" {
-		snippet, err = a.renderColorRoute(svc, target, req.Release)
-		if err != nil {
-			a.jobs.Finish(jobID, err, false)
-			return
-		}
+	snippet, err := a.colorRoute(ctx, svc, req.Release, target)
+	if err != nil {
+		a.jobs.Finish(jobID, err, false)
+		return
 	}
 
 	a.jobs.Event(jobID, proto.PhaseRoute, "flipping traffic to %s", target)
@@ -207,58 +206,37 @@ func (a *Agent) abandonColor(ctx context.Context, jobID string, t *runtime.Targe
 	a.jobs.Event(jobID, proto.PhaseRollback, "removed the %s stack", c)
 }
 
-// renderColorRoute produces the Caddy snippet pointing at a color's port, for
-// the release being made live.
-func (a *Agent) renderColorRoute(svc *config.Service, c config.Color, releaseID string) (string, error) {
-	if svc.Expose == nil {
-		return "", fmt.Errorf("service %q has no route to flip", svc.Name)
+// colorRoute is the route that sends a release's traffic to one colour: the
+// copy the CLI staged with the release for that colour, so that drift, `pilot
+// diff` and the plan compare against the bytes installed. The deploy's own
+// route is not it, since one route cannot point at both colours. A release
+// staged before routes were kept per colour gets the render every comparison
+// also uses for it.
+func (a *Agent) colorRoute(ctx context.Context, svc *config.Service, releaseID string, c config.Color) (string, error) {
+	if b, err := os.ReadFile(a.Layout.ColorSnippet(svc.Name, releaseID, string(c))); err == nil {
+		return string(b), nil
 	}
-	scoped := *svc.Expose
-	scoped.Upstream = svc.Rollout.PortFor(c)
-
-	return caddy.Render(caddy.Input{
-		Service: svc.Name,
-		Expose:  &scoped,
-		Root:    a.Layout.Current(svc.Name),
-		Bind:    a.CaddyBind(),
-		Shared:  a.routeShared(svc, releaseID),
-	})
-}
-
-// routeShared reports whether a route rendered here must join the shared site
-// blocks. The agent has no view of the other services, so it reads the
-// decision the CLI made from the release's own route, and also joins any
-// shared site one of the domains already has: a block of its own beside it
-// would be refused.
-func (a *Agent) routeShared(svc *config.Service, releaseID string) bool {
-	if b, err := os.ReadFile(a.Layout.Snippet(svc.Name, releaseID)); err == nil && caddy.Shared(string(b)) {
-		return true
-	}
-	for _, d := range svc.Expose.Domains {
-		if _, err := os.Stat(filepath.Join(a.Caddy.SnippetDir, caddy.SiteFile(d))); err == nil {
-			return true
-		}
-	}
-	return false
+	return runtime.RenderColorRoute(ctx, a.Target(svc, releaseID), a.Caddy.SnippetDir, a.CaddyBind(), c)
 }
 
 // activeColor reports which color is currently serving.
 //
 // It is read from state.json rather than inferred from the installed route,
 // because a hand-edited route should show up as drift rather than silently
-// redirect the next deploy.
-func (a *Agent) activeColor(service string) config.Color {
-	st, err := release.ReadState(a.Layout.Service(service), service)
-	if err != nil || st.ActiveColor == "" {
-		return config.ColorBlue
-	}
-	return config.Color(st.ActiveColor)
+// redirect the next deploy. A state that cannot be read is an error: a guess
+// could start the new release on the stack that serves.
+func (a *Agent) activeColor(ctx context.Context, svc *config.Service) (config.Color, error) {
+	return runtime.ActiveColor(ctx, a.Target(svc, ""))
 }
 
 func (a *Agent) setActiveColor(service string, c config.Color) {
 	dir := a.Layout.Service(service)
 	st, err := release.ReadState(dir, service)
 	if err != nil {
+		// The flip just made c the serving colour, so a new state that says
+		// so is right where the unreadable one could only mislead.
+		a.log().Warn("state cannot be read; replacing it with one that records the serving colour",
+			"service", service, "err", err)
 		st = release.NewState(service)
 	}
 	st.ActiveColor = string(c)

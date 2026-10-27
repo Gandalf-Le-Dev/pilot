@@ -170,14 +170,19 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 // is absent. A missing state file is normal on first deploy and must not be an
 // error — the symlink, not this file, is the source of truth.
 func ReadState(serviceDir, service string) (*State, error) {
-	b, err := os.ReadFile(filepath.Join(serviceDir, StateFile))
+	file := filepath.Join(serviceDir, StateFile)
+	b, err := os.ReadFile(file)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return NewState(service), nil
 		}
-		return nil, err
+		return nil, &StateError{Path: file, Err: err}
 	}
-	return UnmarshalState(b)
+	st, err := UnmarshalState(b)
+	if err != nil {
+		return nil, &StateError{Path: file, Err: err}
+	}
+	return st, nil
 }
 
 // WriteState persists a service's state.json.

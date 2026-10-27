@@ -2,9 +2,12 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -62,6 +65,12 @@ func StageCommon(ctx context.Context, t *Target, in StageInput) error {
 	if in.Snippet != "" {
 		if err := t.Client.WriteFile(ctx, path.Join(relDir, release.SnippetFile), []byte(in.Snippet), "0644"); err != nil {
 			return fmt.Errorf("writing route for %s: %w", t.Label(), err)
+		}
+	}
+	for _, color := range slices.Sorted(maps.Keys(in.ColorSnippets)) {
+		file := t.Layout.ColorSnippet(t.Service.Name, t.Release, color)
+		if err := t.Client.WriteFile(ctx, file, []byte(in.ColorSnippets[color]), "0644"); err != nil {
+			return fmt.Errorf("writing the %s route for %s: %w", color, t.Label(), err)
 		}
 	}
 
@@ -161,17 +170,66 @@ func GC(ctx context.Context, t *Target, keep int, protect ...string) ([]string, 
 	return remove, nil
 }
 
-// ReadState loads the service's state.json from the host, returning a fresh
-// state when the file is absent.
+// ReadState reads a service's state.json on its host. A missing file is a
+// service never deployed, and gives a blank state. A file that exists but
+// cannot be read or parsed is a *release.StateError naming it and the remedy.
 func ReadState(ctx context.Context, t *Target) (*release.State, error) {
-	res, err := t.Client.Run(ctx, "cat "+transport.Quote(t.Layout.State(t.Service.Name))+" 2>/dev/null || true")
+	file := t.Layout.State(t.Service.Name)
+	res, err := t.Client.Run(ctx, "[ ! -e "+transport.Quote(file)+" ] || cat "+transport.Quote(file))
 	if err != nil {
 		return nil, err
+	}
+	if !res.OK() {
+		return nil, &release.StateError{Path: file, Err: res.Err()}
 	}
 	if strings.TrimSpace(res.Stdout) == "" {
 		return release.NewState(t.Service.Name), nil
 	}
-	return release.UnmarshalState([]byte(res.Stdout))
+	st, err := release.UnmarshalState([]byte(res.Stdout))
+	if err != nil {
+		return nil, &release.StateError{Path: file, Err: err}
+	}
+	return st, nil
+}
+
+// ReadStateOrBlank is ReadState for a rollback and `pilot releases`, which
+// rebuild what they need from the current symlink. A state that cannot be
+// read gives a blank state, with the error as unreadable, so the incident
+// tool still works when the record of the incident is what broke.
+func ReadStateOrBlank(ctx context.Context, t *Target) (st *release.State, unreadable *release.StateError, err error) {
+	st, err = ReadState(ctx, t)
+	if errors.As(err, &unreadable) {
+		return release.NewState(t.Service.Name), unreadable, nil
+	}
+	return st, nil, err
+}
+
+// StateToRecord reads the state a finished job records its outcome into.
+//
+// A state that cannot be read is replaced by a blank one, logged through
+// warn, so the outcome is still recorded and the next read works; its
+// history is lost either way. Under blue-green it is left alone and ok is
+// false: a blank state says blue serves, and the next flip would start the
+// new release on the stack that may be serving. A state that could not be
+// reached at all is never overwritten: it may be fine.
+func StateToRecord(ctx context.Context, t *Target, warn func(msg string, args ...any)) (st *release.State, ok bool) {
+	st, err := ReadState(ctx, t)
+	if err == nil {
+		return st, true
+	}
+	var unreadable *release.StateError
+	if !errors.As(err, &unreadable) {
+		warn("could not read the state, so the outcome is not recorded", "service", t.Service.Name, "err", err)
+		return release.NewState(t.Service.Name), false
+	}
+	if t.Service.Rollout.IsBlueGreen() {
+		warn("state cannot be read, so the outcome is not recorded: a blank state would claim blue serves",
+			"service", t.Service.Name, "file", unreadable.Path, "err", unreadable.Err)
+		return release.NewState(t.Service.Name), false
+	}
+	warn("state cannot be read; replacing it with a new one, without the old history",
+		"service", t.Service.Name, "file", unreadable.Path, "err", unreadable.Err)
+	return release.NewState(t.Service.Name), true
 }
 
 // WriteState persists the service's state.json on the host.

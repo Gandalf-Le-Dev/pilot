@@ -207,6 +207,20 @@ func (s *JobStore) Wait(ctx context.Context, id string, afterEvents int) (*proto
 	}
 }
 
+// TouchedSince reports whether a service has a job in flight, or had one
+// finish after t.
+func (s *JobStore) TouchedSince(service string, t time.Time) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, j := range s.jobs {
+		if j.Service == service && (!j.State.Done() || j.FinishedAt.After(t)) {
+			return true
+		}
+	}
+	return false
+}
+
 // Active reports whether a service already has a job in flight, so a second
 // deploy cannot race the first.
 func (s *JobStore) Active(service string) (*proto.Job, bool) {

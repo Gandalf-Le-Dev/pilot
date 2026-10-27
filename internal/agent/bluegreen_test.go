@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
@@ -81,9 +83,18 @@ func TestReplacePortLeavesUnparseableURLsAlone(t *testing.T) {
 // redirecting the next deploy.
 func TestActiveColorFromState(t *testing.T) {
 	a := newAgent(t)
+	svc := &config.Service{Name: "api"}
+	active := func() config.Color {
+		t.Helper()
+		c, err := a.activeColor(t.Context(), svc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
 
 	// With no state at all, blue is active, so a first deploy goes to green.
-	if got := a.activeColor("api"); got != config.ColorBlue {
+	if got := active(); got != config.ColorBlue {
 		t.Errorf("active = %q, want blue by default", got)
 	}
 
@@ -93,12 +104,22 @@ func TestActiveColorFromState(t *testing.T) {
 	}
 	a.setActiveColor("api", config.ColorGreen)
 
-	if got := a.activeColor("api"); got != config.ColorGreen {
+	if got := active(); got != config.ColorGreen {
 		t.Errorf("active = %q, want green", got)
 	}
-	if got := a.activeColor("api").Other(); got != config.ColorBlue {
+	if got := active().Other(); got != config.ColorBlue {
 		t.Errorf("next deploy would target %q, want blue", got)
 	}
+
+	// A state that cannot be read is not a state that says blue: guessing
+	// would start the new release on the stack that serves.
+	if err := os.WriteFile(filepath.Join(dir, release.StateFile), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := a.activeColor(t.Context(), svc); err == nil {
+		t.Errorf("an unreadable state read as %q", c)
+	}
+	a.setActiveColor("api", config.ColorGreen)
 
 	st, err := release.ReadState(dir, "api")
 	if err != nil {
@@ -124,11 +145,11 @@ func TestRenderColorRoute(t *testing.T) {
 		},
 	}
 
-	blue, err := a.renderColorRoute(svc, config.ColorBlue, "0001-aaaaaaa")
+	blue, err := a.colorRoute(t.Context(), svc, "0001-aaaaaaa", config.ColorBlue)
 	if err != nil {
 		t.Fatal(err)
 	}
-	green, err := a.renderColorRoute(svc, config.ColorGreen, "0001-aaaaaaa")
+	green, err := a.colorRoute(t.Context(), svc, "0001-aaaaaaa", config.ColorGreen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +176,7 @@ func TestRenderColorRoute(t *testing.T) {
 func TestRenderColorRouteNeedsExpose(t *testing.T) {
 	a := newAgent(t)
 	svc := &config.Service{Name: "worker", Rollout: &config.Rollout{Ports: []int{1, 2}}}
-	if _, err := a.renderColorRoute(svc, config.ColorBlue, "0001-aaaaaaa"); err == nil {
+	if _, err := a.colorRoute(t.Context(), svc, "0001-aaaaaaa", config.ColorBlue); err == nil {
 		t.Error("a service with no route has nothing to flip")
 	}
 }
@@ -249,7 +270,7 @@ func TestRenderColorRouteCarriesBind(t *testing.T) {
 		},
 	}
 
-	green, err := a.renderColorRoute(svc, config.ColorGreen, "0001-aaaaaaa")
+	green, err := a.colorRoute(t.Context(), svc, "0001-aaaaaaa", config.ColorGreen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +293,7 @@ func TestRenderColorRouteJoinsTheSharedSite(t *testing.T) {
 	shared := func(route string) bool { return strings.Contains(route, "\n# shared site: example.com\n") }
 
 	a := newAgent(t)
-	if got, _ := a.renderColorRoute(svc, config.ColorBlue, "0001-aaaaaaa"); shared(got) {
+	if got, _ := a.colorRoute(t.Context(), svc, "0001-aaaaaaa", config.ColorBlue); shared(got) {
 		t.Errorf("a domain nobody shares keeps its own block:\n%s", got)
 	}
 
@@ -281,7 +302,7 @@ func TestRenderColorRouteJoinsTheSharedSite(t *testing.T) {
 		stageRelease(t, a, "site", "0001-aaaaaaa", map[string]string{
 			"caddy.snippet": "# managed by pilot — service: site — do not edit\n# shared site: example.com\nhandle {\n}\n",
 		})
-		if got, _ := a.renderColorRoute(svc, config.ColorBlue, "0001-aaaaaaa"); !shared(got) {
+		if got, _ := a.colorRoute(t.Context(), svc, "0001-aaaaaaa", config.ColorBlue); !shared(got) {
 			t.Errorf("want handles, got:\n%s", got)
 		}
 	})
@@ -294,8 +315,146 @@ func TestRenderColorRouteJoinsTheSharedSite(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(a.Caddy.SnippetDir, caddy.SiteFile("example.com")), []byte("example.com {\n}\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if got, _ := a.renderColorRoute(svc, config.ColorBlue, "0001-aaaaaaa"); !shared(got) {
+		if got, _ := a.colorRoute(t.Context(), svc, "0001-aaaaaaa", config.ColorBlue); !shared(got) {
 			t.Errorf("want handles, got:\n%s", got)
 		}
 	})
+}
+
+// The flip installs the route the CLI staged for the target colour, never the
+// deploy's own route, which cannot point at both colours.
+func TestColorRouteInstallsTheStagedCopy(t *testing.T) {
+	a := newAgent(t)
+	svc := &config.Service{
+		Name:    "api",
+		Runtime: config.RuntimeCompose,
+		Expose:  &config.Expose{Domains: []string{"api.example.com"}, Upstream: 8080},
+		Rollout: &config.Rollout{Strategy: config.StrategyBlueGreen, Service: "web", Ports: []int{18080, 18081}},
+	}
+	stageRelease(t, a, "api", "0002-bbbbbbb", map[string]string{
+		"caddy.snippet":       "the deploy's route",
+		"caddy.green.snippet": "green's route",
+	})
+	if got, err := a.colorRoute(t.Context(), svc, "0002-bbbbbbb", config.ColorGreen); err != nil || got != "green's route" {
+		t.Errorf("colorRoute = %q, %v; want the staged green route", got, err)
+	}
+
+	// A release staged before routes were kept per colour is rendered here.
+	got, err := a.colorRoute(t.Context(), svc, "0001-aaaaaaa", config.ColorGreen)
+	if err != nil || !strings.Contains(got, "reverse_proxy 127.0.0.1:18081 ") {
+		t.Errorf("colorRoute = %v:\n%s", err, got)
+	}
+}
+
+// Drift compares the installed route with the release's copy for the colour
+// that serves. Against the release's single route it would report every
+// service serving green as drifted, forever.
+func TestBlueGreenDriftComparesTheServingColour(t *testing.T) {
+	a := newAgent(t)
+	svc := &config.Service{
+		Name:    "api",
+		Runtime: config.RuntimeCompose,
+		Expose:  &config.Expose{Domains: []string{"api.example.com"}, Upstream: 8080},
+		Rollout: &config.Rollout{Strategy: config.StrategyBlueGreen, Service: "web", Ports: []int{18080, 18081}},
+	}
+	a.services["api"] = svc
+	const blue, green = "api.example.com {\n\treverse_proxy 127.0.0.1:18080\n}\n", "api.example.com {\n\treverse_proxy 127.0.0.1:18081\n}\n"
+	stageRelease(t, a, "api", "0001-aaaaaaa", map[string]string{
+		"caddy.snippet": blue, "caddy.blue.snippet": blue, "caddy.green.snippet": green,
+	})
+	live := a.Target(svc, "0001-aaaaaaa")
+	if err := runtime.Swap(t.Context(), live); err != nil {
+		t.Fatal(err)
+	}
+	a.setActiveColor("api", config.ColorGreen)
+	if err := os.MkdirAll(a.Caddy.SnippetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installed := filepath.Join(a.Caddy.SnippetDir, "api.caddy")
+	if err := os.WriteFile(installed, []byte(green), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a.checkServiceDrift(t.Context(), "api")
+	if rec := a.drift["api"]; rec != nil && rec.route {
+		t.Errorf("green serves green's route, yet drift says: %s", rec.detail)
+	}
+
+	if err := os.WriteFile(installed, []byte(blue), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.checkServiceDrift(t.Context(), "api")
+	if rec := a.drift["api"]; rec == nil || !rec.route {
+		t.Error("green serves but blue's route is installed, and drift says nothing")
+	}
+}
+
+// An agent rollback to a release staged before routes were kept per colour
+// installs a render of the colour's route, and the drift check must expect
+// that same render, not the release's single route at the container port.
+// Releases are never rewritten, so the comparison has to agree instead.
+func TestRollbackToAnOldLayoutReleaseIsNotDrift(t *testing.T) {
+	a := newAgent(t)
+	svc := &config.Service{
+		Name:    "api",
+		Runtime: config.RuntimeCompose,
+		Expose:  &config.Expose{Domains: []string{"api.example.com"}, Upstream: 8080},
+		Rollout: &config.Rollout{Strategy: config.StrategyBlueGreen, Service: "web", Ports: []int{18080, 18081}},
+	}
+	a.services["api"] = svc
+	stageRelease(t, a, "api", "0001-aaaaaaa", map[string]string{
+		"caddy.snippet": "api.example.com {\n\treverse_proxy 127.0.0.1:8080\n}\n",
+	})
+	if err := runtime.Swap(t.Context(), a.Target(svc, "0001-aaaaaaa")); err != nil {
+		t.Fatal(err)
+	}
+	a.setActiveColor("api", config.ColorGreen)
+
+	installed, err := a.colorRoute(t.Context(), svc, "0001-aaaaaaa", config.ColorGreen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(a.Caddy.SnippetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(a.Caddy.SnippetDir, "api.caddy"), []byte(installed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a.checkServiceDrift(t.Context(), "api")
+	if rec := a.drift["api"]; rec != nil && rec.route {
+		t.Errorf("the route the rollback installed reads as drift: %s", rec.detail)
+	}
+
+	// With the state unreadable, the serving colour is unknown and the
+	// comparison is skipped rather than made against a guess.
+	if err := os.WriteFile(filepath.Join(a.Layout.Service("api"), release.StateFile), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.checkServiceDrift(t.Context(), "api")
+	if rec := a.drift["api"]; rec != nil && rec.route {
+		t.Errorf("drift compared against a guessed colour: %s", rec.detail)
+	}
+}
+
+// A drift pass that overlaps a job may read the colour and the route on
+// either side of the flip, so it keeps no verdict.
+func TestDriftIgnoresAPassAJobOverlapped(t *testing.T) {
+	a := newAgent(t)
+	svc := &config.Service{Name: "api", Runtime: config.RuntimeCompose, Expose: &config.Expose{Domains: []string{"api.example.com"}, Upstream: 8080}}
+	a.services["api"] = svc
+	stageRelease(t, a, "api", "0001-aaaaaaa", map[string]string{"caddy.snippet": "api.example.com {\n}\n"})
+	if err := runtime.Swap(t.Context(), a.Target(svc, "0001-aaaaaaa")); err != nil {
+		t.Fatal(err)
+	}
+
+	job := a.jobs.Create(proto.KindDeploy, "api", "0002-bbbbbbb", "0001-aaaaaaa")
+	a.checkServiceDrift(t.Context(), "api")
+	if rec := a.drift["api"]; rec != nil {
+		t.Errorf("drift recorded during a job: %s", rec.detail)
+	}
+	a.jobs.Finish(job.ID, nil, false)
+	if !a.jobs.TouchedSince("api", time.Now().Add(-time.Minute)) || a.jobs.TouchedSince("api", time.Now().Add(time.Minute)) {
+		t.Error("TouchedSince should see a job that finished after the time, and only then")
+	}
 }

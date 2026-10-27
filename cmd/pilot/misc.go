@@ -155,6 +155,7 @@ func runReleases(ctx context.Context, g *globals, name string) error {
 		Service string         `json:"service"`
 		Host    string         `json:"host"`
 		State   *release.State `json:"state"`
+		Warning string         `json:"warning,omitempty"`
 	}
 	var views []releaseView
 
@@ -163,20 +164,27 @@ func runReleases(ctx context.Context, g *globals, name string) error {
 		if err != nil {
 			return err
 		}
-		st, err := runtime.ReadState(ctx, t)
+		st, unreadable, err := runtime.ReadStateOrBlank(ctx, t)
 		if err != nil {
 			return err
 		}
 		if _, err := runtime.Reconcile(ctx, t, st); err != nil {
 			return err
 		}
+		warning := ""
+		if unreadable != nil {
+			warning = unreadable.Error()
+		}
 
 		if g.json {
-			views = append(views, releaseView{Service: name, Host: host, State: st})
+			views = append(views, releaseView{Service: name, Host: host, State: st, Warning: warning})
 			continue
 		}
 
 		fmt.Printf("\n  %s on %s\n", name, host)
+		if warning != "" {
+			fmt.Printf("    ⚠ %s\n", strings.ReplaceAll(warning, "\n", "\n      "))
+		}
 		if len(st.History) == 0 {
 			fmt.Println("    no deploys recorded")
 			continue

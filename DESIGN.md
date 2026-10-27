@@ -315,6 +315,8 @@ them:
                 ├── manifest.json    # spec snapshot, digests, deployer, timestamp
                 ├── compose.yaml     # rendered
                 ├── caddy.snippet    # rendered route, for rollback
+                ├── caddy.green.snippet  # blue-green only: the route per colour,
+                ├── caddy.blue.snippet   #   each at that colour's host port
                 ├── .env             # rendered, 0600 root:root
                 └── artifacts/
 
@@ -542,9 +544,10 @@ The rules:
   its own lock, and two waiters cannot both break the same stale one.
 - The drift check, `pilot diff` and the plan compare every file a route occupies,
   including the domain's site block.
-- The agent renders a route itself only for a blue-green rollback, and it cannot see
-  the other services. It renders a shared route when the release's own route is shared,
-  or when one of the domains already has a site block on the host.
+- The agent renders a route itself only for a blue-green release staged before routes
+  were kept per colour, and it cannot see the other services. It renders a shared route
+  when the release's own route is shared, or when one of the domains already has a site
+  block on the host.
 - `pilot doctor` reports a site block with no handles in it, and handles with no site
   block, which Caddy never serves. `pilot doctor --fix` and `pilot routes --prune`
   remove the first and rebuild the second from the handles' header.
@@ -744,7 +747,7 @@ and runs compose with `-p <svc>-<color>`. The job then:
 1. read the active color from state.json           (say: blue)
 2. compose -p api-green up -d                      new version up, taking no traffic
 3. health-check green's port directly              ← verified before any user sees it
-4. rewrite the snippet → green, caddy reload       ← graceful flip, nothing held
+4. install the release's green route, caddy reload ← graceful flip, nothing held
 5. wait drain
 6. compose -p api-blue down
 ```
@@ -764,6 +767,42 @@ Three costs, and they are constraints on the *application*, not on Pilot:
 - **Ports are declared, never inferred.** A silent port collision is an outage, so Pilot
   validates at config-load time that the two colors differ and that no other service in the
   fleet claims either.
+
+The route of a blue-green service depends on the active colour, not on the release, and
+`expose.upstream` is the container port behind both colours, so Caddy never points at it.
+The plan renders the route once per colour, at that colour's host port. The release keeps
+both, as `caddy.blue.snippet` and `caddy.green.snippet`, and its `caddy.snippet` and its
+hash are blue's. These rules follow:
+
+- The flip at step 4 installs the release's route for the colour it moves to. An agent
+  rollback is the same flip, so it installs the rolled-back release's route for that
+  colour.
+- The plan, the agent's drift check and `pilot diff` read the active colour from
+  `state.json` and compare the installed route with that colour's route. A host that
+  already runs the release is a no-op whichever colour serves it, and a stopped stack
+  is started on its colour with the route left as it is. No state means blue. A state
+  that cannot be read stops the plan and the flip, and the drift check skips the route,
+  because a guessed colour could start the new release on the stack that serves.
+- A `state.json` that exists but cannot be read is never taken for a missing one. The
+  error names the file and the remedy: move it aside, and Pilot rebuilds `current` from
+  the symlink. A rollback and `pilot releases` carry on from the symlink with a warning,
+  except a blue-green rollback, which refuses until someone sets `active_color` by hand.
+  A finished job replaces such a file with a new state, with a warning, so its outcome
+  is recorded and the next read works. Under blue-green it leaves the file alone, since
+  a new state would claim blue serves. A state that could not be reached at all is
+  never overwritten.
+- A drift pass that overlaps a job keeps no verdict, since it may read the colour and
+  the route on either side of a flip.
+- A release staged before routes were kept per colour has neither file. Releases are
+  never rewritten, so the agent renders the colour's route from the service's config,
+  and the drift check and `pilot diff` compare against the same render. An agent
+  rollback to such a release therefore reads as no drift.
+- Before routes were kept per colour, the flip installed the deploy's single route,
+  which pointed at the container port. `pilot doctor` reports such a route under
+  `bluegreen-route`. The next plan sees the route differ, and that deploy's flip
+  installs the colour's route.
+- On a shared domain both colours' routes are handles in the shared site, so a flip
+  changes only the service's own handle file.
 
 Static sites need none of this — the symlink swap is already atomic and instant. Blue/green
 is compose-only and opt-in per service.
