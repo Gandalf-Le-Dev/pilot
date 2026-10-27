@@ -74,15 +74,27 @@ var labelHead = regexp.MustCompile(`(?i)\b(?:(api[_-]?keys?|apikey|access[_-]?to
 	`private[_-]?key|secret[_-]?key|signature|sessionid|session[_-]?token|credentials?)` +
 	`((?:\\*["'])?\s*[=:]\s*(?:\\*["'])?)|(bearer)[ \t]+)`)
 
-// token68 is the form RFC 6750 gives a bearer token.
-var token68 = regexp.MustCompile(`^[A-Za-z0-9._~+/-]+=*$`)
+// token68End returns where the token68 run at i ends, the form RFC 6750 gives
+// a bearer token. Whatever follows it, such as the `]]` of a printed
+// http.Header or a closing parenthesis, is not part of the token.
+func token68End(s string, i int) int {
+	for i < len(s) && (s[i] >= 'a' && s[i] <= 'z' || s[i] >= 'A' && s[i] <= 'Z' ||
+		s[i] >= '0' && s[i] <= '9' || strings.IndexByte("._~+/-", s[i]) >= 0) {
+		i++
+	}
+	for i < len(s) && s[i] == '=' {
+		i++
+	}
+	return i
+}
 
-// bearerToken reports whether the word after `Bearer ` is a token rather than
-// the next word of a sentence about bearer tokens: token68 in form, and with a
-// digit or symbol in it, or too long to be a word.
+// bearerToken reports whether the token68 run after `Bearer ` is a token
+// rather than the next word of a sentence about bearer tokens: it holds a
+// digit or symbol, a full stop ending the sentence aside, or is too long to
+// be a word.
 func bearerToken(v string) bool {
-	return token68.MatchString(v) &&
-		(len(v) >= 20 || strings.ContainsFunc(v, func(r rune) bool { return !unicode.IsLetter(r) }))
+	v = strings.TrimRight(v, ".")
+	return len(v) >= 20 || strings.ContainsFunc(v, func(r rune) bool { return !unicode.IsLetter(r) })
 }
 
 // minLabelledLength is the shortest value a labelled match reports.
@@ -113,7 +125,7 @@ func findLabelled(text string) []labelledValue {
 			end = valueEnd(text, start, text[loc[4]:loc[5]])
 		} else {
 			label = text[loc[6]:loc[7]]
-			end = unquotedEnd(text, start)
+			end = token68End(text, start)
 			if !bearerToken(text[start:end]) {
 				continue
 			}

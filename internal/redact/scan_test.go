@@ -276,7 +276,15 @@ func TestScanFindsABearerHeader(t *testing.T) {
 	if len(got) != 1 || got[0].Kind != KindLabelled || got[0].Label != "bearer" {
 		t.Errorf("got %+v, want one labelled bearer match", got)
 	}
-	if got := Scan("the request needs a Bearer token", nil); len(got) != 0 {
+	for _, line := range []string{
+		"headers=map[Authorization:[Bearer abc123def456]]",
+		"(Bearer abc123def456)",
+	} {
+		if got := Scan(line, nil); len(got) != 1 || got[0].Label != "bearer" {
+			t.Errorf("Scan(%q) = %+v, want one labelled bearer match", line, got)
+		}
+	}
+	if got := Scan("the request needs a Bearer token.", nil); len(got) != 0 {
 		t.Errorf("reported prose about bearer tokens: %+v", got)
 	}
 }

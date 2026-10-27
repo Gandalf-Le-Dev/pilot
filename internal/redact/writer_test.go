@@ -296,13 +296,17 @@ func TestTextRedactsAValueThatStartsAfterTheOneBefore(t *testing.T) {
 // about bearer tokens must not lose its next word.
 func TestTextRedactsABearerHeader(t *testing.T) {
 	cases := map[string]string{
-		"Authorization: Bearer abcdefgh123":          "Authorization: Bearer " + Placeholder,
-		"authorization=bearer eyJhbGciOi.x.y, next":  "authorization=bearer " + Placeholder + ", next",
-		"Bearer abcdefghijklmnopqrstuvwxyz":          "Bearer " + Placeholder,
-		"Bearer: abcdefgh":                           "Bearer: " + Placeholder,
-		"the request needs a Bearer token":           "the request needs a Bearer token",
-		"Bearer authentication failed for user root": "Bearer authentication failed for user root",
-		"rejected: Bearer <redacted>":                "rejected: Bearer <redacted>",
+		"Authorization: Bearer abcdefgh123":                "Authorization: Bearer " + Placeholder,
+		"authorization=bearer eyJhbGciOi.x.y, next":        "authorization=bearer " + Placeholder + ", next",
+		"Bearer abcdefghijklmnopqrstuvwxyz":                "Bearer " + Placeholder,
+		"Bearer: abcdefgh":                                 "Bearer: " + Placeholder,
+		"the request needs a Bearer token":                 "the request needs a Bearer token",
+		"Bearer authentication failed for user root":       "Bearer authentication failed for user root",
+		"rejected: Bearer <redacted>":                      "rejected: Bearer <redacted>",
+		"headers=map[Authorization:[Bearer abc123def456]]": "headers=map[Authorization:[Bearer " + Placeholder + "]]",
+		"(Bearer abc123def456)":                            "(Bearer " + Placeholder + ")",
+		"Bearer abc123def456==; next":                      "Bearer " + Placeholder + "; next",
+		"the request needs a Bearer token.":                "the request needs a Bearer token.",
 	}
 	for line, want := range cases {
 		if got := Text(line, nil); got != want {
