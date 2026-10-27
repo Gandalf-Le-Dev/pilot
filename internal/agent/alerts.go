@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/alert"
@@ -267,7 +266,7 @@ func (a *Agent) readings(ctx context.Context, rules []alert.Rule) map[string]ale
 
 func readsMemory(rules []alert.Rule) bool {
 	return slices.ContainsFunc(rules, func(r alert.Rule) bool {
-		return strings.HasPrefix(string(r.Cond.Metric), "host.mem.")
+		return r.Cond.Metric == alert.MemUsedPct || r.Cond.Metric == alert.MemFreePct
 	})
 }
 
