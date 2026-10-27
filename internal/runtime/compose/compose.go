@@ -309,15 +309,17 @@ func containers(ctx context.Context, t *runtime.Target, psOut string) ([]runtime
 }
 
 // setSince leaves Since zero when inspect fails: an age is cosmetic, and a
-// failed observation is not.
+// failed observation is not. A non-zero exit is not a failure on its own:
+// inspect still prints every container it found, so one removed since ps
+// should not blank the others.
 func setSince(ctx context.Context, t *runtime.Target, instances []runtime.Instance, refs []string) {
-	args := []string{"docker", "inspect", "--type", "container", "--format", inspectFormat}
 	named := slices.DeleteFunc(slices.Clone(refs), func(ref string) bool { return ref == "" })
 	if len(named) == 0 {
 		return
 	}
-	res, err := t.Client.Run(ctx, transport.Join(append(args, named...)...))
-	if err != nil || !res.OK() {
+	args := append([]string{"docker", "inspect", "--type", "container", "--format", inspectFormat}, named...)
+	res, err := t.Client.Run(ctx, transport.Join(args...))
+	if err != nil {
 		return
 	}
 	entries, err := parseInspect([]byte(res.Stdout))

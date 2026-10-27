@@ -370,3 +370,24 @@ func TestServiceSince(t *testing.T) {
 		})
 	}
 }
+
+// docker inspect prints what it found and exits 1 for the rest, so a container
+// removed between ps and inspect must not blank every other age.
+func TestObserveKeepsAgesWhenAContainerVanished(t *testing.T) {
+	tg, rec := bgTarget(t, "green")
+	rec.psOut = `{"ID":"aaa111","Name":"web-green-web-1","State":"running"}
+{"ID":"bbb222","Name":"web-green-worker-1","State":"running"}`
+	rec.inspectOut = `{"id":"aaa111ffff","name":"/web-green-web-1","running":true,"started":"2026-10-07T18:00:40Z","finished":"0001-01-01T00:00:00Z"}`
+	rec.inspectFail = true
+
+	obs, err := New().Observe(context.Background(), tg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 10, 7, 18, 0, 40, 0, time.UTC); !obs.Instances[0].Since.Equal(want) {
+		t.Errorf("since = %v, want %v", obs.Instances[0].Since, want)
+	}
+	if !obs.Instances[1].Since.IsZero() {
+		t.Errorf("vanished container since = %v, want zero", obs.Instances[1].Since)
+	}
+}

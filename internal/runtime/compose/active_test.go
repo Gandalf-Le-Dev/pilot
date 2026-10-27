@@ -32,7 +32,7 @@ func (r *recorder) Run(ctx context.Context, cmd string) (transport.Result, error
 		return transport.Result{Stdout: r.psOut}, nil
 	case strings.HasPrefix(cmd, "docker inspect"):
 		if r.inspectFail {
-			return transport.Result{ExitCode: 1, Stderr: "Error: No such object"}, nil
+			return transport.Result{ExitCode: 1, Stdout: r.inspectOut, Stderr: "Error: No such object"}, nil
 		}
 		return transport.Result{Stdout: r.inspectOut}, nil
 	case strings.HasPrefix(cmd, "readlink"):
