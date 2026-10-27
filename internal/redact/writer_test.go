@@ -180,15 +180,40 @@ func TestTextStillRedactsPwdAsPassword(t *testing.T) {
 	}
 }
 
-// An escaped quote is part of a JSON string, so stopping there would leave the
-// rest of the value in the line. An escaped backslash before the closing quote
-// must still end it, or the redaction would run on into the next field.
-func TestTextRedactsJSONValuesWithEscapes(t *testing.T) {
+// A quoted value runs to its own closing quote. An escaped quote does not
+// close it, or the rest of the value would stay in the line. A backslash only
+// escapes the character after it, so an escaped backslash right before the
+// closing quote leaves that quote, and the next field, intact.
+func TestTextRedactsQuotedValuesWhole(t *testing.T) {
 	cases := map[string]string{
-		`{"pwd":"\/x\"=secret"}`:                `{"pwd":"` + Placeholder + `"}`,
-		`{"password":"ab\"cd","user":"root"}`:   `{"password":"` + Placeholder + `","user":"root"}`,
-		`{"password":"abc\\","user":"root"}`:    `{"password":"` + Placeholder + `","user":"root"}`,
-		`{"password":"a\\\"b\\","user":"root"}`: `{"password":"` + Placeholder + `","user":"root"}`,
+		`{"pwd":"\/x\"=secret"}`:                 `{"pwd":"` + Placeholder + `"}`,
+		`{"password":"ab\"cd","user":"root"}`:    `{"password":"` + Placeholder + `","user":"root"}`,
+		`{"password":"abc\\","user":"root"}`:     `{"password":"` + Placeholder + `","user":"root"}`,
+		`{"password":"ab\\","user":"root"}`:      `{"password":"` + Placeholder + `","user":"root"}`,
+		`{"password":"a\\\"b\\","user":"root"}`:  `{"password":"` + Placeholder + `","user":"root"}`,
+		`password='ab\'cdefg' user=root`:         `password='` + Placeholder + `' user=root`,
+		`{"password":"ab&cdefgh","user":"root"}`: `{"password":"` + Placeholder + `","user":"root"}`,
+		`{"password":"hunter 22 x","n":1}`:       `{"password":"` + Placeholder + `","n":1}`,
+		`password: "a, b; c}" next`:              `password: "` + Placeholder + `" next`,
+		"password=\"hunter 22\nuser=root":        "password=\"" + Placeholder + "\nuser=root",
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+// Without a quote there is nothing to say where a value ends, so the usual
+// delimiters still do.
+func TestTextStopsUnquotedValuesAtDelimiters(t *testing.T) {
+	cases := map[string]string{
+		"password=hunter22 user=root":    "password=" + Placeholder + " user=root",
+		"/cb?token=abcdef&next=1":        "/cb?token=" + Placeholder + "&next=1",
+		"api_key=abcdef,user=root":       "api_key=" + Placeholder + ",user=root",
+		"secret: abcdef; user: root":     "secret: " + Placeholder + "; user: root",
+		`{"password":12345678,"n":1}`:    `{"password":` + Placeholder + `,"n":1}`,
+		"password=abc user=hunter22 xyz": "password=abc user=hunter22 xyz",
 	}
 	for line, want := range cases {
 		if got := Text(line, nil); got != want {

@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Kind is how a match was recognised. The distinction matters for how much to
@@ -53,21 +54,76 @@ type Match struct {
 	Count int `json:"count"`
 }
 
-// labelled matches `name=value` and `name: value` where the name says secret.
+// labelHead matches `name=value` and `name: value` where the name says
+// secret, up to the value: the name, then the separator with any quote that
+// opens the value.
 //
 // Curated rather than clever. A bare `key=` is excluded because it is far too
 // common in ordinary log output to be evidence of anything, and a check that
 // cries wolf gets switched off.
-// Three groups, not two: the separator is captured so redaction can put the
-// value back as a placeholder while leaving `api_key=` intact. A log line that
-// says a key was passed and does not say which is still useful for debugging;
-// one with the whole pair removed is not.
-// The value takes `\"` and `\\` as one character each, so a JSON string with an
-// escaped quote is redacted whole rather than up to that quote.
-var labelled = regexp.MustCompile(`(?i)\b(api[_-]?keys?|apikey|access[_-]?token|refresh[_-]?token|` +
+// The separator is kept apart so redaction can put the value back as a
+// placeholder while leaving `api_key=` intact. A log line that says a key was
+// passed and does not say which is still useful for debugging; one with the
+// whole pair removed is not.
+var labelHead = regexp.MustCompile(`(?i)\b(api[_-]?keys?|apikey|access[_-]?token|refresh[_-]?token|` +
 	`id[_-]?token|auth[_-]?token|bearer|token|passwords?|passwd|pwd|secrets?|client[_-]?secret|` +
 	`private[_-]?key|secret[_-]?key|signature|sessionid|session[_-]?token|credentials?)` +
-	`(["']?\s*[=:]\s*["']?)((?:\\["\\]|[^"'\s&,;}]){4,})`)
+	`(["']?\s*[=:]\s*["']?)`)
+
+// minLabelledLength is the shortest value a labelled match reports.
+const minLabelledLength = 4
+
+// labelledValue is one value found after a labelHead.
+type labelledValue struct {
+	label      string
+	start, end int
+}
+
+// findLabelled returns each labelled value in text, in order and without
+// overlap: a name inside a value already taken is part of that value.
+func findLabelled(text string) []labelledValue {
+	var out []labelledValue
+	taken := 0
+	for _, loc := range labelHead.FindAllStringSubmatchIndex(text, -1) {
+		if loc[0] < taken {
+			continue
+		}
+		start := loc[1]
+		end := valueEnd(text, start, text[loc[4]:loc[5]])
+		if utf8.RuneCountInString(text[start:end]) < minLabelledLength {
+			continue
+		}
+		out = append(out, labelledValue{label: text[loc[2]:loc[3]], start: start, end: end})
+		taken = end
+	}
+	return out
+}
+
+// valueEnd finds where the value starting at i ends. A value opened by a quote
+// runs to the matching unescaped quote, spaces and commas included, so none of
+// it is left behind; one never closed runs to the end of the line. An
+// unquoted value stops at the first character that cannot be part of one.
+func valueEnd(s string, i int, sep string) int {
+	q := sep[len(sep)-1]
+	if q != '"' && q != '\'' {
+		for i < len(s) && !strings.ContainsRune("\"'&,;} \t\n\f\r", rune(s[i])) {
+			i++
+		}
+		return i
+	}
+	escaped := false
+	for ; i < len(s) && s[i] != '\n'; i++ {
+		switch c := s[i]; {
+		case escaped:
+			escaped = false
+		case c == '\\':
+			escaped = true
+		case c == q:
+			return i
+		}
+	}
+	return i
+}
 
 // formats are values that cannot plausibly be anything but a credential.
 //
@@ -130,12 +186,11 @@ const minKnownLength = 6
 func Scan(text string, known map[string]string) []Match {
 	counts := map[Match]int{}
 
-	for _, m := range labelled.FindAllStringSubmatch(text, -1) {
-		if harmless(m[1], m[3]) {
+	for _, v := range findLabelled(text) {
+		if harmless(v.label, text[v.start:v.end]) {
 			continue
 		}
-		key := Match{Kind: KindLabelled, Label: strings.ToLower(m[1])}
-		counts[key]++
+		counts[Match{Kind: KindLabelled, Label: strings.ToLower(v.label)}]++
 	}
 
 	for _, f := range formats {

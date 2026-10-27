@@ -37,13 +37,18 @@ func Text(s string, known map[string]string) string {
 	}
 
 	// Labelled parameters: keep the name and separator, replace the value.
-	s = labelled.ReplaceAllStringFunc(s, func(match string) string {
-		m := labelled.FindStringSubmatch(match)
-		if harmless(m[1], m[3]) {
-			return match // already redacted, or not a secret; rewriting it would churn
+	var b strings.Builder
+	last := 0
+	for _, v := range findLabelled(s) {
+		if harmless(v.label, s[v.start:v.end]) {
+			continue // already redacted, or not a secret; rewriting it would churn
 		}
-		return m[1] + m[2] + Placeholder
-	})
+		b.WriteString(s[last:v.start])
+		b.WriteString(Placeholder)
+		last = v.end
+	}
+	b.WriteString(s[last:])
+	s = b.String()
 
 	// Formats that can only be credentials.
 	for _, f := range formats {

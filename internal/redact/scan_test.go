@@ -214,11 +214,28 @@ func TestPwdStillMeansPassword(t *testing.T) {
 		`{"pwd":"\\/hunter22"}`:        "pwd",
 		`pwd=/x\u003dhunter22`:         "pwd",
 		`{"pwd":"\/x\"=secret"}`:       "pwd",
+		`{"pwd":"/var/lib x=secret"}`:  "pwd",
 	}
 	for line, want := range cases {
 		got := Scan(line, nil)
 		if len(got) != 1 || got[0].Kind != KindLabelled || got[0].Label != want {
 			t.Errorf("Scan(%q) = %+v, want one labelled %s match", line, got, want)
+		}
+	}
+}
+
+// A quoted value runs to its closing quote, so a short first word, or an
+// escaped quote, does not hide the rest of it from doctor.
+func TestScanReadsQuotedValuesWhole(t *testing.T) {
+	for _, line := range []string{
+		`password='ab\'cdefg'`,
+		`{"password":"ab&cdefgh"}`,
+		`{"password":"ab cdefgh"}`,
+		`{"password":"ab\"cdefgh"}`,
+	} {
+		got := Scan(line, nil)
+		if len(got) != 1 || got[0].Kind != KindLabelled || got[0].Label != "password" {
+			t.Errorf("Scan(%q) = %+v, want one labelled password match", line, got)
 		}
 	}
 }
