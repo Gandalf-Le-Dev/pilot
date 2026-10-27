@@ -176,3 +176,27 @@ func TestIsStreamNeedsAFile(t *testing.T) {
 		t.Error("a buffer matched stderr's stream")
 	}
 }
+
+// The runtime prints a panic with no priority, so the log must carry it at
+// error level, with the stack, before the panic goes on and kills the process.
+func TestLogPanicLogsAtErrorAndPanicsOn(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(NewHandler(&buf, "pilotd", true))
+
+	defer func() {
+		if v := recover(); v != "boom" {
+			t.Errorf("recovered %v, want the panic to go on as boom", v)
+		}
+		out := buf.String()
+		if !strings.HasPrefix(out, `<3>pilotd: level=ERROR msg="exiting on panic" panic=boom stack=`) {
+			t.Errorf("got %q, want the panic logged at error priority", out)
+		}
+		if !strings.Contains(out, "TestLogPanicLogsAtErrorAndPanicsOn") {
+			t.Errorf("got %q, want the stack of the panicking goroutine", out)
+		}
+	}()
+	func() {
+		defer LogPanic(log)
+		panic("boom")
+	}()
+}

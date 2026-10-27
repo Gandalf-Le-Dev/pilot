@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Gandalf-Le-Dev/pilot/internal/journal"
 	"github.com/Gandalf-Le-Dev/pilot/internal/statuspage"
 )
 
@@ -78,6 +79,7 @@ func serve(ctx context.Context, s *Server, publicLn, ingestLn, localLn net.Liste
 
 	if tailnet != nil {
 		go func() {
+			defer journal.LogPanic(slog.Default())
 			if ln, err := tailnet(ctx); err == nil {
 				run(ingest, ln)
 			}
@@ -87,6 +89,7 @@ func serve(ctx context.Context, s *Server, publicLn, ingestLn, localLn net.Liste
 	watching := make(chan struct{})
 	go func() {
 		defer close(watching)
+		defer journal.LogPanic(slog.Default())
 		s.WatchSilence(ctx)
 	}()
 	slog.Info("serving", "page", publicLn.Addr(), "reports", ingestLn.Addr(), "hosts", len(s.hosts))

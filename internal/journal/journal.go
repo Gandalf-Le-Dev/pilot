@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +58,18 @@ func isStream(stream string, w io.Writer) bool {
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	return ok && uint64(st.Dev) == wantDev && st.Ino == wantIno
+}
+
+// LogPanic, deferred at the top of a goroutine, logs a panic at error level
+// before letting it go on. The runtime's own report reaches the journal with
+// no priority, so `journalctl -p err` would miss it. A panic passes through
+// only the deferred calls of its own goroutine, so each long-lived one needs
+// this.
+func LogPanic(log *slog.Logger) {
+	if v := recover(); v != nil {
+		log.Error("exiting on panic", "panic", v, "stack", string(debug.Stack()))
+		panic(v)
+	}
 }
 
 type handler struct {

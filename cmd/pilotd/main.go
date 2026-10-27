@@ -26,7 +26,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime/debug"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -122,7 +121,7 @@ func newServeCmd(setLog func(*slog.Logger)) *cobra.Command {
 func daemon(name string, setLog func(*slog.Logger), run func(*cobra.Command) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
 		log := daemonLog(cmd, name, setLog)
-		defer logPanic(log)
+		defer journal.LogPanic(log)
 		return logExit(log, run(cmd))
 	}
 }
@@ -143,16 +142,6 @@ func logExit(log *slog.Logger, err error) error {
 	}
 	log.Error("exiting", "err", err)
 	return loggedError{err}
-}
-
-// logPanic logs a panic before letting it go on. The runtime's own report
-// reaches the journal with no priority, so `journalctl -p err` would miss it.
-// Only this goroutine's panics pass through here.
-func logPanic(log *slog.Logger) {
-	if v := recover(); v != nil {
-		log.Error("exiting on panic", "panic", v, "stack", string(debug.Stack()))
-		panic(v)
-	}
 }
 
 // newServerCmd takes the euid as a function so a test can show the root
