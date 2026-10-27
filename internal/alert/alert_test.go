@@ -142,17 +142,6 @@ func TestEveryKnownOpCompares(t *testing.T) {
 	}
 }
 
-func TestEveryValueFormParses(t *testing.T) {
-	if len(ValueForms()) != len(valueForms) {
-		t.Fatalf("ValueForms lists %d forms, valueForms has %d", len(ValueForms()), len(valueForms))
-	}
-	for _, f := range valueForms {
-		if _, err := Parse("service.restarts > " + f.example); err != nil {
-			t.Errorf("value form %s (%q) does not parse: %v", f.name, f.example, err)
-		}
-	}
-}
-
 // Every numeric metric is a count or a percentage, so a threshold is digits
 // with an optional fraction. NaN would make a rule that never fires.
 func TestThresholdsArePlainDecimals(t *testing.T) {

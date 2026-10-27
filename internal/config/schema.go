@@ -36,8 +36,8 @@ func SchemaFingerprint() string {
 }
 
 // SchemaFields returns the fingerprint's input: one `path type` line per
-// decodable field, plus one `alert.metric`, `alert.op`, or `alert.value` line
-// per rule metric, operator, and threshold form, sorted.
+// decodable field, one `alert.metric` and `alert.op` line per rule metric and
+// operator, and one `alert.value` line for the threshold pattern, sorted.
 //
 // Exported so the test that pins the fingerprint can diff against a recorded
 // copy and name the field that moved. "The schema changed, bump the version"
@@ -61,9 +61,7 @@ func SchemaFields() []string {
 	for _, op := range alert.KnownOps() {
 		lines = append(lines, "alert.op "+op)
 	}
-	for _, form := range alert.ValueForms() {
-		lines = append(lines, "alert.value "+form)
-	}
+	lines = append(lines, "alert.value "+alert.ThresholdPattern)
 	sort.Strings(lines)
 	return lines
 }

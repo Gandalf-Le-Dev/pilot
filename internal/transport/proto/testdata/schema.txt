@@ -16,8 +16,7 @@ alert.op <=
 alert.op ==
 alert.op >
 alert.op >=
-alert.value decimal
-alert.value integer
+alert.value ^[0-9]+(\.[0-9]+)?$
 fleet.alerts []struct
 fleet.alerts.cooldown int64
 fleet.alerts.for int64

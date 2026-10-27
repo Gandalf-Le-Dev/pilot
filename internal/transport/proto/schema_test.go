@@ -186,9 +186,7 @@ func TestSchemaCoversAlertGrammar(t *testing.T) {
 			t.Errorf("schema does not record the alert operator %q", op)
 		}
 	}
-	for _, form := range alert.ValueForms() {
-		if !slices.Contains(fields, "alert.value "+form) {
-			t.Errorf("schema does not record the alert value form %q", form)
-		}
+	if !slices.Contains(fields, "alert.value "+alert.ThresholdPattern) {
+		t.Errorf("schema does not record the threshold pattern %q", alert.ThresholdPattern)
 	}
 }

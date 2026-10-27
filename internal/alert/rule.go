@@ -131,23 +131,6 @@ const ThresholdPattern = `^[0-9]+(\.[0-9]+)?$`
 
 var threshold = regexp.MustCompile(ThresholdPattern)
 
-// valueForms names each shape of threshold the parser accepts. The examples
-// are tested to parse.
-var valueForms = []struct{ name, example string }{
-	{"integer", "10"},
-	{"decimal", "15.5"},
-}
-
-// ValueForms lists the names of the threshold forms the parser accepts, sorted.
-func ValueForms() []string {
-	out := make([]string, 0, len(valueForms))
-	for _, f := range valueForms {
-		out = append(out, f.name)
-	}
-	sort.Strings(out)
-	return out
-}
-
 // Condition is a parsed rule expression.
 type Condition struct {
 	Metric Metric
