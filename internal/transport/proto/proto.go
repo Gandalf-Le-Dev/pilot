@@ -65,7 +65,11 @@ import (
 // on every pushed host-wide config, so `pilot doctor` can find a host whose
 // config is older than the fleet's. An older agent would report none, and
 // doctor would push config at it forever.
-const Version = 11
+//
+// Version 12 added the `host.mem.used_pct` and `host.mem.free_pct` alert
+// metrics. An older agent accepts the pushed config, then drops each such rule
+// on parse, so the metric names now count toward SchemaDigest too.
+const Version = 12
 
 // SchemaDigest pins the configuration schema this protocol version speaks.
 //
@@ -79,7 +83,7 @@ const Version = 11
 //     decodes): update this digest alone.
 //
 // The choice is deliberately yours. What is not optional is making it.
-const SchemaDigest = "048e70524c15bc55"
+const SchemaDigest = "64cf8c6b9e453e6e"
 
 const (
 	// DefaultSocket is where the daemon listens. A Unix socket rather than a

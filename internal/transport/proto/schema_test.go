@@ -163,3 +163,15 @@ func TestSchemaCoversNestedFields(t *testing.T) {
 		t.Error("no field is nested two levels deep; the walk stops too early")
 	}
 }
+
+// TestSchemaCoversAlertMetrics: a rule's `when` is a string to the field walk,
+// but the agent parses it, and an old agent drops a rule on a metric it does
+// not know. Adding a metric must move the digest like adding a field does.
+func TestSchemaCoversAlertMetrics(t *testing.T) {
+	fields := config.SchemaFields()
+	for _, m := range []string{"host.disk.used_pct", "host.mem.used_pct"} {
+		if !slices.ContainsFunc(fields, func(f string) bool { return strings.HasSuffix(f, " "+m) }) {
+			t.Errorf("schema does not record the alert metric %q", m)
+		}
+	}
+}
