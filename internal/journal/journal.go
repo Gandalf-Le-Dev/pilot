@@ -28,13 +28,17 @@ func NewHandler(w io.Writer, name string, priorities bool) slog.Handler {
 	}
 }
 
-// OnStderr reports whether stderr is connected to the journal. systemd sets
-// JOURNAL_STREAM to that stream's device and inode, and comparing them with
-// stderr's own tells a unit's stderr from a child that inherited the variable
-// but not the stream.
-func OnStderr() bool { return onJournal(os.Getenv("JOURNAL_STREAM"), os.Stderr) }
+// OnJournal reports whether w is the stream systemd connected to the journal.
+// systemd sets JOURNAL_STREAM to that stream's device and inode, and comparing
+// them with w's own tells a unit's stderr from a child that inherited the
+// variable but not the stream. Only an *os.File can be the stream.
+func OnJournal(w io.Writer) bool { return isStream(os.Getenv("JOURNAL_STREAM"), w) }
 
-func onJournal(stream string, f *os.File) bool {
+func isStream(stream string, w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
 	dev, ino, ok := strings.Cut(stream, ":")
 	if !ok {
 		return false

@@ -126,7 +126,7 @@ func TestHandlerPriorityHoldsUnderConcurrency(t *testing.T) {
 	}
 }
 
-func TestOnJournal(t *testing.T) {
+func TestIsStream(t *testing.T) {
 	f, err := os.Create(filepath.Join(t.TempDir(), "stream"))
 	if err != nil {
 		t.Fatal(err)
@@ -152,9 +152,27 @@ func TestOnJournal(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			if got := onJournal(tt.env, f); got != tt.want {
-				t.Errorf("onJournal(%q) = %v, want %v", tt.env, got, tt.want)
+			if got := isStream(tt.env, f); got != tt.want {
+				t.Errorf("isStream(%q) = %v, want %v", tt.env, got, tt.want)
 			}
 		})
+	}
+}
+
+// A command's stderr can be swapped for a buffer, which is never the journal
+// even when the process's own stderr is.
+func TestIsStreamNeedsAFile(t *testing.T) {
+	fi, err := os.Stderr.Stat()
+	if err != nil {
+		t.Skip("stderr cannot be stat'ed:", err)
+	}
+	st := fi.Sys().(*syscall.Stat_t)
+	stream := fmt.Sprintf("%d:%d", st.Dev, st.Ino)
+
+	if !isStream(stream, os.Stderr) {
+		t.Fatal("stderr does not match its own device and inode")
+	}
+	if isStream(stream, &bytes.Buffer{}) {
+		t.Error("a buffer matched stderr's stream")
 	}
 }

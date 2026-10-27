@@ -131,7 +131,8 @@ func daemon(name string, setLog func(*slog.Logger), run func(*cobra.Command) err
 // as lines attributed to name. Only the daemons call it: ctl's stderr goes
 // back to the CLI over SSH, not the journal.
 func daemonLog(cmd *cobra.Command, name string, setLog func(*slog.Logger)) *slog.Logger {
-	log := slog.New(journal.NewHandler(cmd.ErrOrStderr(), name, journal.OnStderr()))
+	w := cmd.ErrOrStderr()
+	log := slog.New(journal.NewHandler(w, name, journal.OnJournal(w)))
 	setLog(log)
 	return log
 }
