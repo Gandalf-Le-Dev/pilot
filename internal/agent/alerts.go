@@ -135,6 +135,8 @@ func (a *Agent) rebuildNotifiers() {
 //
 // Rules that fail to parse are skipped with a log line rather than aborting the
 // sweep — one bad expression must not silence alerting for everything else.
+// The line comes once per expression while it stays configured, not every
+// sweep.
 func (a *Agent) Rules() []alert.Rule {
 	a.mu.RLock()
 	fc := a.fleet
@@ -145,12 +147,26 @@ func (a *Agent) Rules() []alert.Rule {
 	a.mu.RUnlock()
 
 	var out []alert.Rule
+	var bad []unparsed
+
+	add := func(subject string, c config.Alert) {
+		cond, err := alert.Parse(c.When)
+		if err != nil {
+			bad = append(bad, unparsed{subject, c.When, err})
+			return
+		}
+		out = append(out, alert.Rule{
+			Subject:  subject,
+			Cond:     cond,
+			For:      c.For.Duration(),
+			Cooldown: c.Cooldown.Duration(),
+			Notify:   c.Notify,
+		})
+	}
 
 	if fc != nil {
 		for _, r := range fc.Alerts {
-			if rule, ok := a.toRule("", r); ok {
-				out = append(out, rule)
-			}
+			add("", r)
 		}
 	}
 	for _, name := range a.ServiceNames() {
@@ -159,27 +175,33 @@ func (a *Agent) Rules() []alert.Rule {
 			continue
 		}
 		for _, r := range s.Alerts {
-			if rule, ok := a.toRule(name, r); ok {
-				out = append(out, rule)
-			}
+			add(name, r)
 		}
 	}
+	a.warnSkipped(bad)
 	return out
 }
 
-func (a *Agent) toRule(subject string, c config.Alert) (alert.Rule, bool) {
-	cond, err := alert.Parse(c.When)
-	if err != nil {
-		a.log().Warn("skipping alert", "when", c.When, "err", err)
-		return alert.Rule{}, false
+type unparsed struct {
+	subject, when string
+	err           error
+}
+
+// warnSkipped logs each unparseable rule not already logged. A rule that
+// leaves the config is forgotten, so it is logged again if it comes back.
+func (a *Agent) warnSkipped(bad []unparsed) {
+	a.skippedMu.Lock()
+	defer a.skippedMu.Unlock()
+
+	now := make(map[string]bool, len(bad))
+	for _, u := range bad {
+		key := u.subject + "\x00" + u.when
+		now[key] = true
+		if !a.skipped[key] {
+			a.log().Warn("skipping alert", "when", u.when, "err", u.err)
+		}
 	}
-	return alert.Rule{
-		Subject:  subject,
-		Cond:     cond,
-		For:      c.For.Duration(),
-		Cooldown: c.Cooldown.Duration(),
-		Notify:   c.Notify,
-	}, true
+	a.skipped = now
 }
 
 // alertLoop evaluates rules on a schedule.
