@@ -554,6 +554,25 @@ api → web-1
   strategy  recreate (≈3s, held by Caddy retry)
 ```
 
+The release hash covers artifacts, environment, route and runtime. Some configuration
+takes effect only when a release is staged or activated, and the hash does not cover it:
+`unit.name`, `unit.kind`, `unit.timer`, `unit.links`, `unit.precheck`, `compose.project`,
+and the blue-green `rollout.strategy`, `rollout.service` and `rollout.ports`. Each
+manifest records these values under `activation`, and the plan compares them with the
+live release. A change to any of them is a change, and the deploy ships a new release.
+A release from an older Pilot has no record. If the service has any of these values,
+its first deploy after the upgrade ships once to record them. The same happens after a
+rollback to a release whose record differs from the current configuration: the next
+deploy ships once. Health checks, rollout pacing, alerts and `manage` are read from the
+current definition each time, so they need no deploy.
+
+Compose scopes containers by project, and the runtime never stops a project it is not
+deploying. A new `compose.project` leaves the old project running, and if both publish
+the same port the new one cannot start. A switch between `recreate` and `blue-green`
+leaves the old stack, or both colours, running. The plan shows a warning for each
+case, with the `docker compose -p <project> down` command that cleans up. In `--json`,
+the host carries them in `warnings`.
+
 **stage** — ship the release directory (rsync over SSH, or tar-over-stdin), then
 `pilotd ctl stage`: pull images, render `.env`, validate units, `caddy validate`. Nothing
 user-visible has changed. Any failure aborts with zero impact.

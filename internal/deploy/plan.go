@@ -3,10 +3,13 @@
 package deploy
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -16,6 +19,8 @@ import (
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/runtime"
+	"github.com/Gandalf-Le-Dev/pilot/internal/runtime/compose"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
 // RouteAction is what a deploy will do to a service's Caddy route.
@@ -43,6 +48,8 @@ type Plan struct {
 	Snippet   string `json:"-"`
 	RouteHash string `json:"route_hash,omitempty"`
 
+	Activation map[string]string `json:"activation,omitempty"`
+
 	Hosts []HostPlan `json:"hosts"`
 
 	// NoHealthGate is set when nothing will verify the result: the service has
@@ -62,6 +69,9 @@ type HostPlan struct {
 
 	// Changes lists what differs from the release currently live there.
 	Changes []Change `json:"changes,omitempty"`
+
+	// Warnings name what the deploy will leave for a human to clean up.
+	Warnings []string `json:"warnings,omitempty"`
 
 	// NoOp is set when the host already runs exactly this release and the
 	// deploy leaves it alone.
@@ -137,6 +147,8 @@ func Compute(ctx context.Context, in Input) (*Plan, error) {
 		LocalDir:  in.Build.Dir,
 		EnvKeys:   sortedKeys(in.Env),
 		EnvHash:   release.HashMap(in.Env),
+
+		Activation: activation(s),
 
 		NoHealthGate: in.SkipVerify || s.Health == nil || s.Health.Probes() == 0,
 	}
@@ -219,6 +231,7 @@ func planHost(ctx context.Context, in Input, p *Plan, host string) (HostPlan, er
 	}
 
 	hp.Changes = diff(prev, p)
+	hp.Warnings = leftBehind(in.Service, hp.Changes)
 	if len(hp.Changes) == 0 && hp.Route == RouteNone {
 		// Nothing new ships, so the release that stays live is the current
 		// one, not the sequence number this plan would have used.
@@ -313,11 +326,138 @@ func diff(prev *release.Manifest, p *Plan) []Change {
 		}
 	}
 
+	for _, a := range prev.Artifacts {
+		if !slices.ContainsFunc(p.Artifacts, func(b release.Artifact) bool { return b.Name == a.Name }) {
+			out = append(out, Change{Field: a.Name, From: shortDigest(a.Digest), To: "removed"})
+		}
+	}
+
 	if prev.EnvHash != p.EnvHash {
 		out = append(out, Change{Field: "env", From: describeEnvChange(prev.EnvKeys, p.EnvKeys)})
 	}
 	if prev.RouteHash != p.RouteHash {
 		out = append(out, Change{Field: "route", From: "changed"})
+	}
+	out = append(out, diffActivation(prev, p)...)
+
+	// Whatever else the hash covers, a different hash is a different release.
+	if len(out) == 0 && prev.Hash != p.Hash {
+		out = append(out, Change{Field: "release", From: prev.Release, To: p.Release})
+	}
+	return out
+}
+
+// diffActivation reports changes to configuration that only a stage or an
+// activation applies.
+func diffActivation(prev *release.Manifest, p *Plan) []Change {
+	if prev.Activation == nil {
+		// A release from before the record. Deploying once records it, and
+		// the plan says why rather than showing every field as new.
+		if len(p.Activation) == 0 {
+			return nil
+		}
+		return []Change{{Field: "activation", From: "not recorded by the live release"}}
+	}
+
+	keys := map[string]bool{}
+	for k := range prev.Activation {
+		keys[k] = true
+	}
+	for k := range p.Activation {
+		keys[k] = true
+	}
+	var out []Change
+	for _, k := range slices.Sorted(maps.Keys(keys)) {
+		if prev.Activation[k] != p.Activation[k] {
+			out = append(out, Change{Field: k, From: prev.Activation[k], To: p.Activation[k]})
+		}
+	}
+	return out
+}
+
+// leftBehind warns about activation changes the runtime does not finish on its
+// own. Compose scopes containers by project, so a deploy under a new project
+// name, or a new strategy, starts new containers and never touches the old.
+func leftBehind(s *config.Service, changes []Change) []string {
+	project := s.Name
+	if s.Compose != nil {
+		project = cmp.Or(s.Compose.Project, s.Name)
+	}
+	oldProject := project
+	strategyChanged := false
+	for _, c := range changes {
+		switch c.Field {
+		case "compose.project":
+			oldProject = cmp.Or(c.From, s.Name)
+		case "rollout.strategy":
+			strategyChanged = true
+		}
+	}
+
+	var out []string
+	for _, c := range changes {
+		switch c.Field {
+		case "compose.project":
+			// Blue-green names its stacks after the service, and a strategy
+			// switch has its own warning naming the old stack.
+			if s.Rollout.IsBlueGreen() || strategyChanged {
+				continue
+			}
+			out = append(out, fmt.Sprintf("compose project %s → %s leaves %s running, and if both "+
+				"publish the same port, %s cannot start. Stop the old one: docker compose -p %s down",
+				oldProject, project, oldProject, project, oldProject))
+		case "rollout.strategy":
+			if c.To == config.StrategyBlueGreen {
+				out = append(out, fmt.Sprintf("switching to blue-green leaves the recreate stack %s running. "+
+					"Once the new colour serves, stop it: docker compose -p %s down", oldProject, oldProject))
+				continue
+			}
+			blue := compose.ColorProject(s.Name, config.ColorBlue)
+			green := compose.ColorProject(s.Name, config.ColorGreen)
+			out = append(out, fmt.Sprintf("leaving blue-green leaves the %s and %s stacks running, and they "+
+				"can hold ports %s needs. Stop them: docker compose -p %s down; docker compose -p %s down",
+				blue, green, project, blue, green))
+		}
+	}
+	return out
+}
+
+// activation collects the configuration that a stage or an activation reads,
+// and that the release hash does not cover. Health checks, pacing, alerts and
+// `manage` are absent: they are read from the current definition each time.
+func activation(s *config.Service) map[string]string {
+	out := map[string]string{}
+	set := func(k, v string) {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	if u := s.Unit; u != nil {
+		set("unit.name", u.Name)
+		// Omitting `kind` means a service; recording it as written would make
+		// adding `kind: service` look like a change.
+		kind := u.Kind
+		if kind == "" {
+			kind = config.UnitService
+		}
+		set("unit.kind", string(kind))
+		set("unit.timer", u.Timer)
+		set("unit.precheck", transport.Join(u.Precheck...))
+		var links []string
+		for _, dst := range slices.Sorted(maps.Keys(u.Links)) {
+			links = append(links, dst+" -> "+u.Links[dst])
+		}
+		set("unit.links", strings.Join(links, ", "))
+	}
+	if s.Compose != nil {
+		set("compose.project", s.Compose.Project)
+	}
+	// Recreate is the default and needs nothing staged. Blue-green stages a
+	// port override per colour and starts different compose projects.
+	if r := s.Rollout; r.IsBlueGreen() {
+		set("rollout.strategy", r.Strategy)
+		set("rollout.service", r.Service)
+		set("rollout.ports", strings.Trim(fmt.Sprint(r.Ports), "[]"))
 	}
 	return out
 }
@@ -382,6 +522,7 @@ func (p *Plan) Manifest(host string) *release.Manifest {
 		EnvKeys:    p.EnvKeys,
 		EnvHash:    p.EnvHash,
 		RouteHash:  p.RouteHash,
+		Activation: p.Activation,
 	}
 	if p.Service.Source != nil {
 		m.Source = &release.SourceRef{

@@ -48,6 +48,10 @@ func Plan(w io.Writer, p *deploy.Plan) {
 			strategy = p.Service.Rollout.Strategy
 		}
 		fmt.Fprintf(w, "    strategy   %s%s\n", strategy, blipNote(p))
+
+		for _, warning := range hp.Warnings {
+			fmt.Fprintf(w, "    ! warning  %s\n", warning)
+		}
 	}
 
 	if p.Commit != "" {

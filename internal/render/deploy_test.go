@@ -108,3 +108,20 @@ func TestNothingToDoNamesAHostLeftStopped(t *testing.T) {
 		})
 	}
 }
+
+// What a deploy leaves for a human to clean up has to be on screen before they
+// say yes, not discovered afterwards as a port clash.
+func TestPlanShowsWarnings(t *testing.T) {
+	var buf bytes.Buffer
+	Plan(&buf, &deploy.Plan{
+		Service: &config.Service{Name: "kite"},
+		Hosts: []deploy.HostPlan{{
+			Host: "vps", From: "0042-9f3ac1b", To: "0043-9f3ac1b",
+			Changes:  []deploy.Change{{Field: "compose.project", From: "kite", To: "kite-2"}},
+			Warnings: []string{"compose project kite → kite-2 leaves kite running"},
+		}},
+	})
+	if !strings.Contains(buf.String(), "! warning  compose project kite → kite-2 leaves kite running") {
+		t.Errorf("plan output lacks the warning:\n%s", buf.String())
+	}
+}

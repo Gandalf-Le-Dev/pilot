@@ -77,7 +77,7 @@ func (e *Executor) Run(ctx context.Context, p *Plan) ([]Outcome, error) {
 			e.Log("  %s: already running %s, nothing to do", hp.Host, hp.To)
 
 			// The release is unchanged, but the spec may not be. `health`,
-			// `manage` and `rollout` are not part of the release hash, so
+			// `manage` and rollout pacing are not part of the release hash, so
 			// editing one leaves the deploy a no-op — while the agent goes on
 			// observing, probing and alerting with whatever it was last given.
 			//

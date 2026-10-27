@@ -258,7 +258,7 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 		render.NothingToDo(os.Stdout, plan)
 
 		// The release is unchanged; the definition may not be. `health`,
-		// `manage`, `rollout` and `alerts` are all outside the release hash, so
+		// `manage`, rollout pacing and `alerts` are all outside the release hash, so
 		// editing one produces exactly this no-op — and the agent keeps
 		// observing, probing and alerting with whatever it was last handed.
 		//
