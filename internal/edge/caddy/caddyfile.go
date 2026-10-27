@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -167,6 +168,38 @@ func BindUsage(content string) (siteBind, defaultBind bool) {
 		}
 	}
 	return siteBind, defaultBind
+}
+
+// ExactPaths returns the site addresses in a snippet whose path matches only
+// itself: a path with no wildcard and no `/*` sibling in the same block.
+//
+// Caddy reads a path in a site address as an exact match, so such a route
+// serves the literal path and every request below it gets an empty 200. Older
+// Pilot releases rendered `path: /v1/*` this way, and such a snippet stays on
+// the host until the service is next deployed.
+func ExactPaths(snippet string) []string {
+	var exact []string
+	depth := 0
+	for raw := range strings.SplitSeq(snippet, "\n") {
+		line, delta := scanLine(raw)
+		header := depth == 0 && strings.HasSuffix(strings.TrimSpace(line), "{")
+		depth += delta
+		if !header {
+			continue
+		}
+
+		addrs := strings.FieldsFunc(strings.TrimSuffix(strings.TrimSpace(line), "{"), func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\t'
+		})
+		for _, addr := range addrs {
+			_, p, ok := strings.Cut(addr, "/")
+			if !ok || strings.HasSuffix(p, "*") || slices.Contains(addrs, addr+"/*") {
+				continue
+			}
+			exact = append(exact, addr)
+		}
+	}
+	return exact
 }
 
 // AppendImport returns content with the import directive appended. It is the

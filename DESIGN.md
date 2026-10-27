@@ -393,10 +393,17 @@ knowing about, so `pilot doctor` reports it rather than silently re-appending.
 # reverse proxy
 expose:
   domains: [api.example.com]
-  path: /v1/*                 # optional; default /*
+  path: /v1/*                 # optional prefix; /v1 and /v1/* both mean /v1 and below
   upstream: 8080              # container's loopback-published port
   timeouts: { read: 60s }
 ```
+
+`path` is always a prefix. Caddy reads a path in a site address as an exact match, and
+`/v1/*` does not match bare `/v1`, so Pilot renders two addresses per domain:
+`api.example.com/v1, api.example.com/v1/*`. A single `/v1*` would also catch `/v1beta`.
+`/`, `/*` and an empty path all mean the whole domain. Validation accepts only URL path
+characters, with `*` allowed only as a trailing `/*`. Caddy does not strip the prefix, so
+the upstream receives the full request path.
 
 ```yaml
 # static site
@@ -483,9 +490,18 @@ Ordering rules:
 - Containers fronted by Caddy must publish on **loopback** (`127.0.0.1:8080:8080`), not
   `0.0.0.0`. Pilot validates this at stage time and refuses a service that exposes a port
   to the world while also being proxied — that's a real hole worth catching mechanically.
-- Two services can share a domain via distinct path matchers (`example.com/api/*` and
-  `example.com`), because path is part of a Caddyfile site address. Pilot detects genuine
-  address collisions at plan time, before anything ships.
+- Two services can share a domain via distinct path prefixes (`path: /api` and none),
+  because path is part of a Caddyfile site address: each service keeps its own blocks.
+  Caddy orders site blocks by their longest host first and compares path length only
+  between equal hosts, so Pilot renders one block per domain. Within one domain the
+  deeper path then wins. A block that mixed domains would let a long second domain
+  outrank a deeper path on a shorter shared one.
+- A `handle` inside one block per domain would read better, but two services' files
+  cannot both declare the bare domain. Caddy 2.10 logs a deprecation warning for every
+  path in a site address. Moving off it means one generated file per domain, tracked in
+  docket #124.
+- Pilot detects genuine collisions at plan time, before anything ships, comparing the
+  normalised prefix, so `/api` and `/api/*` on one domain collide.
 - First deploy of a new domain triggers ACME issuance, which can fail if DNS isn't pointed
   yet. So health checks come in two flavours: `health:` probes the app on localhost, and
   `expose.verify: true` probes the public URL through Caddy. Distinguishing "app is up"

@@ -278,6 +278,46 @@ func TestValidateExpose(t *testing.T) {
 			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"v1/*\", upstream: 8080}\n",
 			"expose.path", "must start with /",
 		},
+		{
+			"path wildcard mid-path",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1/*/x\", upstream: 8080}\n",
+			"expose.path", "wildcard other than a trailing /*",
+		},
+		{
+			"path wildcard without slash",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1*\", upstream: 8080}\n",
+			"expose.path", "wildcard other than a trailing /*",
+		},
+		{
+			"path with a newline",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1\\n}\", upstream: 8080}\n",
+			"expose.path", "cannot sit in a Caddy site address",
+		},
+		{
+			"path with a quote",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1\\\"x\", upstream: 8080}\n",
+			"expose.path", "cannot sit in a Caddy site address",
+		},
+		{
+			"path with a backtick",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1`x\", upstream: 8080}\n",
+			"expose.path", "cannot sit in a Caddy site address",
+		},
+		{
+			"path with a control character",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1\\tx\", upstream: 8080}\n",
+			"expose.path", "cannot sit in a Caddy site address",
+		},
+		{
+			"path with a query",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1?a=b\", upstream: 8080}\n",
+			"expose.path", "cannot sit in a Caddy site address",
+		},
+		{
+			"path with a space",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1 /v2\", upstream: 8080}\n",
+			"expose.path", "cannot sit in a Caddy site address",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -285,6 +325,34 @@ func TestValidateExpose(t *testing.T) {
 			if findDiag(ds, tc.field, tc.want) == nil {
 				t.Errorf("want %s: %q; got:\n%v", tc.field, tc.want, ds.Sorted())
 			}
+		})
+	}
+}
+
+// A raw non-ASCII path passed before the allowlist, so the hint must say how
+// to spell it now.
+func TestValidateExposePathHintsPercentEncoding(t *testing.T) {
+	_, ds := load(t, baseFleet, map[string]string{
+		"x.yaml": "name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\n" +
+			"expose: {domains: [a.com], path: \"/café\", upstream: 8080}\n",
+	})
+	d := findDiag(ds, "expose.path", "cannot sit in a Caddy site address")
+	if d == nil {
+		t.Fatalf("want an expose.path error; got:\n%v", ds.Sorted())
+	}
+	if !strings.Contains(d.Hint, "/caf%C3%A9") {
+		t.Errorf("hint %q should show the percent-encoded spelling", d.Hint)
+	}
+}
+
+func TestValidateExposeAcceptsPathSpellings(t *testing.T) {
+	for _, path := range []string{"/", "/*", "/v1", "/v1/", "/v1/*", "/v1/admin/*", "/@user/a-b_c.d~e/%20/*", "/caf%C3%A9"} {
+		t.Run(path, func(t *testing.T) {
+			_, ds := load(t, baseFleet, map[string]string{
+				"x.yaml": "name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nhealth: {docker: true}\n" +
+					"expose: {domains: [a.com], path: \"" + path + "\", upstream: 8080}\n",
+			})
+			assertNoErrors(t, ds)
 		})
 	}
 }
@@ -360,6 +428,16 @@ func TestRouteCollisions(t *testing.T) {
 			"b.yaml": svc("b", "web-1", "shared.example.com", ""),
 		})
 		assertNoErrors(t, ds)
+	})
+
+	t.Run("both spellings of one prefix collide", func(t *testing.T) {
+		_, ds := load(t, baseFleet, map[string]string{
+			"a.yaml": svc("a", "web-1", "shared.example.com", "/api/*"),
+			"b.yaml": svc("b", "web-1", "shared.example.com", "/api"),
+		})
+		if findDiag(ds, "expose.domains", "also claimed by") == nil {
+			t.Fatalf("expected a collision; got:\n%v", ds.Sorted())
+		}
 	})
 }
 
@@ -522,19 +600,23 @@ func TestDurationUnmarshal(t *testing.T) {
 	}
 }
 
-func TestSiteAddresses(t *testing.T) {
+func TestRoutes(t *testing.T) {
 	tests := []struct {
 		name string
 		e    Expose
 		want []string
 	}{
 		{"bare domain", Expose{Domains: []string{"a.com"}}, []string{"a.com"}},
-		{"with path", Expose{Domains: []string{"a.com"}, Path: "/api/*"}, []string{"a.com/api"}},
+		{"wildcard path", Expose{Domains: []string{"a.com"}, Path: "/api/*"}, []string{"a.com/api"}},
+		{"bare path", Expose{Domains: []string{"a.com"}, Path: "/api"}, []string{"a.com/api"}},
+		{"trailing slash", Expose{Domains: []string{"a.com"}, Path: "/api/"}, []string{"a.com/api"}},
+		{"root wildcard", Expose{Domains: []string{"a.com"}, Path: "/*"}, []string{"a.com"}},
+		{"root", Expose{Domains: []string{"a.com"}, Path: "/"}, []string{"a.com"}},
 		{"multi domain", Expose{Domains: []string{"a.com", "b.com"}}, []string{"a.com", "b.com"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.e.SiteAddresses()
+			got := tc.e.Routes()
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}

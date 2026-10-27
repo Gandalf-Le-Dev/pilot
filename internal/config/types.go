@@ -465,15 +465,22 @@ func InTailnet(ip net.IP) bool {
 // IsStatic reports whether this route is served from disk rather than proxied.
 func (e *Expose) IsStatic() bool { return e.Static != nil }
 
-// SiteAddresses returns the Caddyfile site addresses this route claims, which
-// is what collision detection compares across services.
-func (e *Expose) SiteAddresses() []string {
-	path := strings.TrimSuffix(e.Path, "/*")
-	addrs := make([]string, 0, len(e.Domains))
+// PathPrefix returns the subtree this route serves, with no trailing slash or
+// wildcard, so `/v1` and `/v1/*` both mean /v1 and everything under it. Empty
+// means the whole domain.
+func (e *Expose) PathPrefix() string {
+	return strings.TrimRight(strings.TrimSuffix(e.Path, "/*"), "/")
+}
+
+// Routes returns each domain joined with PathPrefix: the claims collision
+// detection compares across services.
+func (e *Expose) Routes() []string {
+	prefix := e.PathPrefix()
+	routes := make([]string, 0, len(e.Domains))
 	for _, d := range e.Domains {
-		addrs = append(addrs, d+path)
+		routes = append(routes, d+prefix)
 	}
-	return addrs
+	return routes
 }
 
 type StaticExpose struct {

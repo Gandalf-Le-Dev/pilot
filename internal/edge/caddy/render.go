@@ -65,52 +65,64 @@ func Render(in Input) (string, error) {
 	fmt.Fprintf(&b, "# managed by pilot — service: %s — do not edit\n", in.Service)
 	fmt.Fprintf(&b, "# edits are reverted on the next deploy; change services/%s.yaml instead\n", in.Service)
 
-	fmt.Fprintf(&b, "%s {\n", siteAddress(e))
+	var body strings.Builder
 	if len(in.Bind) > 0 {
-		fmt.Fprintf(&b, "\tbind %s\n", strings.Join(in.Bind, " "))
+		fmt.Fprintf(&body, "\tbind %s\n", strings.Join(in.Bind, " "))
 	}
-	b.WriteString("\tencode gzip zstd\n")
+	body.WriteString("\tencode gzip zstd\n")
 
 	// A restricted route wraps its body so anything outside the allowed
 	// networks is closed on rather than served. `abort` rather than `respond
 	// 403` is deliberate: a closed connection tells a scanner nothing.
 	if e.Restricted() {
-		fmt.Fprintf(&b, "\t@allowed remote_ip %s\n", strings.Join(e.Allow, " "))
-		b.WriteString("\thandle @allowed {\n")
-		var body strings.Builder
+		fmt.Fprintf(&body, "\t@allowed remote_ip %s\n", strings.Join(e.Allow, " "))
+		body.WriteString("\thandle @allowed {\n")
+		var inner strings.Builder
 		if e.IsStatic() {
-			renderStatic(&body, e, in.Root)
+			renderStatic(&inner, e, in.Root)
 		} else {
-			renderProxy(&body, e)
+			renderProxy(&inner, e)
 		}
-		for line := range strings.SplitSeq(strings.TrimRight(body.String(), "\n"), "\n") {
-			fmt.Fprintf(&b, "\t%s\n", line)
+		for line := range strings.SplitSeq(strings.TrimRight(inner.String(), "\n"), "\n") {
+			fmt.Fprintf(&body, "\t%s\n", line)
 		}
-		b.WriteString("\t}\n\thandle {\n\t\tabort\n\t}\n")
+		body.WriteString("\t}\n\thandle {\n\t\tabort\n\t}\n")
 	} else if e.IsStatic() {
-		renderStatic(&b, e, in.Root)
+		renderStatic(&body, e, in.Root)
 	} else {
-		renderProxy(&b, e)
+		renderProxy(&body, e)
 	}
 
 	if raw := strings.TrimRight(e.Raw, "\n"); raw != "" {
-		b.WriteString("\n")
-		writeRaw(&b, raw)
+		body.WriteString("\n")
+		writeRaw(&body, raw)
 	}
 
-	b.WriteString("}\n")
+	// One block per domain, because Caddy orders site blocks by their longest
+	// host before their longest path. A block holding a long second domain
+	// would outrank a deeper path on a shorter shared one, and a bare-domain
+	// block would swallow every path service on that domain.
+	for i, d := range e.Domains {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "%s {\n%s}\n", siteAddress(d, e.PathPrefix()), body.String())
+	}
 	return b.String(), nil
 }
 
-// siteAddress builds the Caddyfile site address line. Multiple domains are
-// comma-separated; the path suffix, if any, applies to all of them.
-func siteAddress(e *config.Expose) string {
-	path := strings.TrimSuffix(e.Path, "/*")
-	addrs := make([]string, 0, len(e.Domains))
-	for _, d := range e.Domains {
-		addrs = append(addrs, d+path)
+// siteAddress builds the Caddyfile site address line for one domain.
+//
+// A path in a site address matches exactly, and `/v1/*` does not match bare
+// `/v1`, so a prefix takes both addresses; `/v1*` would also catch `/v1beta`.
+// The path stays in the address rather than in a `handle` because services
+// sharing a domain each own a file, and two blocks for one bare domain is a
+// Caddy error.
+func siteAddress(domain, prefix string) string {
+	if prefix == "" {
+		return domain
 	}
-	return strings.Join(addrs, ", ")
+	return domain + prefix + ", " + domain + prefix + "/*"
 }
 
 func renderProxy(b *strings.Builder, e *config.Expose) {

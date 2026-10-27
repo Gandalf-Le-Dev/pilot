@@ -50,7 +50,8 @@ func TestRenderProxyWithPathAndTimeouts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"a.example.com/v1, b.example.com/v1 {",
+		"a.example.com/v1, a.example.com/v1/* {",
+		"\nb.example.com/v1, b.example.com/v1/* {",
 		"\t\tdial_timeout 5s\n",
 		"\t\tread_timeout 1m0s\n",
 	} {
@@ -60,6 +61,105 @@ func TestRenderProxyWithPathAndTimeouts(t *testing.T) {
 	}
 	if strings.Contains(got, "write_timeout") {
 		t.Error("unset timeout should be omitted entirely")
+	}
+}
+
+// A path in a Caddy site address is an exact match, so `example.com/v1` alone
+// serves only `/v1` and every request below it falls through to an empty 200.
+// Both spellings of a path must render the bare path and its subtree.
+func TestRenderPathIsPrefix(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"", "api.example.com {\n"},
+		{"/", "api.example.com {\n"},
+		{"/*", "api.example.com {\n"},
+		{"/v1", "api.example.com/v1, api.example.com/v1/* {\n"},
+		{"/v1/", "api.example.com/v1, api.example.com/v1/* {\n"},
+		{"/v1/*", "api.example.com/v1, api.example.com/v1/* {\n"},
+		{"/v1/admin/*", "api.example.com/v1/admin, api.example.com/v1/admin/* {\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			got, err := Render(Input{
+				Service: "api",
+				Expose:  &config.Expose{Domains: []string{"api.example.com"}, Path: tc.path, Upstream: 8080},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(got, "\n"+tc.want) {
+				t.Errorf("want site line %q in:\n%s", tc.want, got)
+			}
+		})
+	}
+}
+
+// Path-split routing gives each service on a shared domain its own block, so
+// the blocks must never repeat an address; Caddy rejects that as ambiguous.
+func TestRenderSharedDomainBlocksAreDistinct(t *testing.T) {
+	seen := map[string]string{}
+	for _, svc := range []struct{ name, path string }{{"site", ""}, {"api", "/api/*"}, {"admin", "/api/admin"}} {
+		got, err := Render(Input{
+			Service: svc.name,
+			Expose:  &config.Expose{Domains: []string{"example.com"}, Path: svc.path, Upstream: 8080},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(got, "\n") {
+			if !strings.HasSuffix(line, " {") || strings.HasPrefix(line, "\t") {
+				continue
+			}
+			for addr := range strings.SplitSeq(strings.TrimSuffix(line, " {"), ", ") {
+				if other, dup := seen[addr]; dup {
+					t.Errorf("%s and %s both claim %q", other, svc.name, addr)
+				}
+				seen[addr] = svc.name
+			}
+		}
+	}
+}
+
+// Caddy ranks site blocks by their longest host before their longest path, so
+// a block mixing domains lets a long second domain outrank a deeper path on a
+// shorter shared one. Each block must hold exactly one host.
+func TestRenderOneBlockPerDomain(t *testing.T) {
+	domains := []string{"x.com", "verylongdomain.example.com"}
+	for _, path := range []string{"", "/v1/*"} {
+		got, err := Render(Input{
+			Service: "api",
+			Expose:  &config.Expose{Domains: domains, Path: path, Upstream: 8080, Allow: []string{"100.64.0.0/10"}},
+			Bind:    []string{"10.0.0.1"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var hosts []string
+		for _, line := range strings.Split(got, "\n") {
+			if !strings.HasSuffix(line, " {") || strings.HasPrefix(line, "\t") {
+				continue
+			}
+			host := ""
+			for addr := range strings.SplitSeq(strings.TrimSuffix(line, " {"), ", ") {
+				h, _, _ := strings.Cut(addr, "/")
+				if host != "" && h != host {
+					t.Errorf("path %q: block %q mixes hosts", path, line)
+				}
+				host = h
+			}
+			hosts = append(hosts, host)
+		}
+		if strings.Join(hosts, ",") != strings.Join(domains, ",") {
+			t.Errorf("path %q: blocks for %v, want one per domain %v:\n%s", path, hosts, domains, got)
+		}
+		if n := strings.Count(got, "\tbind 10.0.0.1\n"); n != len(domains) {
+			t.Errorf("path %q: %d bind lines, want one per block", path, n)
+		}
+		if n := strings.Count(got, "\t\tabort\n"); n != len(domains) {
+			t.Errorf("path %q: %d abort fallbacks, want one per block", path, n)
+		}
 	}
 }
 
@@ -511,5 +611,46 @@ func TestBindUsage(t *testing.T) {
 				t.Errorf("BindUsage = (%v, %v), want (%v, %v)", site, deflt, tc.site, tc.deflt)
 			}
 		})
+	}
+}
+
+func TestExactPaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		snippet string
+		want    []string
+	}{
+		{"no path", "api.example.com {\n\treverse_proxy :8080\n}\n", nil},
+		{"old exact render", "# managed by pilot\napi.example.com/v1, b.example.com/v1 {\n\tencode gzip zstd\n}\n",
+			[]string{"api.example.com/v1", "b.example.com/v1"}},
+		{"exact root", "api.example.com/ {\n}\n", []string{"api.example.com/"}},
+		{"prefix pair", "api.example.com/v1, api.example.com/v1/* {\n}\n", nil},
+		{"wildcard only", "api.example.com/v1/* {\n}\n", nil},
+		{"nested block is not a site", "api.example.com {\n\thandle /v1 {\n\t\trespond ok\n\t}\n}\n", nil},
+		{"commented header", "# api.example.com/v1 {\napi.example.com {\n}\n", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExactPaths(tc.snippet)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("ExactPaths = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Whatever Render produces must pass the check that flags the old bug.
+func TestRenderedPathsAreNeverExact(t *testing.T) {
+	for _, path := range []string{"", "/", "/*", "/v1", "/v1/", "/v1/*"} {
+		got, err := Render(Input{
+			Service: "api",
+			Expose:  &config.Expose{Domains: []string{"a.example.com", "b.example.com"}, Path: path, Upstream: 8080},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if exact := ExactPaths(got); len(exact) > 0 {
+			t.Errorf("path %q rendered exact matchers %v", path, exact)
+		}
 	}
 }

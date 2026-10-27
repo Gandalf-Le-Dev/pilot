@@ -58,6 +58,9 @@ rollout:
 expose:
   domains: [api.example.com]
   upstream: 8080
+
+  # A prefix: /v1 and everything under it. `/v1` alone means the same. Caddy
+  # passes the full path through, so the app sees /v1/... unchanged.
   path: /v1/*
 
   timeouts:
