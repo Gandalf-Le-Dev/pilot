@@ -168,6 +168,9 @@ func Parse(expr string) (Condition, error) {
 		if op == OpNone {
 			return Condition{}, fmt.Errorf("%s is a number; compare it, e.g. `%s > 3`", name, name)
 		}
+		if neg, ok := strings.CutPrefix(valueStr, "-"); ok && threshold.MatchString(neg) {
+			return Condition{}, fmt.Errorf("%q in %q cannot be negative: every number a rule reads is a count or a percentage", valueStr, raw)
+		}
 		if !threshold.MatchString(valueStr) {
 			return Condition{}, fmt.Errorf("%q is not a number in %q; write digits, e.g. 10 or 15.5", valueStr, raw)
 		}
