@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -90,21 +91,20 @@ func newServeCmd(setLog func(*slog.Logger)) *cobra.Command {
 		Use:   "serve",
 		Short: "Run the agent daemon",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			log := daemonLog(cmd, "pilotd", setLog)
+		RunE: daemon("pilotd", setLog, func(cmd *cobra.Command) error {
 			a, err := agent.New(agent.Options{
 				Root: root, Host: host, Build: version,
 				Caddyfile: caddyfile, Snippets: snippets, Admin: admin,
 			})
 			if err != nil {
-				return logExit(log, err)
+				return err
 			}
 
 			// Background loops start before the socket does, so the first
 			// status query already has something to report.
 			a.StartLoops(cmd.Context())
-			return logExit(log, a.Serve(cmd.Context(), socket))
-		},
+			return a.Serve(cmd.Context(), socket)
+		}),
 	}
 
 	cmd.Flags().StringVar(&socket, "socket", proto.DefaultSocket, "unix socket to listen on")
@@ -115,6 +115,16 @@ func newServeCmd(setLog func(*slog.Logger)) *cobra.Command {
 	cmd.Flags().StringVar(&admin, "caddy-admin", "", "Caddy admin API base URL")
 
 	return cmd
+}
+
+// daemon runs a daemon command with its log installed, and files the way it
+// ends, a returned error or a panic, in that log at error level.
+func daemon(name string, setLog func(*slog.Logger), run func(*cobra.Command) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, _ []string) error {
+		log := daemonLog(cmd, name, setLog)
+		defer logPanic(log)
+		return logExit(log, run(cmd))
+	}
 }
 
 // daemonLog sends this process's log, the log package's included, to stderr
@@ -134,6 +144,16 @@ func logExit(log *slog.Logger, err error) error {
 	return loggedError{err}
 }
 
+// logPanic logs a panic before letting it go on. The runtime's own report
+// reaches the journal with no priority, so `journalctl -p err` would miss it.
+// Only this goroutine's panics pass through here.
+func logPanic(log *slog.Logger) {
+	if v := recover(); v != nil {
+		log.Error("exiting on panic", "panic", v, "stack", string(debug.Stack()))
+		panic(v)
+	}
+}
+
 // newServerCmd takes the euid as a function so a test can show the root
 // check runs before anything is read: the configuration holds notifier
 // credentials, and root should be turned away before it touches them.
@@ -144,10 +164,9 @@ func newServerCmd(euid func() int, setLog func(*slog.Logger)) *cobra.Command {
 		Use:   "server",
 		Short: "Serve the public status page and take reports from agents",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			log := daemonLog(cmd, "pilotd server", setLog)
-			return logExit(log, runServer(cmd.Context(), euid, configPath))
-		},
+		RunE: daemon("pilotd server", setLog, func(cmd *cobra.Command) error {
+			return runServer(cmd.Context(), euid, configPath)
+		}),
 	}
 	cmd.Flags().StringVar(&configPath, "config", "",
 		"configuration file (default: "+server.CredentialName+" in $CREDENTIALS_DIRECTORY)")

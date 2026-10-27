@@ -108,3 +108,31 @@ func TestLoggedErrorKeepsItsCause(t *testing.T) {
 		t.Errorf("errors.Is(%v, %v) = false, want the cause visible through the logged error", err, cause)
 	}
 }
+
+// The runtime prints a panic with no journal priority, so a daemon that dies
+// of one must say so in its log at error level first.
+func TestDaemonLogsAPanicBeforeDying(t *testing.T) {
+	t.Setenv("JOURNAL_STREAM", "")
+	var stderr bytes.Buffer
+	cmd := &cobra.Command{
+		Use:  "serve",
+		RunE: daemon("pilotd", discardLog, func(*cobra.Command) error { panic("boom") }),
+	}
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs(nil)
+
+	defer func() {
+		if v := recover(); v != "boom" {
+			t.Errorf("recovered %v, want the panic to go on as boom", v)
+		}
+		out := stderr.String()
+		if !strings.HasPrefix(out, "pilotd: level=ERROR msg=\"exiting on panic\" panic=boom stack=") {
+			t.Errorf("got %q, want the panic logged at error level", out)
+		}
+		if !strings.Contains(out, "TestDaemonLogsAPanicBeforeDying") {
+			t.Errorf("got %q, want the stack of the panicking goroutine", out)
+		}
+	}()
+	_ = cmd.Execute()
+}
