@@ -96,6 +96,21 @@ var placeholders = map[string]bool{
 	"<redacted>": true, "[redacted]": true, "changeme": true, "your_api_key": true,
 }
 
+// harmless reports whether a labelled match reveals nothing, given the label
+// and the raw captured value.
+//
+// A pwd that is an absolute path is a working directory: sudo writes
+// `PWD=/srv/app ; USER=root` into the journal of every unit that calls it, and
+// reporting that taught people to skip the check. Only pwd is excused, since a
+// password or token may start with a slash.
+func harmless(label, raw string) bool {
+	value := strings.Trim(raw, `"'`)
+	if placeholders[strings.ToLower(value)] {
+		return true
+	}
+	return strings.EqualFold(label, "pwd") && strings.HasPrefix(value, "/")
+}
+
 // minKnownLength is the shortest supplied value worth searching for.
 //
 // A short secret is still a secret, but a two- or three-character value occurs
@@ -115,8 +130,7 @@ func Scan(text string, known map[string]string) []Match {
 	counts := map[Match]int{}
 
 	for _, m := range labelled.FindAllStringSubmatch(text, -1) {
-		value := strings.Trim(m[3], `"'`)
-		if placeholders[strings.ToLower(value)] {
+		if harmless(m[1], m[3]) {
 			continue
 		}
 		key := Match{Kind: KindLabelled, Label: strings.ToLower(m[1])}

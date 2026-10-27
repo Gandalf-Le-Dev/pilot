@@ -179,3 +179,30 @@ func TestIsSecretNameRejectsLocations(t *testing.T) {
 		}
 	}
 }
+
+// sudoAudit is a journald line from a unit that runs sudo. PWD there is the
+// working directory, and reporting it trained people to ignore the check.
+const sudoAudit = `gh-runner : PWD=/var/lib/gh-runner/work/hopbox/hopbox ; USER=root ; COMMAND=/usr/bin/pkill -f foo`
+
+func TestSudoWorkingDirectoryIsNotAPassword(t *testing.T) {
+	if got := Scan(sudoAudit, nil); len(got) != 0 {
+		t.Errorf("reported sudo's working directory as a credential: %+v", got)
+	}
+}
+
+// TestPwdStillMeansPassword — only a path is excused, and only under pwd. A
+// password can start with a slash.
+func TestPwdStillMeansPassword(t *testing.T) {
+	cases := map[string]string{
+		"pwd=hunter22":          "pwd",
+		"PWD=hunter22":          "pwd",
+		"password=/notapath123": "password",
+		"token=/notapath123":    "token",
+	}
+	for line, want := range cases {
+		got := Scan(line, nil)
+		if len(got) != 1 || got[0].Kind != KindLabelled || got[0].Label != want {
+			t.Errorf("Scan(%q) = %+v, want one labelled %s match", line, got, want)
+		}
+	}
+}
