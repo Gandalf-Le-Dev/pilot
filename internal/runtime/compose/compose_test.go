@@ -340,3 +340,33 @@ func TestObserveColorDatesContainersFromLastStop(t *testing.T) {
 		t.Errorf("since = %v, want the last stop %v", obs.Instances[0].Since, want)
 	}
 }
+
+// A one-shot migrate container that exited weeks ago must not age a stack whose
+// web container started today.
+func TestServiceSince(t *testing.T) {
+	today := time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)
+	later := today.Add(time.Hour)
+	weeksAgo := today.AddDate(0, 0, -21)
+	inst := func(state string, since time.Time) runtime.Instance {
+		return runtime.Instance{Name: "c", State: state, Since: since}
+	}
+
+	tests := []struct {
+		name      string
+		instances []runtime.Instance
+		want      time.Time
+	}{
+		{"none", nil, time.Time{}},
+		{"earliest running start", []runtime.Instance{inst("running", later), inst("running", today)}, today},
+		{"ignores stopped when any run", []runtime.Instance{inst("running", today), inst("exited", weeksAgo)}, today},
+		{"skips running without a start", []runtime.Instance{inst("running", time.Time{}), inst("running", today)}, today},
+		{"earliest stop when none run", []runtime.Instance{inst("exited", today), inst("exited", weeksAgo)}, weeksAgo},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := serviceSince(tc.instances); !got.Equal(tc.want) {
+				t.Errorf("serviceSince = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

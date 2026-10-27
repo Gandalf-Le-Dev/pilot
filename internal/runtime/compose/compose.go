@@ -159,7 +159,7 @@ func (r *Runtime) Observe(ctx context.Context, t *runtime.Target) (runtime.Obser
 	}
 	obs.Instances = instances
 	obs.State, obs.Detail = summarise(instances, current)
-	obs.Since = earliestStart(instances)
+	obs.Since = serviceSince(instances)
 	return obs, nil
 }
 
@@ -201,10 +201,16 @@ func summarise(instances []runtime.Instance, current string) (runtime.State, str
 	return runtime.StateRunning, ""
 }
 
-func earliestStart(instances []runtime.Instance) time.Time {
+// serviceSince is the earliest start among running containers, so an old
+// one-shot that exited long ago does not age a stack started today. Only when
+// nothing runs does it fall back to the earliest stop.
+func serviceSince(instances []runtime.Instance) time.Time {
+	anyRunning := slices.ContainsFunc(instances, func(in runtime.Instance) bool {
+		return strings.EqualFold(in.State, "running")
+	})
 	var out time.Time
 	for _, in := range instances {
-		if in.Since.IsZero() {
+		if in.Since.IsZero() || anyRunning && !strings.EqualFold(in.State, "running") {
 			continue
 		}
 		if out.IsZero() || in.Since.Before(out) {
