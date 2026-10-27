@@ -85,7 +85,8 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string, force boo
 	hosts = a.StatusHostLast(hosts)
 
 	fmt.Println()
-	var failed, changed int
+	var failed, changed, tidied int
+	logf := func(f string, args ...any) { fmt.Printf("    ✔ "+f+"\n", args...) }
 
 	for _, host := range hosts {
 		// Skip hosts already running this exact build, so a fleet-wide run is
@@ -100,6 +101,13 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string, force boo
 		if rc, state, _ := a.InspectAgent(ctx, host); state == app.AgentReady && !force {
 			if info, err := rc.Check(ctx); err == nil && info.Build == version {
 				fmt.Printf("  ✔ %s already runs %s\n", host, version)
+				did, err := tidyCurrentHost(ctx, a, host, info, logf)
+				if err != nil {
+					failed++
+					fmt.Fprintf(os.Stderr, "    ✖ %v\n", err)
+				} else if did {
+					tidied++
+				}
 				continue
 			}
 		}
@@ -108,7 +116,7 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string, force boo
 		if _, err := a.SyncAgent(ctx, host, app.AgentSync{
 			Version:   version,
 			ModuleDir: moduleDir(),
-			Log:       func(f string, args ...any) { fmt.Printf("    ✔ "+f+"\n", args...) },
+			Log:       logf,
 		}); err != nil {
 			failed++
 			fmt.Fprintf(os.Stderr, "    ✖ %v\n", err)
@@ -121,10 +129,33 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string, force boo
 	if failed > 0 {
 		return exitWith(1)
 	}
-	if changed == 0 {
+	switch {
+	case changed == 0 && tidied > 0:
+		fmt.Printf("  every agent already runs pilot %s, and %d host(s) got a newer fleet config or status server\n\n", version, tidied)
+	case changed == 0:
 		fmt.Printf("  every agent already runs pilot %s\n\n", version)
 	}
 	return nil
+}
+
+// tidyCurrentHost does for a host already on this build what an upgrade
+// would beyond the binary: push a fleet config older than fleet.yaml, which
+// on the status host carries the server's configuration, and put the status
+// server where status.host says. It reports whether it changed anything.
+func tidyCurrentHost(ctx context.Context, a *app.App, host string, info *proto.Info, logf func(string, ...any)) (bool, error) {
+	want, err := a.FleetConfigDigest(host)
+	if err != nil {
+		return false, err
+	}
+	pushed := info.ConfigDigest != want
+	if pushed {
+		if err := a.PushFleetConfig(ctx, host); err != nil {
+			return false, err
+		}
+		logf("pushed the fleet config, which was older than fleet.yaml")
+	}
+	tidied, err := a.TidyStatusServer(ctx, host, logf)
+	return pushed || tidied, err
 }
 
 // agentAdapter lets `pilot doctor` inspect and repair agents without the doctor

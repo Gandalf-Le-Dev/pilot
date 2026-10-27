@@ -5,9 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
-	"slices"
-	"sort"
 	"strings"
+	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent/install"
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
@@ -20,7 +19,7 @@ import (
 // checkStatusServer covers the status page from its own host: the server
 // running, every host reporting to it, and its route as Pilot renders it.
 //
-// The page is read over SSH from loopback rather than through its domain.
+// The server is read over SSH from loopback rather than through its domain.
 // That separates "the server knows a host has gone quiet" from "the public
 // cannot reach the page", which the edge check covers on its own.
 //
@@ -67,7 +66,7 @@ func strayStatusServer(ctx context.Context, r caddy.Runner, f *config.Fleet, hos
 		Status: StatusFail, Scope: ScopeHost, Host: host,
 		Title:  fmt.Sprintf("a status server is %s here, but %s", state, why),
 		Detail: "It keeps the configuration it was last given, and alerts about every host that no longer reports to it.",
-		Hint:   "pilot agent upgrade --force " + host + " removes it too",
+		Hint:   "pilot agent upgrade " + host + " removes it too",
 		Fix: func(ctx context.Context) error {
 			_, err := install.RemoveServer(ctx, r)
 			return err
@@ -95,7 +94,7 @@ func inspectStatusServer(ctx context.Context, r caddy.Runner, f *config.Fleet, p
 			Hint:   "pilot agent upgrade " + host + ", then: journalctl -u pilot-server -n 50 --no-pager",
 		})
 	default:
-		out = append(out, readStatusPage(ctx, r, f))
+		out = append(out, readHostView(ctx, r, f))
 	}
 
 	if drift := statusRouteDrift(ctx, r, f, paths); drift != nil {
@@ -104,15 +103,15 @@ func inspectStatusServer(ctx context.Context, r caddy.Runner, f *config.Fleet, p
 	return out
 }
 
-// readStatusPage reports which hosts the server says have gone quiet.
+// readHostView reports which hosts the server says have gone quiet.
 //
-// The page names services by label and never names a host, so the hosts are
-// recovered from the fleet: every host that runs a service under a silent
-// label. Doctor runs on the operator's machine, which may know the topology;
-// the page may not.
-func readStatusPage(ctx context.Context, r caddy.Runner, f *config.Fleet) Finding {
+// It reads the server's own per-host view, on a loopback port Caddy never
+// routes to, because the public page names labels and never hosts. Mapping
+// labels back to hosts blamed every host sharing a label, hid a silent host
+// behind a down row, and never saw a host with nothing on the page.
+func readHostView(ctx context.Context, r caddy.Runner, f *config.Fleet) Finding {
 	host := f.Status.Host
-	url := fmt.Sprintf("http://127.0.0.1:%d/status.json", statuspage.PublicPort)
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", statuspage.LocalPort, server.HostsPath)
 	res, err := r.Run(ctx, transport.Join("curl", "-fsS", "--max-time", "5", url))
 	if err != nil || !res.OK() {
 		detail := ""
@@ -123,56 +122,42 @@ func readStatusPage(ctx context.Context, r caddy.Runner, f *config.Fleet) Findin
 		}
 		return Finding{
 			Status: StatusWarn, Scope: ScopeHost, Host: host,
-			Title: "status page unreadable from its host", Detail: detail,
-			Hint: "the check needs curl on " + host,
+			Title: "status server's host view unreadable from its host", Detail: detail,
+			Hint: "a server older than this pilot has none: pilot agent upgrade " + host +
+				". The check also needs curl on " + host,
 		}
 	}
 
-	var page statuspage.Page
-	if err := json.Unmarshal([]byte(res.Stdout), &page); err != nil {
+	var view server.HostsView
+	if err := json.Unmarshal([]byte(res.Stdout), &view); err != nil {
 		return Finding{
 			Status: StatusWarn, Scope: ScopeHost, Host: host,
-			Title: "status page returned something other than its JSON", Detail: firstLine(err.Error()),
+			Title: "status server's host view is not the JSON this pilot expects", Detail: firstLine(err.Error()),
 		}
 	}
 
-	byLabel := map[string][]string{}
-	for _, h := range f.HostNames() {
-		for _, name := range f.StatusServices() {
-			if slices.Contains(f.Services[name].Hosts, h) {
-				label := f.Status.Label(name)
-				byLabel[label] = append(byLabel[label], h)
-			}
-		}
-	}
-
-	quiet := map[string]bool{}
-	var labels []string
-	for _, s := range page.Services {
-		if s.State != statuspage.NotReporting {
+	var silent, since []string
+	for _, h := range view.Hosts {
+		if !h.Silent {
 			continue
 		}
-		labels = append(labels, s.Label)
-		for _, h := range byLabel[s.Label] {
-			quiet[h] = true
+		silent = append(silent, h.Host)
+		if h.Reported {
+			since = append(since, h.Host+" last reported at "+h.LastReport.UTC().Format(time.RFC3339)+".")
+		} else {
+			since = append(since, h.Host+" has not reported since the server started.")
 		}
 	}
-	if len(labels) == 0 {
+	if len(silent) == 0 {
 		return Finding{
 			Status: StatusOK, Scope: ScopeHost, Host: host,
-			Title: fmt.Sprintf("status server running, %d service(s) on the page, none silent", len(page.Services)),
+			Title: fmt.Sprintf("status server running, %d host(s) watched, none silent", len(view.Hosts)),
 		}
 	}
-
-	hosts := make([]string, 0, len(quiet))
-	for h := range quiet {
-		hosts = append(hosts, h)
-	}
-	sort.Strings(hosts)
 	return Finding{
 		Status: StatusFail, Scope: ScopeHost, Host: host,
-		Title:  "not reporting to the status page: " + strings.Join(hosts, ", "),
-		Detail: "The page shows " + strings.Join(labels, ", ") + " as not reporting.",
+		Title:  "not reporting to the status page: " + strings.Join(silent, ", "),
+		Detail: strings.Join(since, " "),
 		Hint:   "check each host's agent (journalctl -u pilotd) and its tailnet connection",
 	}
 }

@@ -1265,9 +1265,11 @@ that host from outside.
   then `Probe` for a running service). It keeps 24 hours of five-minute buckets in memory
   and posts the whole day to the server over the tailnet, with a bearer token.
 - `pilotd server` on `status.host` serves the page on 127.0.0.1:7380 behind Caddy
-  (`_status.caddy`) and takes reports on 127.0.0.1:7381 and the tailnet address. Its
-  state is memory only. Every report carries a full day, so a restarted server is
-  complete again after one interval.
+  (`_status.caddy`) and takes reports on 127.0.0.1:7381 and the tailnet address. It
+  serves a per-host view on 127.0.0.1:7382, which Caddy never routes to. `pilot doctor`
+  reads that view over SSH to name the hosts that went quiet. Its state is memory only.
+  Every report carries a full day, so a restarted server is complete again after one
+  interval.
 - A host that stops reporting for `silent_after` reads "not reporting" on the page and
   fires `host.silent` through the usual alert engine. After a restart the server waits
   `silent_after` before it calls any host silent.
@@ -1278,7 +1280,12 @@ that host from outside.
   left on any other host. The server is not a Pilot-managed service, because it must
   not depend on the deploy machinery it watches.
 - Each agent reports a digest of its cached fleet config, so `pilot doctor` finds a host
-  whose config is older than `fleet.yaml`, and `--fix` pushes it without an upgrade.
+  whose config is older than `fleet.yaml`, and `--fix` pushes it without an upgrade. On
+  `status.host` the digest also covers the server's configuration, with secrets
+  unresolved, so an edit only the server sees reads as stale there. The fix rewrites
+  the server's configuration if it changed, then pushes. If the server fails to
+  start, the agent still gets its config, stamped with the agent's half of the
+  digest only, so the host stays stale and the next `--fix` retries the server.
 
 *From tokens to mTLS.* Slice 1 authenticates with a bearer token per host:
 HMAC-SHA256 of `status.secret` and the host name. The server stores only the token

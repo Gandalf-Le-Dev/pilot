@@ -360,11 +360,17 @@ func TestPublicHandlerIsReadOnly(t *testing.T) {
 		}
 	}
 
-	// The ingest route does not exist on the public side at all.
+	// The ingest route and the host view do not exist on the public side at
+	// all: one changes state, the other names hosts.
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, statuspage.ReportPath, strings.NewReader("{}")))
 	if w.Code != http.StatusNotFound {
 		t.Errorf("POST %s on the public handler = %d, want 404", statuspage.ReportPath, w.Code)
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, HostsPath, nil))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("GET %s on the public handler = %d, want 404", HostsPath, w.Code)
 	}
 
 	w = httptest.NewRecorder()
@@ -410,3 +416,46 @@ func TestPublicOutputLeaksNothing(t *testing.T) {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// The host view names hosts, which the page cannot, and calls a host silent
+// at the moment its alert fires. A host with nothing on the page is watched
+// for silence all the same, so the view must show it too.
+func TestHostViewNamesSilentHosts(t *testing.T) {
+	clk := &clock{t: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}
+	s := New(Config{
+		SilentAfter: config.Duration(90 * time.Second),
+		Hosts: map[string]HostConfig{
+			quietHost: {TokenSHA256: statuspage.TokenHash(statuspage.Token(secret, quietHost))},
+			otherHost: {
+				TokenSHA256: statuspage.TokenHash(statuspage.Token(secret, otherHost)),
+				Services:    map[string]string{"site": "Website"},
+			},
+		},
+	}, &recorder{}, clk.now)
+
+	postReport(t, s, quietHost, report(quietHost))
+	reported := clk.now()
+	clk.add(89 * time.Second)
+	postReport(t, s, otherHost, report(otherHost, healthy("site", clk.now())))
+	if v := s.Hosts(); v.Hosts[0].Silent || v.Hosts[1].Silent {
+		t.Fatalf("view = %+v, want nobody silent before silent_after", v)
+	}
+
+	clk.add(2 * time.Second)
+	w := httptest.NewRecorder()
+	s.LocalHandler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, HostsPath, nil))
+	var v HostsView
+	if err := json.NewDecoder(w.Body).Decode(&v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Hosts) != 2 {
+		t.Fatalf("view = %+v, want both hosts", v)
+	}
+	other, quiet := v.Hosts[0], v.Hosts[1]
+	if other.Host != otherHost || other.Silent || !other.Reported {
+		t.Errorf("%s = %+v, want reporting", otherHost, other)
+	}
+	if quiet.Host != quietHost || !quiet.Silent || !quiet.LastReport.Equal(reported) {
+		t.Errorf("%s = %+v, want silent since %s", quietHost, quiet, reported)
+	}
+}
