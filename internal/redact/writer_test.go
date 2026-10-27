@@ -291,3 +291,22 @@ func TestTextRedactsAValueThatStartsAfterTheOneBefore(t *testing.T) {
 		}
 	}
 }
+
+// An Authorization header puts a space, not a separator, after Bearer. Prose
+// about bearer tokens must not lose its next word.
+func TestTextRedactsABearerHeader(t *testing.T) {
+	cases := map[string]string{
+		"Authorization: Bearer abcdefgh123":          "Authorization: Bearer " + Placeholder,
+		"authorization=bearer eyJhbGciOi.x.y, next":  "authorization=bearer " + Placeholder + ", next",
+		"Bearer abcdefghijklmnopqrstuvwxyz":          "Bearer " + Placeholder,
+		"Bearer: abcdefgh":                           "Bearer: " + Placeholder,
+		"the request needs a Bearer token":           "the request needs a Bearer token",
+		"Bearer authentication failed for user root": "Bearer authentication failed for user root",
+		"rejected: Bearer <redacted>":                "rejected: Bearer <redacted>",
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -65,10 +66,24 @@ type Match struct {
 // placeholder while leaving `api_key=` intact. A log line that says a key was
 // passed and does not say which is still useful for debugging; one with the
 // whole pair removed is not.
-var labelHead = regexp.MustCompile(`(?i)\b(api[_-]?keys?|apikey|access[_-]?token|refresh[_-]?token|` +
+//
+// `Bearer` also takes a space, the way an Authorization header writes it. It
+// is the only name that does: "password reset" is prose, not a credential.
+var labelHead = regexp.MustCompile(`(?i)\b(?:(api[_-]?keys?|apikey|access[_-]?token|refresh[_-]?token|` +
 	`id[_-]?token|auth[_-]?token|bearer|token|passwords?|passwd|pwd|secrets?|client[_-]?secret|` +
 	`private[_-]?key|secret[_-]?key|signature|sessionid|session[_-]?token|credentials?)` +
-	`((?:\\*["'])?\s*[=:]\s*(?:\\*["'])?)`)
+	`((?:\\*["'])?\s*[=:]\s*(?:\\*["'])?)|(bearer)[ \t]+)`)
+
+// token68 is the form RFC 6750 gives a bearer token.
+var token68 = regexp.MustCompile(`^[A-Za-z0-9._~+/-]+=*$`)
+
+// bearerToken reports whether the word after `Bearer ` is a token rather than
+// the next word of a sentence about bearer tokens: token68 in form, and with a
+// digit or symbol in it, or too long to be a word.
+func bearerToken(v string) bool {
+	return token68.MatchString(v) &&
+		(len(v) >= 20 || strings.ContainsFunc(v, func(r rune) bool { return !unicode.IsLetter(r) }))
+}
 
 // minLabelledLength is the shortest value a labelled match reports.
 const minLabelledLength = 4
@@ -91,11 +106,22 @@ func findLabelled(text string) []labelledValue {
 			continue
 		}
 		start := loc[1]
-		end := valueEnd(text, start, text[loc[4]:loc[5]])
+		var label string
+		var end int
+		if loc[2] >= 0 {
+			label = text[loc[2]:loc[3]]
+			end = valueEnd(text, start, text[loc[4]:loc[5]])
+		} else {
+			label = text[loc[6]:loc[7]]
+			end = unquotedEnd(text, start)
+			if !bearerToken(text[start:end]) {
+				continue
+			}
+		}
 		if utf8.RuneCountInString(text[start:end]) < minLabelledLength {
 			continue
 		}
-		out = append(out, labelledValue{label: text[loc[2]:loc[3]], start: start, end: end})
+		out = append(out, labelledValue{label: label, start: start, end: end})
 		taken = end
 	}
 	return out

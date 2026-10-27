@@ -270,3 +270,13 @@ func TestScanReadsAnUnclosedSingleQuoteAsUnquoted(t *testing.T) {
 		t.Errorf("reported %+v, want nothing: the value is abc, too short to count", got)
 	}
 }
+
+func TestScanFindsABearerHeader(t *testing.T) {
+	got := Scan("GET /api Authorization: Bearer abcdefgh123", nil)
+	if len(got) != 1 || got[0].Kind != KindLabelled || got[0].Label != "bearer" {
+		t.Errorf("got %+v, want one labelled bearer match", got)
+	}
+	if got := Scan("the request needs a Bearer token", nil); len(got) != 0 {
+		t.Errorf("reported prose about bearer tokens: %+v", got)
+	}
+}
