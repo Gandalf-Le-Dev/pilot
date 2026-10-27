@@ -75,7 +75,8 @@ expose:
     - 100.64.0.0/10
     - "fd7a:115c:a1e0::/48"
 
-  # Anything not modelled goes here verbatim.
+  # Anything not modelled goes here verbatim. A route with a path renders into
+  # a `handle`, so site-wide directives such as `tls` or `log` cannot go here.
   raw: |
     header /v1/* X-Robots-Tag noindex
 
