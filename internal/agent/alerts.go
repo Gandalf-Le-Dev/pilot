@@ -262,15 +262,7 @@ func (a *Agent) readings(ctx context.Context) map[string]alert.Reading {
 // memUsedPct is the share of the host's memory in use, counting reclaimable
 // page cache as free. ok is false when it could not be read.
 func (a *Agent) memUsedPct() (pct int, ok bool) {
-	read := a.meminfo
-	if read == nil {
-		read = func() ([]byte, error) { return os.ReadFile("/proc/meminfo") }
-	}
-	b, err := read()
-	if err != nil {
-		return 0, false
-	}
-	total, avail, ok := parseMeminfo(string(b))
+	total, avail, ok := a.readMeminfo()
 	if !ok || total == 0 || avail > total {
 		return 0, false
 	}

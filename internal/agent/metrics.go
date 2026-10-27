@@ -34,7 +34,7 @@ const (
 // metricsLoop samples per-service and host resource usage.
 func (a *Agent) metricsLoop(ctx context.Context) {
 	a.mu.Lock()
-	a.capacity = proto.Capacity{Cores: runtime.NumCPU(), MemTotal: readMemTotal()}
+	a.capacity = proto.Capacity{Cores: runtime.NumCPU(), MemTotal: a.memTotal()}
 	a.mu.Unlock()
 
 	// CPU percentages are deltas of cumulative counters, so the first tick
@@ -62,7 +62,7 @@ func (a *Agent) collectMetrics(ctx context.Context, prevHost procStat, prevUnits
 	// Host usage from /proc — the agent runs on the machine it measures.
 	host, herr := readProcStat()
 	if herr == nil && primed {
-		used := readMemUsed()
+		used := a.memUsed()
 		if pct, ok := host.busyPctSince(prevHost); ok {
 			a.recordHostMetric(proto.MetricSample{At: now, CPUPct: pct, MemBytes: used})
 		}
@@ -406,26 +406,33 @@ func parseProcStat(s string) (procStat, error) {
 	return procStat{}, fmt.Errorf("no cpu line in /proc/stat")
 }
 
-func readMemTotal() uint64 {
-	total, _ := readMeminfo()
+func (a *Agent) memTotal() uint64 {
+	total, _, _ := a.readMeminfo()
 	return total
 }
 
-func readMemUsed() uint64 {
-	total, avail := readMeminfo()
+func (a *Agent) memUsed() uint64 {
+	total, avail, _ := a.readMeminfo()
 	if avail > total {
 		return 0
 	}
 	return total - avail
 }
 
-func readMeminfo() (total, available uint64) {
-	b, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return 0, 0
+// readMeminfo is the one place host memory is read, for the dashboard and for
+// alerting alike.
+func (a *Agent) readMeminfo() (total, available uint64, ok bool) {
+	var b []byte
+	var err error
+	if a.meminfo != nil {
+		b, err = a.meminfo()
+	} else {
+		b, err = os.ReadFile("/proc/meminfo")
 	}
-	total, available, _ = parseMeminfo(string(b))
-	return total, available
+	if err != nil {
+		return 0, 0, false
+	}
+	return parseMeminfo(string(b))
 }
 
 // parseMeminfo reads MemTotal and MemAvailable, which /proc reports in kB. ok is
