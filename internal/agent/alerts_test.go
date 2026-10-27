@@ -276,19 +276,26 @@ func TestUnreadMemoryIsLoggedOnce(t *testing.T) {
 }
 
 // One bad expression is skipped with a warning on the agent's own logger, so
-// a test can read it without touching the process-wide default.
+// a test can read it without touching the process-wide default. The same
+// expression can be bad under several services, so the warning names which.
 func TestUnparseableRuleIsLogged(t *testing.T) {
 	var buf bytes.Buffer
 	a := newAgent(t)
 	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
 	a.fleet = &FleetConfig{Alerts: []config.Alert{{When: "no.such.metric > 1"}, {When: "host.disk.used_pct > 90"}}}
+	a.services["web"] = &config.Service{Name: "web", Alerts: []config.Alert{{When: "no.such.metric > 1"}}}
 
 	if got := len(a.Rules()); got != 1 {
 		t.Fatalf("got %d rules, want the parseable one", got)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, `msg="skipping alert" when="no.such.metric > 1" err=`) {
-		t.Errorf("want a warning naming the rule and its error, got:\n%s", out)
+	for _, want := range []string{
+		`level=WARN msg="skipping alert" service="" when="no.such.metric > 1" err=`,
+		`level=WARN msg="skipping alert" service=web when="no.such.metric > 1" err=`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want a warning naming the rule, its service, and its error, %s, got:\n%s", want, out)
+		}
 	}
 }
 

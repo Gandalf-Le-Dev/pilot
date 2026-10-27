@@ -198,7 +198,7 @@ func (a *Agent) warnSkipped(bad []unparsed) {
 		key := u.subject + "\x00" + u.when
 		now[key] = true
 		if !a.skipped[key] {
-			a.log().Warn("skipping alert", "when", u.when, "err", u.err)
+			a.log().Warn("skipping alert", "service", u.subject, "when", u.when, "err", u.err)
 		}
 	}
 	a.skipped = now
