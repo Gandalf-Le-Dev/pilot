@@ -36,7 +36,10 @@ func newDeployCmd(g *globals) *cobra.Command {
 		Long: "Runs the pipeline: resolve → build (locally) → plan → stage → activate → verify.\n\n" +
 			"Everything that can fail is made to fail during staging, while the running\n" +
 			"service is still untouched. If the health check fails after activation, the\n" +
-			"previous release and its route are restored automatically.",
+			"previous release and its route are restored automatically.\n\n" +
+			"If a host already runs the release but the service is stopped there, the\n" +
+			"deploy starts it again behind the same health check. That start has no\n" +
+			"earlier release to restore, so a failure is reported and left as it is.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDeploy(cmd.Context(), g, args[0], deployOpts{
@@ -157,6 +160,7 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 		skewed bool
 	}
 	var agentless []degraded
+	skewed := map[string]bool{}
 
 	for _, host := range s.Hosts {
 		rc, state, cause := a.InspectAgent(ctx, host)
@@ -181,6 +185,7 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 			agents[host] = rc
 		} else {
 			agentless = append(agentless, degraded{host: host, skewed: state == app.AgentSkewed})
+			skewed[host] = state == app.AgentSkewed
 		}
 	}
 
@@ -203,6 +208,7 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 	plan, err := deploy.Compute(ctx, deploy.Input{
 		Service: s, Fleet: a.Fleet, Layout: a.Layout,
 		Build: result, Env: env, Targets: targets,
+		Runtime: rt, SkipVerify: opts.noVerify, Agents: agents, Skewed: skewed,
 	})
 	if err != nil {
 		return err
@@ -249,10 +255,10 @@ func deployService(ctx context.Context, a *app.App, s *config.Service, opts depl
 	}
 
 	if plan.NoOp() {
-		fmt.Println("  nothing to do — every host already runs this release")
+		render.NothingToDo(os.Stdout, plan)
 
 		// The release is unchanged; the definition may not be. `health`,
-		// `manage`, `rollout` and `alerts` are all outside the release hash, so
+		// `manage`, rollout pacing and `alerts` are all outside the release hash, so
 		// editing one produces exactly this no-op — and the agent keeps
 		// observing, probing and alerting with whatever it was last handed.
 		//

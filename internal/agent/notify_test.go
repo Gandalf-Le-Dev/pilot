@@ -99,6 +99,36 @@ func TestFailedDeployReportsWhetherItRolledBack(t *testing.T) {
 	}
 }
 
+// A start changed no release. Calling it a deploy, or offering a rollback to
+// older code as its undo, would misdescribe what happened.
+func TestStartIsNotAnnouncedAsADeploy(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"succeeded", nil, "running 0042-9f3ac1b again"},
+		{"failed", errFake("did not become healthy"), "failed to start 0042-9f3ac1b"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a, cap := notifyAgent(t, withNotifier())
+
+			id := a.jobs.Create(proto.KindStart, "kite", "0042-9f3ac1b", "0042-9f3ac1b").ID
+			a.jobs.Finish(id, tc.err, false)
+			a.alerts.Flush()
+
+			msg := cap.all()[0]
+			if !strings.Contains(msg.Summary, tc.want) {
+				t.Errorf("summary = %q, want it to contain %q", msg.Summary, tc.want)
+			}
+			if strings.Contains(msg.Text(), "pilot rollback") {
+				t.Errorf("a rollback does not undo a start:\n%s", msg.Text())
+			}
+		})
+	}
+}
+
 func TestRollbackIsNotOfferedItsOwnUndo(t *testing.T) {
 	a, cap := notifyAgent(t, withNotifier())
 

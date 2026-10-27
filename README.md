@@ -152,6 +152,14 @@ pilot upgrade              replace this binary with the latest release
 Selectors work where they make sense: `pilot deploy @prod` deploys every service
 on hosts tagged `prod`, and `pilot status api` narrows to one service.
 
+If a host already runs the release but the service is stopped there, for example
+after a reboot, `pilot deploy` starts it again behind the health check. It does
+not report "nothing to do". A failed start is reported and not rolled back,
+because the earlier release is older code. Timer-driven oneshot units and static
+sites are never started this way. A service that you stopped on purpose, with
+`systemctl stop` or `docker compose stop`, is also started again by the next
+deploy that ships nothing new.
+
 And when a page beats a terminal, `pilot dashboard` serves the whole fleet on
 127.0.0.1 — status, each service's CPU and memory as a share of its host, alert
 history, and recent deploys. It is read-only and dies with your terminal;

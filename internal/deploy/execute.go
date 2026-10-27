@@ -77,7 +77,7 @@ func (e *Executor) Run(ctx context.Context, p *Plan) ([]Outcome, error) {
 			e.Log("  %s: already running %s, nothing to do", hp.Host, hp.To)
 
 			// The release is unchanged, but the spec may not be. `health`,
-			// `manage` and `rollout` are not part of the release hash, so
+			// `manage` and rollout pacing are not part of the release hash, so
 			// editing one leaves the deploy a no-op — while the agent goes on
 			// observing, probing and alerting with whatever it was last given.
 			//
@@ -98,7 +98,12 @@ func (e *Executor) Run(ctx context.Context, p *Plan) ([]Outcome, error) {
 			continue
 		}
 
-		out := e.deployHost(ctx, p, hp)
+		var out Outcome
+		if hp.Start {
+			out = e.startHost(ctx, p, hp)
+		} else {
+			out = e.deployHost(ctx, p, hp)
+		}
 		outcomes = append(outcomes, out)
 
 		if !out.Succeeded {
@@ -222,6 +227,63 @@ func (e *Executor) deployHost(ctx context.Context, p *Plan, hp HostPlan) Outcome
 	return out
 }
 
+// startHost starts a stopped service on the release the host already runs.
+//
+// Nothing is staged, since the release is already on disk and live. Nothing is
+// rolled back either: the only earlier release is older code that was replaced
+// on purpose, and a service stopped after a reboot is rarely stopped because of
+// its code. A failed start is reported and left for a human.
+func (e *Executor) startHost(ctx context.Context, p *Plan, hp HostPlan) Outcome {
+	out := Outcome{Service: p.Service.Name, Host: hp.Host, Release: hp.To, From: hp.From}
+
+	t, ok := e.Targets[hp.Host]
+	if !ok {
+		out.Err = fmt.Errorf("host %s is unreachable", hp.Host)
+		return out
+	}
+	t.Release = hp.To
+
+	started := now()
+	e.Log("  %s: %s is %s, starting it", hp.Host, hp.To, hp.Observed)
+
+	if rc := e.Agents[hp.Host]; rc != nil {
+		out = e.activateViaAgent(ctx, rc, p, hp, started, out)
+	} else {
+		e.Log("  %s: no agent — starting over SSH", hp.Host)
+		out.Err = e.startDirect(ctx, t)
+		if out.Err != nil {
+			e.recordFailure(ctx, t, p, hp, started, release.OutcomeFailed, out.Err)
+		} else {
+			e.commit(ctx, t, p, hp, started)
+			out.Succeeded = true
+		}
+	}
+
+	if out.Succeeded {
+		out.Message = "started"
+	} else if out.Err != nil {
+		e.Log("  %s: not rolling back — %s is already the live release", hp.Host, hp.To)
+	}
+	return out
+}
+
+func (e *Executor) startDirect(ctx context.Context, t *runtime.Target) error {
+	current, err := runtime.ReadCurrent(ctx, t)
+	if err != nil {
+		return err
+	}
+	if current != t.Release {
+		return fmt.Errorf("asked to start %s, but %s runs %q", t.Release, t.Label(), current)
+	}
+	if err := e.Runtime.Activate(ctx, t); err != nil {
+		return err
+	}
+	if e.SkipVerify {
+		return nil
+	}
+	return Verify(ctx, e.Runtime, t, e.Log)
+}
+
 func (e *Executor) installRoute(ctx context.Context, t *runtime.Target, p *Plan) error {
 	action, err := caddy.InstallSnippet(ctx, t.Client, e.Caddy, p.Service.Name, p.Snippet)
 	if err != nil {
@@ -269,13 +331,22 @@ func (e *Executor) commit(ctx context.Context, t *runtime.Target, p *Plan, hp Ho
 	if err != nil {
 		st = release.NewState(p.Service.Name)
 	}
-	st.Promote(p.Release)
-	st.Record(release.DeployRecord{
-		Release: p.Release, From: hp.From, Host: hp.Host, By: deployer(),
+	st.Promote(hp.To)
+	rec := release.DeployRecord{
+		Release: hp.To, From: hp.From, Host: hp.Host, By: deployer(),
 		StartedAt: started, FinishedAt: now(), Outcome: release.OutcomeOK,
-	})
+	}
+	if hp.Start {
+		rec.Reason = release.ReasonStarted
+	}
+	st.Record(rec)
 	if err := runtime.WriteState(ctx, t, st); err != nil {
 		e.Log("  %s: could not record state: %v", hp.Host, err)
+	}
+
+	// A start adds no release, so there is nothing new to make room for.
+	if hp.Start {
+		return
 	}
 
 	keep := p.Service.KeepReleases
@@ -301,7 +372,7 @@ func (e *Executor) recordFailure(ctx context.Context, t *runtime.Target, p *Plan
 		st.Current = hp.From
 	}
 	st.Record(release.DeployRecord{
-		Release: p.Release, From: hp.From, Host: hp.Host, By: deployer(),
+		Release: hp.To, From: hp.From, Host: hp.Host, By: deployer(),
 		StartedAt: started, FinishedAt: now(), Outcome: outcome,
 		Reason: firstLine(cause.Error()),
 	})

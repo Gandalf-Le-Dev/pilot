@@ -42,6 +42,13 @@ type Manifest struct {
 	// not exposed. Comparing it against the installed snippet is what lets a
 	// deploy skip the Caddy reload.
 	RouteHash string `json:"route_hash,omitempty"`
+
+	// Activation records the configuration that takes effect only when a
+	// release is staged or activated, such as the unit to restart or the
+	// compose project to start. It sits outside the release hash, so without
+	// this record a change to it would plan as nothing to do and never apply.
+	// Nil means the release predates the record, not that there was none.
+	Activation map[string]string `json:"activation"`
 }
 
 type SourceRef struct {

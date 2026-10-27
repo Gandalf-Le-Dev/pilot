@@ -22,7 +22,8 @@ import (
 func (e *Executor) activateViaAgent(ctx context.Context, rc *remote.Client, p *Plan, hp HostPlan, started time.Time, out Outcome) Outcome {
 	req := proto.DeployRequest{
 		Service:      p.Service.Name,
-		Release:      p.Release,
+		Release:      hp.To,
+		Start:        hp.Start,
 		Spec:         e.Spec,
 		Route:        p.Snippet,
 		RouteAction:  toProtoRoute(hp.Route),
@@ -45,9 +46,13 @@ func (e *Executor) activateViaAgent(ctx context.Context, rc *remote.Client, p *P
 		// Losing the stream is not losing the deploy, and the message has to
 		// make that unmistakable — otherwise the natural reaction is to panic
 		// and start deploying again on top of a job that is still running.
+		ending := "will finish or roll back on its own"
+		if hp.Start {
+			ending = "will finish on its own, with no rollback"
+		}
 		out.Err = fmt.Errorf("lost contact with %s while watching job %s\n"+
-			"the deploy is still running on the host and will finish or roll back on its own\n"+
-			"check it with: pilot status %s", hp.Host, job.ID, p.Service.Name)
+			"the deploy is still running on the host and %s\n"+
+			"check it with: pilot status %s", hp.Host, job.ID, ending, p.Service.Name)
 		return out
 	}
 

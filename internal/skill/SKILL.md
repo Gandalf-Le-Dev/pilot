@@ -115,8 +115,11 @@ inventing field names — a test loads it, so it is accurate, which prose is not
 
 Fixing a symptom on the host instead of its cause in the repository is how
 drift is *created*. Everything below is regenerated or replaced by the next
-deploy, so a hand-edit does not fix anything — it schedules a regression and
-raises a drift alert in the meantime.
+deploy that ships a release, so a hand-edit does not fix anything — it schedules
+a regression and raises a drift alert in the meantime. A deploy with nothing new
+to ship does not clear that alert. Drift stays reported until a real change
+ships. A start of a stopped service clears it only until the next drift check,
+within five minutes.
 
 ```
 /opt/pilot/services/<svc>/releases/   immutable releases — never edit, chmod, or chown one
@@ -213,6 +216,14 @@ deploy.
 
 If the plan shows a change you did not expect, stop and ask. An unexpected diff
 usually means the working tree is not what you assumed.
+
+A host with `"start": true` already runs the release, but the service is stopped
+there (`observed` says how). The deploy starts it again behind the health check
+and never rolls back, so a failed start leaves it stopped. If `no_health_gate` is
+set, nothing confirms that it came up. Check `pilot status` afterwards. A
+service can be stopped on purpose, and the deploy cannot tell. If the human
+stopped it, ask before you deploy. A host with `not_started` is stopped too, but
+the deploy leaves it alone, and the field says why.
 
 Rolling back:
 

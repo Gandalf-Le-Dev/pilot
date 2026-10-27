@@ -554,6 +554,25 @@ api → web-1
   strategy  recreate (≈3s, held by Caddy retry)
 ```
 
+The release hash covers artifacts, environment, route and runtime. Some configuration
+takes effect only when a release is staged or activated, and the hash does not cover it:
+`unit.name`, `unit.kind`, `unit.timer`, `unit.links`, `unit.precheck`, `compose.project`,
+and the blue-green `rollout.strategy`, `rollout.service` and `rollout.ports`. Each
+manifest records these values under `activation`, and the plan compares them with the
+live release. A change to any of them is a change, and the deploy ships a new release.
+A release from an older Pilot has no record. If the service has any of these values,
+its first deploy after the upgrade ships once to record them. The same happens after a
+rollback to a release whose record differs from the current configuration: the next
+deploy ships once. Health checks, rollout pacing, alerts and `manage` are read from the
+current definition each time, so they need no deploy.
+
+Compose scopes containers by project, and the runtime never stops a project it is not
+deploying. A new `compose.project` leaves the old project running, and if both publish
+the same port the new one cannot start. A switch between `recreate` and `blue-green`
+leaves the old stack, or both colours, running. The plan shows a warning for each
+case, with the `docker compose -p <project> down` command that cleans up. In `--json`,
+the host carries them in `warnings`.
+
 **stage** — ship the release directory (rsync over SSH, or tar-over-stdin), then
 `pilotd ctl stage`: pull images, render `.env`, validate units, `caddy validate`. Nothing
 user-visible has changed. Any failure aborts with zero impact.
@@ -566,6 +585,44 @@ public URL if `expose.verify` is set. Agent-local, survives CLI disconnection.
 
 **auto-rollback** — on verification failure the agent reverts release *and* route,
 re-verifies, and records the outcome in `state.json`.
+
+**start** — a host can already run the planned release while the service is stopped.
+For example, after a reboot a container can stay exited because its port binds to a
+Tailscale address that did not exist yet. A deploy with nothing new to ship then
+observes the service on each such host. If it is `stopped` or `failed`, the plan shows
+a start instead of `unchanged`:
+
+```
+kite → vps
+  start      0042-9f3ac1b is stopped (all containers stopped); start it again
+  verify     health check; a failure is reported, not rolled back
+```
+
+The CLI sends the agent a deploy request with `start: true` for the live release. The
+agent refuses a start of any other release, and refuses a plain deploy of the live one,
+so a plan that went stale on screen fails instead of doing something else. The agent
+activates the live release again and runs the same health check. A start has no
+rollback and prunes nothing. The only earlier release is older code that was replaced
+on purpose, so a failed start is recorded and the service stays as it is. With no
+health check, or with `--no-verify`, the plan says that nothing confirms the start. In
+`--json`, the host carries `start` and `observed`, and the plan carries
+`no_health_gate`.
+
+The deploy cannot tell a crash from an operator. A service that you stopped on purpose,
+with `systemctl stop` or `docker compose stop`, is started again by the next deploy
+that ships nothing new. If you want it to stay down, do not deploy it.
+
+Some services are never started this way:
+
+- A `oneshot` systemd unit is inactive between its timer's runs by design.
+- A static site has no process to start.
+- A compose project with no containers at all has nothing to start. A changed
+  `rollout` makes the plan look in a project that the live stack is not in, and
+  starting it would raise a second stack that no route points at.
+- A blue-green service on a host without an agent stays stopped, because only the
+  agent can start a colour. The plan shows it as stopped, with the reason, in
+  `not_started`.
+- A `manage: observe` service is refused before the plan, as for any deploy.
 
 ### Rollout strategies
 
@@ -724,6 +781,12 @@ generate 400 messages.
 **Drift detection** (5m) — `Runtime.Fingerprint()` vs `manifest.json`, *plus* a hash of
 each `pilot.d/*.caddy` file. Catches the classic small-fleet failure: someone SSH'd in and
 hand-edited a compose file or a route at 2am, and the next deploy would silently revert it.
+
+Only a deploy that ships a new release resets drift. A deploy with nothing new to ship
+keeps the live release and its manifest, so drift on it stays reported until a real
+change ships or somebody puts the host back. This holds for services with no route too.
+A start is the exception: the agent clears the service's drift after a good start. The
+next drift check, within 5m, reports it again if the host still differs.
 
 ---
 
