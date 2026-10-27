@@ -274,15 +274,21 @@ func readsMemory(rules []alert.Rule) bool {
 // memUsedPct is the share of the host's memory in use, counting reclaimable
 // page cache as free. ok is false when it could not be read.
 func (a *Agent) memUsedPct() (pct int, ok bool) {
-	total, avail, ok := a.readMeminfo()
-	if !ok || total == 0 || avail > total {
-		a.memWarnOnce.Do(func() {
-			a.log().Warn("host memory unreadable, host.mem alert rules will not evaluate",
-				"source", "/proc/meminfo", "mem_total", total, "mem_available", avail)
-		})
-		return 0, false
+	total, avail, err := a.readMeminfo()
+	var cause []any
+	switch {
+	case err != nil:
+		cause = []any{"err", err}
+	case total == 0 || avail > total:
+		cause = []any{"mem_total", total, "mem_available", avail}
+	default:
+		return int(math.Round(float64(total-avail) * 100 / float64(total))), true
 	}
-	return int(math.Round(float64(total-avail) * 100 / float64(total))), true
+	a.memWarnOnce.Do(func() {
+		a.log().Warn("host memory unreadable, host.mem alert rules will not evaluate",
+			append([]any{"source", "/proc/meminfo"}, cause...)...)
+	})
+	return 0, false
 }
 
 // FiringAlerts reports which rules are currently firing.

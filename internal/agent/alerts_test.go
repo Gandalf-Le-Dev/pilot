@@ -191,3 +191,38 @@ func TestReadsMemory(t *testing.T) {
 		t.Error("readsMemory(nil) = true, want false")
 	}
 }
+
+// The warning is the only trace of why memory rules are stuck, so it must
+// name the cause rather than report figures that were never read.
+func TestUnreadMemoryWarningCarriesTheCause(t *testing.T) {
+	tests := map[string]struct {
+		read func() ([]byte, error)
+		want string
+	}{
+		"read error": {
+			func() ([]byte, error) { return nil, errors.New("permission denied") },
+			`err="permission denied"`,
+		},
+		"no MemAvailable": {
+			func() ([]byte, error) { return []byte("MemTotal: 8000000 kB\n"), nil },
+			`err="MemTotal or MemAvailable missing from /proc/meminfo"`,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			a := newAgent(t)
+			a.logger = slog.New(slog.NewTextHandler(&buf, nil))
+			a.meminfo = tt.read
+			a.readings(t.Context(), memRules(t))
+
+			out := buf.String()
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("want %s in:\n%s", tt.want, out)
+			}
+			if strings.Contains(out, "mem_total=") {
+				t.Errorf("figures that were never read should not be logged:\n%s", out)
+			}
+		})
+	}
+}
