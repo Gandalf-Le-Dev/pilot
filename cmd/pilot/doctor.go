@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -60,7 +61,7 @@ func runDoctor(ctx context.Context, g *globals, offline, fix bool) error {
 	report := doctor.Run(ctx, env, doctor.Standard())
 
 	if fix {
-		if err := applyFixes(ctx, report, offline); err != nil {
+		if err := applyFixes(ctx, progressOut(g.json), report, offline); err != nil {
 			return err
 		}
 		// Re-run so the report reflects reality after the repairs, rather than
@@ -93,7 +94,7 @@ func runDoctor(ctx context.Context, g *globals, offline, fix bool) error {
 //
 // Failures are collected rather than fatal: one host refusing a repair should
 // not stop the others from being fixed.
-func applyFixes(ctx context.Context, report *doctor.Report, offline bool) error {
+func applyFixes(ctx context.Context, out io.Writer, report *doctor.Report, offline bool) error {
 	fixes := report.Fixable()
 	if len(fixes) == 0 {
 		return nil
@@ -109,14 +110,14 @@ func applyFixes(ctx context.Context, report *doctor.Report, offline bool) error 
 		if f.Host != "" {
 			label = f.Host + ": " + label
 		}
-		fmt.Printf("  fixing %s — %s\n", label, f.FixDesc)
+		fmt.Fprintf(out, "  fixing %s — %s\n", label, f.FixDesc)
 
 		if err := f.Fix(ctx); err != nil {
 			failed++
 			fmt.Fprintf(os.Stderr, "    failed: %v\n", err)
 			continue
 		}
-		fmt.Println("    done")
+		fmt.Fprintln(out, "    done")
 	}
 	if failed > 0 {
 		fmt.Fprintf(os.Stderr, "\n%d repair(s) failed\n", failed)

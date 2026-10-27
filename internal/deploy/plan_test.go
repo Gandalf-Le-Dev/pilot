@@ -356,6 +356,9 @@ func TestDiffCatchesWhatTheFieldsMiss(t *testing.T) {
 	})
 }
 
+// planFor is the part of a plan that diffActivation reads.
+func planFor(s *config.Service) *Plan { return &Plan{Service: s, Activation: activation(s)} }
+
 // Configuration read only at stage or activation sits outside the release
 // hash. Unexposed services used to apply it by redeploying every time; once
 // they can be a no-op, a change to it has to show as a change.
@@ -391,7 +394,7 @@ func TestDiffActivation(t *testing.T) {
 		t.Run(tc.field, func(t *testing.T) {
 			s := base()
 			tc.edit(s)
-			got := diff(prev, &Plan{Activation: activation(s)})
+			got := diff(prev, planFor(s))
 			if !slices.ContainsFunc(got, func(c Change) bool { return c.Field == tc.field }) {
 				t.Errorf("diff = %+v, want a change to %s", got, tc.field)
 			}
@@ -399,7 +402,7 @@ func TestDiffActivation(t *testing.T) {
 	}
 
 	t.Run("unchanged", func(t *testing.T) {
-		if got := diff(prev, &Plan{Activation: activation(base())}); len(got) != 0 {
+		if got := diff(prev, planFor(base())); len(got) != 0 {
 			t.Errorf("diff = %+v, want none", got)
 		}
 	})
@@ -410,18 +413,18 @@ func TestDiffActivation(t *testing.T) {
 		s := base()
 		s.Rollout = &config.Rollout{Strategy: config.StrategyRecreate, PauseBetween: config.Duration(time.Minute)}
 		s.Health = &config.Health{Systemd: true}
-		if got := diff(prev, &Plan{Activation: activation(s)}); len(got) != 0 {
+		if got := diff(prev, planFor(s)); len(got) != 0 {
 			t.Errorf("diff = %+v, want none", got)
 		}
 	})
 
 	t.Run("release from before the record", func(t *testing.T) {
 		old := &release.Manifest{}
-		got := diff(old, &Plan{Activation: activation(base())})
+		got := diff(old, planFor(base()))
 		if len(got) != 1 || got[0].Field != "activation" {
 			t.Errorf("diff = %+v, want one change saying it was not recorded", got)
 		}
-		if got := diff(old, &Plan{Activation: activation(&config.Service{Name: "web"})}); len(got) != 0 {
+		if got := diff(old, planFor(&config.Service{Name: "web"})); len(got) != 0 {
 			t.Errorf("a service with nothing to record should not redeploy: %+v", got)
 		}
 	})
@@ -534,7 +537,7 @@ func TestPlanCarriesWarnings(t *testing.T) {
 func TestActivationAppliesTheUnitKindDefault(t *testing.T) {
 	omitted := &config.Service{Name: "runner", Unit: &config.Unit{Name: "runner.service"}}
 	written := &config.Service{Name: "runner", Unit: &config.Unit{Name: "runner.service", Kind: config.UnitService}}
-	if got := diff(&release.Manifest{Activation: activation(omitted)}, &Plan{Activation: activation(written)}); len(got) != 0 {
+	if got := diff(&release.Manifest{Activation: activation(omitted)}, planFor(written)); len(got) != 0 {
 		t.Errorf("diff = %+v, want none", got)
 	}
 }
@@ -690,5 +693,50 @@ func TestRouteHashIsUnchangedOutsideBlueGreen(t *testing.T) {
 	}
 	if p.RouteHash != release.HashBytes([]byte(p.Snippet)) {
 		t.Error("the route hash of a service that is not blue-green must be the hash of its route alone")
+	}
+}
+
+// Loading fills in the service name as the compose project. Recording that
+// default made every compose service ship once after the upgrade, not only the
+// ones with a project of their own.
+func TestDiffActivationComposeProjectDefault(t *testing.T) {
+	service := func(project string) *config.Service {
+		return &config.Service{Name: "kite", Runtime: config.RuntimeCompose, Compose: &config.Compose{Project: project}}
+	}
+	plan := func(project string) *Plan { return planFor(service(project)) }
+	recorded := func(project string) *release.Manifest {
+		return &release.Manifest{Activation: activation(service(project))}
+	}
+
+	tests := []struct {
+		name  string
+		prev  *release.Manifest
+		plan  *Plan
+		field string
+	}{
+		{"default project, release from before the record", &release.Manifest{}, plan("kite"), ""},
+		{"custom project, release from before the record", &release.Manifest{}, plan("kite-2"), "activation"},
+		{"default to custom", recorded("kite"), plan("kite-2"), "compose.project"},
+		{"custom to default", recorded("kite-2"), plan("kite"), "compose.project"},
+		{"default unchanged", recorded("kite"), plan("kite"), ""},
+		// v0.16.0 recorded the default explicitly.
+		{"default recorded by v0.16.0", &release.Manifest{Activation: map[string]string{"compose.project": "kite"}}, plan("kite"), ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := diff(tc.prev, tc.plan)
+			if tc.field == "" {
+				if len(got) != 0 {
+					t.Errorf("diff = %+v, want none", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].Field != tc.field {
+				t.Fatalf("diff = %+v, want one change to %s", got, tc.field)
+			}
+			if tc.field == "compose.project" && (got[0].From == "" || got[0].To == "") {
+				t.Errorf("a default project should be named, not blank: %+v", got[0])
+			}
+		})
 	}
 }
