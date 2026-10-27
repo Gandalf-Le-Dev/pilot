@@ -184,9 +184,14 @@ func TestIsSecretNameRejectsLocations(t *testing.T) {
 // working directory, and reporting it trained people to ignore the check.
 const sudoAudit = `gh-runner : PWD=/var/lib/gh-runner/work/hopbox/hopbox ; USER=root ; COMMAND=/usr/bin/pkill -f foo`
 
+// sudoAuditJSON is the same line logged by a JSON encoder that escapes `/`.
+const sudoAuditJSON = `{"msg":"sudo","pwd":"\/var\/lib\/gh-runner\/work","user":"root"}`
+
 func TestSudoWorkingDirectoryIsNotAPassword(t *testing.T) {
-	if got := Scan(sudoAudit, nil); len(got) != 0 {
-		t.Errorf("reported sudo's working directory as a credential: %+v", got)
+	for _, line := range []string{sudoAudit, sudoAuditJSON} {
+		if got := Scan(line, nil); len(got) != 0 {
+			t.Errorf("reported sudo's working directory as a credential in %s: %+v", line, got)
+		}
 	}
 }
 
@@ -203,6 +208,11 @@ func TestPwdStillMeansPassword(t *testing.T) {
 		"pwd=/cb?token=s3cr3tvalue":                  "pwd",
 		"PWD=/x:password=hunter22":                   "pwd",
 		`{"pwd":"/var/lib/x","password":"hunter22"}`: "password",
+		// Only `\/` is read as a slash. Any other escape could stand for a
+		// character that would disqualify the path, such as \u003d for `=`.
+		`{"pwd":"\/cb\u003dhunter22"}`: "pwd",
+		`{"pwd":"\\/hunter22"}`:        "pwd",
+		`pwd=/x\u003dhunter22`:         "pwd",
 	}
 	for line, want := range cases {
 		got := Scan(line, nil)

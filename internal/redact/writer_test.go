@@ -155,8 +155,10 @@ func TestWriterDoesNotBufferForever(t *testing.T) {
 // TestTextAgreesWithScanOnSudoPWD — a line doctor calls clean must come through
 // redaction untouched, or the two disagree about what a secret is.
 func TestTextAgreesWithScanOnSudoPWD(t *testing.T) {
-	if got := Text(sudoAudit, nil); got != sudoAudit {
-		t.Errorf("Text altered a sudo audit line:\n got: %s\nwant: %s", got, sudoAudit)
+	for _, line := range []string{sudoAudit, sudoAuditJSON} {
+		if got := Text(line, nil); got != line {
+			t.Errorf("Text altered a sudo audit line:\n got: %s\nwant: %s", got, line)
+		}
 	}
 }
 
@@ -169,6 +171,7 @@ func TestTextStillRedactsPwdAsPassword(t *testing.T) {
 		"pwd=/cb?token=s3cr3tvalue":                  "pwd=" + Placeholder,
 		"PWD=/x:password=hunter22":                   "PWD=" + Placeholder,
 		`{"pwd":"/var/lib/x","password":"hunter22"}`: `{"pwd":"/var/lib/x","password":"` + Placeholder + `"}`,
+		`{"pwd":"\/cb\u003dhunter22"}`:               `{"pwd":"` + Placeholder + `"}`,
 	}
 	for line, want := range cases {
 		if got := Text(line, nil); got != want {

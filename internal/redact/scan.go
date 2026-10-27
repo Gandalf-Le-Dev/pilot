@@ -98,13 +98,16 @@ var placeholders = map[string]bool{
 
 // harmless reports whether a labelled match reveals nothing. A pwd that is a
 // bare path is sudo's working directory; `=`, `?` or `:` mean a pair rode along.
+// Some JSON encoders, PHP's among them, write `/` as `\/`; any other backslash
+// is an escape that could hide one of those characters.
 func harmless(label, raw string) bool {
 	value := strings.Trim(raw, `"'`)
 	if placeholders[strings.ToLower(value)] {
 		return true
 	}
-	return strings.EqualFold(label, "pwd") && strings.HasPrefix(value, "/") &&
-		!strings.ContainsAny(value, "=?:")
+	path := strings.ReplaceAll(value, `\/`, "/")
+	return strings.EqualFold(label, "pwd") && strings.HasPrefix(path, "/") &&
+		!strings.ContainsAny(path, `=?:\`)
 }
 
 // minKnownLength is the shortest supplied value worth searching for.
