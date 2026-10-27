@@ -23,6 +23,7 @@ type recorder struct {
 	psOut       string
 	inspectOut  string
 	inspectFail bool
+	inspectErr  error
 }
 
 func (r *recorder) Run(ctx context.Context, cmd string) (transport.Result, error) {
@@ -31,6 +32,9 @@ func (r *recorder) Run(ctx context.Context, cmd string) (transport.Result, error
 	case strings.Contains(cmd, "ps --all"):
 		return transport.Result{Stdout: r.psOut}, nil
 	case strings.HasPrefix(cmd, "docker inspect"):
+		if r.inspectErr != nil {
+			return transport.Result{Stdout: r.inspectOut}, r.inspectErr
+		}
 		if r.inspectFail {
 			return transport.Result{ExitCode: 1, Stdout: r.inspectOut, Stderr: "Error: No such object"}, nil
 		}
