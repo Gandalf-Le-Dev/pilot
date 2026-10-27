@@ -100,7 +100,8 @@ func TestParseErrors(t *testing.T) {
 
 // KnownOps feeds the schema digest, so an operator the parser takes but the
 // list omits would reach an old agent unannounced. Trying every short run of
-// operator-like characters catches a parse path that bypasses the table.
+// operator-like characters catches a parse path that bypasses the table, or an
+// alias such as `=` read as `==`.
 func TestKnownOpsAreExactlyWhatParseAccepts(t *testing.T) {
 	const chars = "<>=!~&|^%*/+-:"
 	var candidates []string
@@ -115,8 +116,8 @@ func TestKnownOpsAreExactlyWhatParseAccepts(t *testing.T) {
 	}
 	known := KnownOps()
 	for _, tok := range candidates {
-		c, err := Parse("service.restarts " + tok + " 3")
-		accepted := err == nil && string(c.Op) == tok
+		_, err := Parse("service.restarts " + tok + " 3")
+		accepted := err == nil
 		if listed := slices.Contains(known, tok); accepted != listed {
 			t.Errorf("Parse accepts %q: %v, KnownOps lists it: %v", tok, accepted, listed)
 		}
