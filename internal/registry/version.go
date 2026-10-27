@@ -14,8 +14,9 @@ import (
 // reject far more than it accepts, and the rejects must not silently become
 // version zero — a tag that failed to parse is not an old release.
 type Version struct {
-	// Prefix is "v" or empty. `v18.12.0` and `18.12.0` are both common and a
-	// project uses one or the other, never both for the same release.
+	// Prefix is "v" or empty. It is spelling, not identity: projects switch
+	// conventions mid-stream (atuin went from `v18.13.3` to `18.14.0`), and
+	// some publish both spellings of the same release.
 	Prefix string
 
 	// Parts are the numeric components, most significant first.
@@ -78,12 +79,12 @@ func (v Version) IsTrack() bool { return len(v.Parts) < 3 }
 
 // Comparable reports whether other names a release in the same series as v.
 //
-// Same prefix, same variant suffix, and the same number of components. That
-// last one is what keeps `3.0` and `3` out of the comparison for a service
-// pinned to `3.0.4`: they are tracks pointing at a release, not releases.
+// Same variant suffix and the same number of components; the "v" prefix is
+// ignored. The component count is what keeps `3.0` and `3` out of the
+// comparison for a service pinned to `3.0.4`: they are tracks pointing at a
+// release, not releases.
 func (v Version) Comparable(other Version) bool {
-	return v.Prefix == other.Prefix &&
-		v.Suffix == other.Suffix &&
+	return v.Suffix == other.Suffix &&
 		len(v.Parts) == len(other.Parts)
 }
 
@@ -161,6 +162,9 @@ func (v Version) StepTo(other Version) Step {
 // Pre-releases are excluded unless the deployed tag is itself a pre-release —
 // somebody running 2.18.0-rc1 wants to know about rc2, and somebody running
 // 2.17.5 does not want to be moved onto a release candidate.
+//
+// When the newest release is published under both spellings, the one matching
+// the deployed tag wins so the suggested tag reads like the one in use.
 func Latest(current Version, tags []string) (Version, bool) {
 	best, found := current, false
 
@@ -172,8 +176,11 @@ func Latest(current Version, tags []string) (Version, bool) {
 		if v.Pre != "" && current.Pre == "" {
 			continue
 		}
-		if best.Newer(v) {
+		switch c := compare(best, v); {
+		case c < 0:
 			best, found = v, true
+		case c == 0 && found && v.Prefix == current.Prefix:
+			best = v
 		}
 	}
 	return best, found

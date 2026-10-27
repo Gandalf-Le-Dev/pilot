@@ -39,6 +39,36 @@ func TestCheckReportsAnUpdate(t *testing.T) {
 	}
 }
 
+// atuin's last v-prefixed tag was v18.13.3; every later release is bare. The
+// check must follow the project across the switch rather than call it current.
+func TestCheckFollowsAPrefixSwitch(t *testing.T) {
+	f := &fakeLister{tags: map[string][]string{
+		"ghcr.io/atuinsh/atuin": {"v18.13.3", "18.14.0", "18.24.2", "18.24.2-1", "18.24.0-beta.1", "18.24", "latest"},
+	}}
+
+	got := check(context.Background(), f, "atuin", "ghcr.io/atuinsh/atuin:v18.13.3")
+
+	if !got.Outdated() {
+		t.Fatalf("want an update, got %+v", got)
+	}
+	if got.Latest != "18.24.2" || got.Step != registry.StepMinor {
+		t.Errorf("got %s (%s), want 18.24.2 (minor)", got.Latest, got.Step)
+	}
+}
+
+// The same release under the other spelling is the image already running.
+func TestCheckSameReleaseOtherSpellingIsCurrent(t *testing.T) {
+	f := &fakeLister{tags: map[string][]string{
+		"ghcr.io/x/app": {"v1.2.3", "1.2.3", "1.2.2"},
+	}}
+
+	got := check(context.Background(), f, "app", "ghcr.io/x/app:1.2.3")
+
+	if got.Outdated() || got.Err != "" || got.Step != registry.StepNone {
+		t.Errorf("want up to date, got %+v", got)
+	}
+}
+
 // A moving tag is a deliberate choice. Comparing it would mean announcing the
 // next major every day for a migration nobody does on a Tuesday — and it must
 // not even cost a registry round-trip.
