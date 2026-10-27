@@ -101,14 +101,15 @@ func TestHostReadingCarriesDisk(t *testing.T) {
 // use, which would resolve a full-disk alert that is still true.
 func TestHostReadingLeavesUnreadDiskUnset(t *testing.T) {
 	tests := map[string]dfFake{
-		"exec error":   {err: errors.New("fork failed")},
-		"df failed":    {res: transport.Result{ExitCode: 1, Stderr: "df: /opt/pilot: No such file"}},
-		"no output":    {},
-		"garbage":      {res: transport.Result{Stdout: "not\ndf output"}},
-		"header only":  {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n"}},
-		"dash percent": {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\nnone 0 0 0 -% /\n"}},
-		"negative":     {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 86 14 -5% /\n"}},
-		"over 100":     {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 86 14 105% /\n"}},
+		"exec error":             {err: errors.New("fork failed")},
+		"df failed":              {res: transport.Result{ExitCode: 1, Stderr: "df: /opt/pilot: No such file"}},
+		"df failed after output": {res: transport.Result{ExitCode: 1, Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 34 66 34% /\n"}},
+		"no output":              {},
+		"garbage":                {res: transport.Result{Stdout: "not\ndf output"}},
+		"header only":            {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n"}},
+		"dash percent":           {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\nnone 0 0 0 -% /\n"}},
+		"negative":               {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 86 14 -5% /\n"}},
+		"over 100":               {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 86 14 105% /\n"}},
 	}
 	for name, fake := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -118,6 +119,23 @@ func TestHostReadingLeavesUnreadDiskUnset(t *testing.T) {
 				t.Errorf("DiskUsedPct = %d, want unset", *got)
 			}
 		})
+	}
+}
+
+// With the Pilot root gone, the volume that held it is unknown; reading the
+// parent instead would report another disk's headroom as Pilot's.
+func TestDiskUnreadWhenRootMissing(t *testing.T) {
+	a := newAgent(t)
+	d := a.diskUsage()
+	if d == nil || d.Path != a.Layout.Root {
+		t.Fatalf("diskUsage = %+v, want a reading for %s", d, a.Layout.Root)
+	}
+
+	if err := os.RemoveAll(a.Layout.Root); err != nil {
+		t.Fatal(err)
+	}
+	if d := a.diskUsage(); d != nil {
+		t.Errorf("diskUsage = %+v with the root missing, want nil", d)
 	}
 }
 

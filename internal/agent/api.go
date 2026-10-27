@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
 )
 
@@ -294,9 +295,10 @@ func (a *Agent) handleDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 // diskUsage reports headroom on the volume holding releases, or nil when it
-// could not be read.
+// could not be read. No fallback path: where the Pilot root is its own volume,
+// another figure would resolve a disk alert that nil leaves held.
 func (a *Agent) diskUsage() *proto.DiskUsage {
-	res, err := a.Exec.Run(context.Background(), "df -P "+a.Layout.Root+" 2>/dev/null || df -P /")
+	res, err := a.Exec.Run(context.Background(), "df -P "+transport.Quote(a.Layout.Root))
 	if err != nil || !res.OK() {
 		return nil
 	}

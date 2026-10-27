@@ -436,7 +436,9 @@ func checkDisk(ctx context.Context, env *Env) []Finding {
 			continue
 		}
 
-		res, err := client.Run(ctx, "df -P "+transport.Quote(layout.Root)+" 2>/dev/null || df -P /")
+		// The root alone, as the agent measures it: a missing root gives no
+		// finding rather than the figure of whatever volume holds its parent.
+		res, err := client.Run(ctx, "df -P "+transport.Quote(layout.Root))
 		if err != nil || !res.OK() {
 			continue
 		}
