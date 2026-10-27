@@ -68,7 +68,7 @@ type Match struct {
 var labelHead = regexp.MustCompile(`(?i)\b(api[_-]?keys?|apikey|access[_-]?token|refresh[_-]?token|` +
 	`id[_-]?token|auth[_-]?token|bearer|token|passwords?|passwd|pwd|secrets?|client[_-]?secret|` +
 	`private[_-]?key|secret[_-]?key|signature|sessionid|session[_-]?token|credentials?)` +
-	`(["']?\s*[=:]\s*["']?)`)
+	`((?:\\?["'])?\s*[=:]\s*(?:\\"|["'])?)`)
 
 // minLabelledLength is the shortest value a labelled match reports.
 const minLabelledLength = 4
@@ -103,6 +103,11 @@ func findLabelled(text string) []labelledValue {
 // runs to the matching unescaped quote, spaces and commas included, so none of
 // it is left behind; one never closed runs to the end of the line. An
 // unquoted value stops at the first character that cannot be part of one.
+//
+// A value opened by `\"` sits in JSON logged inside another JSON string, such
+// as a request body, where every character arrives escaped once more. It is
+// read one layer of escapes down, and ends where the enclosing string does if
+// its own quote never comes.
 func valueEnd(s string, i int, sep string) int {
 	q := sep[len(sep)-1]
 	if q != '"' && q != '\'' {
@@ -111,9 +116,19 @@ func valueEnd(s string, i int, sep string) int {
 		}
 		return i
 	}
+	nested := strings.HasSuffix(sep, `\"`)
 	escaped := false
-	for ; i < len(s) && s[i] != '\n'; i++ {
-		switch c := s[i]; {
+	for i < len(s) && s[i] != '\n' {
+		c, width := s[i], 1
+		if nested {
+			if c == '"' {
+				return i
+			}
+			if c == '\\' && i+1 < len(s) && s[i+1] != '\n' {
+				c, width = s[i+1], 2
+			}
+		}
+		switch {
 		case escaped:
 			escaped = false
 		case c == '\\':
@@ -121,6 +136,7 @@ func valueEnd(s string, i int, sep string) int {
 		case c == q:
 			return i
 		}
+		i += width
 	}
 	return i
 }

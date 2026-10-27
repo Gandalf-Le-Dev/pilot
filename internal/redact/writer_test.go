@@ -204,6 +204,24 @@ func TestTextRedactsQuotedValuesWhole(t *testing.T) {
 	}
 }
 
+// A request body logged as a JSON string carries its own JSON one layer of
+// escapes down. Its values end at their own escaped quote, and the enclosing
+// string and the fields after it stay intact.
+func TestTextRedactsJSONInsideAJSONString(t *testing.T) {
+	cases := map[string]string{
+		`{"log":"{\"password\":\"hunter22\"}"}`:                          `{"log":"{\"password\":\"` + Placeholder + `\"}"}`,
+		`{"log":"{\"password\":\"ab\\\"c d\",\"user\":\"root\"}","n":1}`: `{"log":"{\"password\":\"` + Placeholder + `\",\"user\":\"root\"}","n":1}`,
+		`{"log":"{\"password\":\"hunter22\\\\\"}"}`:                      `{"log":"{\"password\":\"` + Placeholder + `\"}"}`,
+		`{"log":"{\"password\":\"hunter22"}`:                             `{"log":"{\"password\":\"` + Placeholder + `"}`,
+		`{"log":"{\"pwd\":\"/var/lib/x\"}"}`:                             `{"log":"{\"pwd\":\"/var/lib/x\"}"}`,
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
 // Without a quote there is nothing to say where a value ends, so the usual
 // delimiters still do.
 func TestTextStopsUnquotedValuesAtDelimiters(t *testing.T) {

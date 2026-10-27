@@ -215,6 +215,8 @@ func TestPwdStillMeansPassword(t *testing.T) {
 		`pwd=/x\u003dhunter22`:         "pwd",
 		`{"pwd":"\/x\"=secret"}`:       "pwd",
 		`{"pwd":"/var/lib x=secret"}`:  "pwd",
+		// A pair riding along one layer of escapes down still disqualifies.
+		`{"log":"{\"pwd\":\"\\/x\\\"=secret\"}"}`: "pwd",
 	}
 	for line, want := range cases {
 		got := Scan(line, nil)
@@ -232,6 +234,7 @@ func TestScanReadsQuotedValuesWhole(t *testing.T) {
 		`{"password":"ab&cdefgh"}`,
 		`{"password":"ab cdefgh"}`,
 		`{"password":"ab\"cdefgh"}`,
+		`{"log":"{\"password\":\"hunter22\"}"}`,
 	} {
 		got := Scan(line, nil)
 		if len(got) != 1 || got[0].Kind != KindLabelled || got[0].Label != "password" {
