@@ -126,7 +126,7 @@ func TestScope(t *testing.T) {
 
 func TestEval(t *testing.T) {
 	r := Reading{
-		ServiceDown: true, Restarts: 5, DiskUsedPct: 88, DriftDetected: true,
+		ServiceDown: true, Restarts: 5, DiskUsedPct: new(88), DriftDetected: true,
 		MemUsedPct: new(93),
 	}
 	tests := []struct {
@@ -181,8 +181,31 @@ func TestEvalUnreadMemoryHoldsNothing(t *testing.T) {
 	}
 }
 
+// A disk figure df could not give is not 0% in use: no comparison holds
+// against it, in either direction, and there is no value to report.
+func TestEvalUnreadDiskHoldsNothing(t *testing.T) {
+	for _, expr := range []string{
+		"host.disk.used_pct < 50", "host.disk.used_pct > 50",
+		"host.disk.free_pct < 50", "host.disk.free_pct > 50",
+	} {
+		c, err := Parse(expr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Eval(Reading{}) {
+			t.Errorf("%q held against an unread reading", expr)
+		}
+		if c.Observed(Reading{}) {
+			t.Errorf("%q counts an unread reading as observed", expr)
+		}
+		if v, ok := c.Value_(Reading{}); ok {
+			t.Errorf("%q reported %v from an unread reading", expr, v)
+		}
+	}
+}
+
 func TestValue(t *testing.T) {
-	r := Reading{Restarts: 2, DiskUsedPct: 88, MemUsedPct: new(87)}
+	r := Reading{Restarts: 2, DiskUsedPct: new(88), MemUsedPct: new(87)}
 	tests := []struct {
 		expr string
 		want float64
@@ -388,7 +411,7 @@ func TestNotificationCarriesTheObservedValue(t *testing.T) {
 	e, cap, _ := newEngine(t)
 	r := rule(t, "", "host.disk.free_pct < 15", 0)
 
-	e.Evaluate(context.Background(), []Rule{r}, map[string]Reading{"": {DiskUsedPct: 91}})
+	e.Evaluate(context.Background(), []Rule{r}, map[string]Reading{"": {DiskUsedPct: new(91)}})
 	e.Flush()
 
 	sent := cap.all()
@@ -440,6 +463,69 @@ func TestUnreadMemoryKeepsPendingTimer(t *testing.T) {
 	e, cap, clk := newEngine(t)
 	r := rule(t, "", "host.mem.used_pct > 90", 10*time.Minute)
 	high := map[string]Reading{"": {MemUsedPct: new(95)}}
+	ctx := context.Background()
+	start := clk.now()
+
+	e.Evaluate(ctx, []Rule{r}, high)
+	clk.add(9 * time.Minute)
+	e.Evaluate(ctx, []Rule{r}, high)
+	clk.add(30 * time.Second)
+	e.Evaluate(ctx, []Rule{r}, map[string]Reading{"": {}})
+	e.Flush()
+	if n := len(cap.all()); n != 0 {
+		t.Fatalf("fired before the deadline (%d sent)", n)
+	}
+
+	clk.add(30 * time.Second)
+	e.Evaluate(ctx, []Rule{r}, high)
+	e.Flush()
+
+	sent := cap.all()
+	if len(sent) != 1 || sent[0].Severity != SevFiring {
+		t.Fatalf("got %+v, want one firing at the original deadline", sent)
+	}
+	if !sent[0].Since.Equal(start) {
+		t.Errorf("since = %v, want %v: the unread round reset the timer", sent[0].Since, start)
+	}
+}
+
+// A failed df must not pass for an empty disk and resolve either form of a
+// full-disk alert: 0% used, or 100% free.
+func TestUnreadDiskDoesNotResolve(t *testing.T) {
+	for _, expr := range []string{"host.disk.used_pct > 85", "host.disk.free_pct < 15"} {
+		t.Run(expr, func(t *testing.T) {
+			e, cap, clk := newEngine(t)
+			r := rule(t, "", expr, 0)
+			ctx := context.Background()
+
+			e.Evaluate(ctx, []Rule{r}, map[string]Reading{"": {DiskUsedPct: new(91)}})
+			clk.add(time.Minute)
+			e.Evaluate(ctx, []Rule{r}, map[string]Reading{"": {}})
+			e.Flush()
+
+			sent := cap.all()
+			if len(sent) != 1 || sent[0].Severity != SevFiring {
+				t.Fatalf("got %+v, want only the original firing", sent)
+			}
+			if len(e.Firing()) != 1 {
+				t.Error("the rule should still be considered firing")
+			}
+
+			clk.add(time.Minute)
+			e.Evaluate(ctx, []Rule{r}, map[string]Reading{"": {DiskUsedPct: new(40)}})
+			e.Flush()
+			if sent := cap.all(); len(sent) != 2 || sent[1].Severity != SevResolved {
+				t.Errorf("a real reading below the threshold should resolve, got %+v", sent)
+			}
+		})
+	}
+}
+
+// An unread df round neither advances nor resets a pending `for:` timer.
+func TestUnreadDiskKeepsPendingTimer(t *testing.T) {
+	e, cap, clk := newEngine(t)
+	r := rule(t, "", "host.disk.used_pct > 85", 10*time.Minute)
+	high := map[string]Reading{"": {DiskUsedPct: new(91)}}
 	ctx := context.Background()
 	start := clk.now()
 
