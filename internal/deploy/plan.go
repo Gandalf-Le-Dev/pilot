@@ -397,10 +397,18 @@ func diffActivation(prev *release.Manifest, p *Plan) []Change {
 	for k := range p.Activation {
 		keys[k] = true
 	}
+	// Releases from v0.16.0 recorded the default compose project, which is no
+	// longer written, so a missing value compares as the default.
+	value := func(m map[string]string, k string) string {
+		if v := m[k]; v != "" || k != "compose.project" {
+			return v
+		}
+		return p.Service.Name
+	}
 	var out []Change
 	for _, k := range slices.Sorted(maps.Keys(keys)) {
-		if prev.Activation[k] != p.Activation[k] {
-			out = append(out, Change{Field: k, From: prev.Activation[k], To: p.Activation[k]})
+		if from, to := value(prev.Activation, k), value(p.Activation, k); from != to {
+			out = append(out, Change{Field: k, From: from, To: to})
 		}
 	}
 	return out
@@ -480,7 +488,10 @@ func activation(s *config.Service) map[string]string {
 		}
 		set("unit.links", strings.Join(links, ", "))
 	}
-	if s.Compose != nil {
+	// Loading fills in the service name as the project. Recording that default
+	// would make every compose service look changed against a release from
+	// before the record, when only a custom project needs the deploy.
+	if s.Compose != nil && s.Compose.Project != s.Name {
 		set("compose.project", s.Compose.Project)
 	}
 	// Recreate is the default and needs nothing staged. Blue-green stages a

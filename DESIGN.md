@@ -654,7 +654,10 @@ takes effect only when a release is staged or activated, and the hash does not c
 and the blue-green `rollout.strategy`, `rollout.service` and `rollout.ports`. Each
 manifest records these values under `activation`, and the plan compares them with the
 live release. A change to any of them is a change, and the deploy ships a new release.
-A release from an older Pilot has no record. If the service has any of these values,
+`compose.project` is recorded only when it is not the service name, which is the
+default. A project that is not recorded compares as the service name, so a change
+between the default and a custom project is still a change. A release from an older
+Pilot has no record. If the service has any of these values,
 its first deploy after the upgrade ships once to record them. The same happens after a
 rollback to a release whose record differs from the current configuration: the next
 deploy ships once. Health checks, rollout pacing, alerts and `manage` are read from the
