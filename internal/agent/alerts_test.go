@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -77,14 +78,20 @@ type dfFake struct {
 
 func (f dfFake) Run(context.Context, string) (transport.Result, error) { return f.res, f.err }
 
+// 0% and 100% are the bounds of a real reading, and a full disk is the case
+// the rule exists for.
 func TestHostReadingCarriesDisk(t *testing.T) {
-	a := newAgent(t)
-	a.Exec = dfFake{res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n" +
-		"/dev/sda1 100 86 14 86% /\n"}}
+	for _, want := range []int{86, 100, 0} {
+		t.Run(fmt.Sprintf("%d%%", want), func(t *testing.T) {
+			a := newAgent(t)
+			a.Exec = dfFake{res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n" +
+				fmt.Sprintf("/dev/sda1 100 %d %d %d%% /\n", want, 100-want, want)}}
 
-	r := a.readings(t.Context(), nil)[""]
-	if r.DiskUsedPct == nil || *r.DiskUsedPct != 86 {
-		t.Errorf("DiskUsedPct = %v, want 86", r.DiskUsedPct)
+			r := a.readings(t.Context(), nil)[""]
+			if r.DiskUsedPct == nil || *r.DiskUsedPct != want {
+				t.Errorf("DiskUsedPct = %v, want %d", r.DiskUsedPct, want)
+			}
+		})
 	}
 }
 
