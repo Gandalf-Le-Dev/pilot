@@ -298,6 +298,10 @@ and internal URLs never reach it.
 does `status.host` last, so the server restarts only after every agent has
 the new build.
 
+A host that already runs this build gets no new agent, but the upgrade still
+tidies the status server there. It removes a server that the host must not run,
+and it starts the server on `status.host` if the server is not running.
+
 After you edit the `status:` block (labels, notifiers, `show`, `hide`), run
 `pilot agent upgrade --force <status host>`. The `--force` is needed because an
 upgrade skips a host that already runs this build. Until you do, the server

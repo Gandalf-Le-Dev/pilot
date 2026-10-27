@@ -67,7 +67,7 @@ func strayStatusServer(ctx context.Context, r caddy.Runner, f *config.Fleet, hos
 		Status: StatusFail, Scope: ScopeHost, Host: host,
 		Title:  fmt.Sprintf("a status server is %s here, but %s", state, why),
 		Detail: "It keeps the configuration it was last given, and alerts about every host that no longer reports to it.",
-		Hint:   "pilot agent upgrade --force " + host + " removes it too",
+		Hint:   "pilot agent upgrade " + host + " removes it too",
 		Fix: func(ctx context.Context) error {
 			_, err := install.RemoveServer(ctx, r)
 			return err

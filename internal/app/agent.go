@@ -7,6 +7,7 @@ import (
 	"net"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goccy/go-yaml"
@@ -158,6 +159,33 @@ func (a *App) syncStatusServer(ctx context.Context, ex transport.Executor, host 
 		logf("removed a status server this host no longer runs")
 	}
 	return nil
+}
+
+// TidyStatusServer is syncStatusServer for a host whose agent already runs
+// this build, which `pilot agent upgrade` otherwise skips. A move of
+// status.host changes no build, so without this the old host keeps paging.
+//
+// It restarts nothing that is running: the status host's server is only
+// installed when its unit is not active, and removal is a no-op elsewhere.
+func (a *App) TidyStatusServer(ctx context.Context, host string, logf func(string, ...any)) error {
+	client, err := a.Client(host)
+	if err != nil {
+		return err
+	}
+	return a.tidyStatusServer(ctx, client, host, logf)
+}
+
+func (a *App) tidyStatusServer(ctx context.Context, ex transport.Executor, host string, logf func(string, ...any)) error {
+	if st := a.Fleet.Status; st != nil && st.Host == host {
+		r, err := ex.Run(ctx, "systemctl is-active pilot-server.service")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(r.Stdout) == "active" {
+			return nil
+		}
+	}
+	return a.syncStatusServer(ctx, ex, host, logf)
 }
 
 // StatusHostLast orders hosts for a fleet-wide sync so the status host comes

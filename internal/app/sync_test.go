@@ -8,7 +8,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Gandalf-Le-Dev/pilot/internal/agent/install"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
@@ -33,9 +35,10 @@ func TestStatusHostSyncsLast(t *testing.T) {
 // the test loudly.
 type hostFake struct {
 	transport.Executor
-	cmds    []string
-	scripts []string
-	files   map[string][]byte
+	cmds     []string
+	scripts  []string
+	files    map[string][]byte
+	serverUp bool
 }
 
 func newHostFake() *hostFake { return &hostFake{files: map[string][]byte{}} }
@@ -46,6 +49,9 @@ func (h *hostFake) Run(_ context.Context, cmd string) (transport.Result, error) 
 	case cmd == "systemctl --version":
 		return transport.Result{Stdout: "systemd 252\n"}, nil
 	case strings.HasPrefix(cmd, "systemctl is-active"):
+		if !h.serverUp {
+			return transport.Result{Stdout: "inactive\n", ExitCode: 3}, nil
+		}
 		return transport.Result{Stdout: "active\n"}, nil
 	case strings.HasPrefix(cmd, "test -e"):
 		path := strings.Trim(strings.TrimPrefix(cmd, "test -e "), "'")
@@ -58,6 +64,9 @@ func (h *hostFake) Run(_ context.Context, cmd string) (transport.Result, error) 
 
 func (h *hostFake) RunScript(_ context.Context, body string) (transport.Result, error) {
 	h.scripts = append(h.scripts, body)
+	if strings.Contains(body, "systemctl restart pilot-server.service") {
+		h.serverUp = true
+	}
 	if strings.Contains(body, "echo removed") {
 		return transport.Result{Stdout: "removed\n"}, nil
 	}
@@ -85,6 +94,7 @@ func (h *hostFake) did(sub string) bool {
 // Every host other than status.host loses any status server and route it
 // still carries, and so does every host once the status block is gone.
 func TestSyncRemovesStatusServersOffTheStatusHost(t *testing.T) {
+	fastSettle(t)
 	a := statusApp(t)
 	a.Layout = release.NewLayout("")
 	route := path.Join(a.CaddyPaths().SnippetDir, "_status.caddy")
@@ -122,5 +132,47 @@ func TestSyncRemovesStatusServersOffTheStatusHost(t *testing.T) {
 	}
 	if !box.did("disable --now pilot-server") {
 		t.Error("with no status block, the old status host kept its server")
+	}
+}
+
+func fastSettle(t *testing.T) {
+	t.Helper()
+	settle, poll := install.ServerSettle, install.ServerPoll
+	install.ServerSettle, install.ServerPoll = 5*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { install.ServerSettle, install.ServerPoll = settle, poll })
+}
+
+// A host `pilot agent upgrade` skips as current still loses a stray server,
+// and the status host gets one if it has none, but a running one is left
+// alone: a fleet-wide upgrade that changes nothing must restart nothing.
+func TestTidyStatusServer(t *testing.T) {
+	fastSettle(t)
+	a := statusApp(t)
+	a.Layout = release.NewLayout("")
+	logf := func(string, ...any) {}
+
+	web := newHostFake()
+	if err := a.tidyStatusServer(context.Background(), web, "web-1", logf); err != nil {
+		t.Fatal(err)
+	}
+	if !web.did("systemctl disable --now pilot-server.service") {
+		t.Error("a current host off status.host kept its status server")
+	}
+
+	box := newHostFake()
+	box.serverUp = true
+	if err := a.tidyStatusServer(context.Background(), box, "box-1", logf); err != nil {
+		t.Fatal(err)
+	}
+	if box.did("systemctl restart pilot-server.service") || box.did("disable --now pilot-server") {
+		t.Errorf("a running status server was touched:\n%s", strings.Join(append(box.cmds, box.scripts...), "\n"))
+	}
+
+	box = newHostFake()
+	if err := a.tidyStatusServer(context.Background(), box, "box-1", logf); err != nil {
+		t.Fatal(err)
+	}
+	if !box.did("systemctl restart pilot-server.service") {
+		t.Error("status.host moved to a current host, and it got no server")
 	}
 }

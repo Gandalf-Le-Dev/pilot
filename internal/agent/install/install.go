@@ -354,10 +354,11 @@ const minSystemd = 247
 
 // Server start is confirmed by watching the unit for a while, because
 // systemctl returns once the binary has been executed, and a server that
-// rejects its configuration exits a moment later.
+// rejects its configuration exits a moment later. Variables so a caller's
+// tests can shorten the watch too.
 var (
-	serverSettle = 3 * time.Second
-	serverPoll   = 500 * time.Millisecond
+	ServerSettle = 3 * time.Second
+	ServerPoll   = 500 * time.Millisecond
 )
 
 // InstallServer writes the status server's configuration and unit, restarts
@@ -408,7 +409,7 @@ func InstallServer(ctx context.Context, ex transport.Executor, binary string, co
 // waitServerActive watches the unit through the settle window and fails on
 // the first sign it did not stay up.
 func waitServerActive(ctx context.Context, ex transport.Executor) error {
-	deadline := time.Now().Add(serverSettle)
+	deadline := time.Now().Add(ServerSettle)
 	for {
 		r, err := ex.Run(ctx, "systemctl is-active pilot-server.service")
 		if err != nil {
@@ -427,7 +428,7 @@ func waitServerActive(ctx context.Context, ex transport.Executor) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(serverPoll):
+		case <-time.After(ServerPoll):
 		}
 	}
 }

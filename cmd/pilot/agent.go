@@ -86,6 +86,7 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string, force boo
 
 	fmt.Println()
 	var failed, changed int
+	logf := func(f string, args ...any) { fmt.Printf("    ✔ "+f+"\n", args...) }
 
 	for _, host := range hosts {
 		// Skip hosts already running this exact build, so a fleet-wide run is
@@ -100,6 +101,10 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string, force boo
 		if rc, state, _ := a.InspectAgent(ctx, host); state == app.AgentReady && !force {
 			if info, err := rc.Check(ctx); err == nil && info.Build == version {
 				fmt.Printf("  ✔ %s already runs %s\n", host, version)
+				if err := a.TidyStatusServer(ctx, host, logf); err != nil {
+					failed++
+					fmt.Fprintf(os.Stderr, "    ✖ %v\n", err)
+				}
 				continue
 			}
 		}
@@ -108,7 +113,7 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string, force boo
 		if _, err := a.SyncAgent(ctx, host, app.AgentSync{
 			Version:   version,
 			ModuleDir: moduleDir(),
-			Log:       func(f string, args ...any) { fmt.Printf("    ✔ "+f+"\n", args...) },
+			Log:       logf,
 		}); err != nil {
 			failed++
 			fmt.Fprintf(os.Stderr, "    ✖ %v\n", err)

@@ -464,9 +464,9 @@ func TestInstallServerWritesConfigAndRestarts(t *testing.T) {
 
 func fastSettle(t *testing.T) {
 	t.Helper()
-	settle, poll := serverSettle, serverPoll
-	serverSettle, serverPoll = 20*time.Millisecond, time.Millisecond
-	t.Cleanup(func() { serverSettle, serverPoll = settle, poll })
+	settle, poll := ServerSettle, ServerPoll
+	ServerSettle, ServerPoll = 20*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { ServerSettle, ServerPoll = settle, poll })
 }
 
 // A server that exits right after systemctl reports the restart done is a
