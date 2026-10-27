@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -71,15 +72,18 @@ func (a *Agent) pushReport(ctx context.Context, t *config.ReportTarget) error {
 
 // pushState logs the first failure and the recovery, not every attempt: a
 // status server down for a night is two journal lines, not two thousand.
-type pushState struct{ failing bool }
+type pushState struct {
+	log     *slog.Logger
+	failing bool
+}
 
 func (p *pushState) record(err error, url string) {
 	switch {
 	case err != nil && !p.failing:
-		logf("reporting to %s failed, retrying every %s: %v", url, HealthInterval, err)
+		p.log.Warn("reporting failed, retrying", "url", url, "every", HealthInterval, "err", err)
 		p.failing = true
 	case err == nil && p.failing:
-		logf("reporting to %s again", url)
+		p.log.Info("reporting again", "url", url)
 		p.failing = false
 	}
 }

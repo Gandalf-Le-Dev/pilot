@@ -92,7 +92,7 @@ func (a *Agent) healthLoop(ctx context.Context) {
 	tick := time.NewTicker(HealthInterval)
 	defer tick.Stop()
 
-	var push pushState
+	push := pushState{log: a.log()}
 	for {
 		select {
 		case <-ctx.Done():

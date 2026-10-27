@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent"
 	"github.com/Gandalf-Le-Dev/pilot/internal/agent/client"
+	"github.com/Gandalf-Le-Dev/pilot/internal/journal"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
 	"github.com/Gandalf-Le-Dev/pilot/internal/server"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport/proto"
@@ -70,6 +72,7 @@ func newServeCmd() *cobra.Command {
 		Short: "Run the agent daemon",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			logTo("pilotd")
 			a, err := agent.New(agent.Options{
 				Root: root, Host: host, Build: version,
 				Caddyfile: caddyfile, Snippets: snippets, Admin: admin,
@@ -93,6 +96,13 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&admin, "caddy-admin", "", "Caddy admin API base URL")
 
 	return cmd
+}
+
+// logTo sends this process's log, the log package's included, to stderr as
+// lines attributed to name. Only the daemons call it: ctl's stderr goes back to
+// the CLI over SSH, not the journal.
+func logTo(name string) {
+	slog.SetDefault(slog.New(journal.NewHandler(os.Stderr, name, journal.OnStderr())))
 }
 
 // newServerCmd takes the euid as a function so a test can show the root

@@ -367,7 +367,7 @@ func (a *Agent) Serve(ctx context.Context, socketPath string) error {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	logf("listening on %s (protocol %d, build %s)", socketPath, proto.Version, a.Build)
+	a.log().Info("listening", "socket", socketPath, "protocol", proto.Version, "build", a.Build)
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return err
 	}

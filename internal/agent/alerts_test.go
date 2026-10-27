@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
@@ -106,11 +107,8 @@ func TestHostReadingLeavesUnreadDiskUnset(t *testing.T) {
 // repeat every sweep.
 func TestUnreadMemoryIsLoggedOnce(t *testing.T) {
 	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-
 	a := newAgent(t)
+	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
 	a.meminfo = func() ([]byte, error) { return []byte("MemTotal: 100 kB\nMemAvailable: 200 kB\n"), nil }
 	a.readings(t.Context())
 	a.readings(t.Context())
@@ -121,5 +119,22 @@ func TestUnreadMemoryIsLoggedOnce(t *testing.T) {
 	}
 	if !strings.Contains(out, "mem_total=102400") || !strings.Contains(out, "mem_available=204800") {
 		t.Errorf("log should carry the figures it rejected:\n%s", out)
+	}
+}
+
+// One bad expression is skipped with a warning on the agent's own logger, so
+// a test can read it without touching the process-wide default.
+func TestUnparseableRuleIsLogged(t *testing.T) {
+	var buf bytes.Buffer
+	a := newAgent(t)
+	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	a.fleet = &FleetConfig{Alerts: []config.Alert{{When: "no.such.metric > 1"}, {When: "host.disk.used_pct > 90"}}}
+
+	if got := len(a.Rules()); got != 1 {
+		t.Fatalf("got %d rules, want the parseable one", got)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, `msg="skipping alert" when="no.such.metric > 1" err=`) {
+		t.Errorf("want a warning naming the rule and its error, got:\n%s", out)
 	}
 }

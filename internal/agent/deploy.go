@@ -260,7 +260,7 @@ func (a *Agent) record(ctx context.Context, t *runtime.Target, svc *config.Servi
 	st.Record(rec)
 
 	if err := runtime.WriteState(ctx, t, st); err != nil {
-		logf("could not record state for %s: %v", svc.Name, err)
+		a.log().Error("could not record state", "service", svc.Name, "err", err)
 	}
 }
 
@@ -374,7 +374,7 @@ func (a *Agent) runRollback(jobID string, svc *config.Service, rt runtime.Runtim
 		Outcome: release.OutcomeOK, Reason: "manual rollback",
 	})
 	if err := runtime.WriteState(ctx, t, st); err != nil {
-		logf("could not record state for %s: %v", svc.Name, err)
+		a.log().Error("could not record state", "service", svc.Name, "err", err)
 	}
 
 	a.setDrift(svc.Name, nil)

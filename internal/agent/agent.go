@@ -9,6 +9,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -62,6 +63,9 @@ type Agent struct {
 	// now is overridable in tests; nil means the wall clock.
 	now func() time.Time
 
+	// logger is overridable in tests; nil means slog.Default().
+	logger *slog.Logger
+
 	// meminfo is overridable in tests; nil reads /proc/meminfo.
 	meminfo     func() ([]byte, error)
 	memWarnOnce sync.Once
@@ -113,7 +117,7 @@ func New(opts Options) (*Agent, error) {
 	}
 
 	a.alerts.OnError = func(rule, notifier string, err error) {
-		logf("alert %q: notifier %q failed: %v", rule, notifier, err)
+		a.log().Error("alert notification failed", "rule", rule, "notifier", notifier, "err", err)
 	}
 
 	// Every finished job announces itself. Hooked once here rather than at each
@@ -167,12 +171,12 @@ func (a *Agent) loadCache() error {
 		path := filepath.Join(a.cacheDir(), e.Name())
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			logf("skipping %s: %v", path, err)
+			a.log().Warn("skipping cached service", "path", path, "err", err)
 			continue
 		}
 		s, err := config.ParseService(raw, e.Name())
 		if err != nil {
-			logf("skipping %s: %v", path, err)
+			a.log().Warn("skipping cached service", "path", path, "err", err)
 			continue
 		}
 		a.services[s.Name] = s
@@ -311,8 +315,9 @@ func (a *Agent) setDrift(name string, d *driftRecord) {
 	a.drift[name] = d
 }
 
-// logf writes a daemon log line. systemd captures stderr into the journal, so
-// there is no log file to rotate and no logging configuration to get wrong.
-func logf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "pilotd: "+format+"\n", args...)
+func (a *Agent) log() *slog.Logger {
+	if a.logger != nil {
+		return a.logger
+	}
+	return slog.Default()
 }
