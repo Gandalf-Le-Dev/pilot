@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -322,6 +323,16 @@ func (a *Agent) diskUsage() (*proto.DiskUsage, error) {
 	return nil, fmt.Errorf("no percentage in df output")
 }
 
+// httpServer sends net/http's own errors, a recovered handler panic among
+// them, to the agent's log at error level rather than the log package's info.
+func (a *Agent) httpServer() *http.Server {
+	return &http.Server{
+		Handler:           a.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ErrorLog:          slog.NewLogLogger(a.log().Handler(), slog.LevelError),
+	}
+}
+
 // Serve listens on a Unix socket until ctx is cancelled.
 //
 // A Unix socket, mode 0600, is the whole security model: reaching the agent
@@ -355,10 +366,7 @@ func (a *Agent) Serve(ctx context.Context, socketPath string) error {
 		return fmt.Errorf("securing %s: %w", socketPath, err)
 	}
 
-	srv := &http.Server{
-		Handler:           a.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	srv := a.httpServer()
 
 	go func() {
 		<-ctx.Done()

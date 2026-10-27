@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -505,4 +507,17 @@ func formatEvents(j *proto.Job) string {
 		b.WriteString("  [" + e.Phase + "] " + e.Message + "\n")
 	}
 	return b.String()
+}
+
+// net/http reports a recovered handler panic through ErrorLog, which would
+// otherwise reach the journal at info.
+func TestSocketServerErrorsLogAtError(t *testing.T) {
+	var buf bytes.Buffer
+	a := newAgent(t)
+	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	a.httpServer().ErrorLog.Print("http: panic serving @: boom")
+
+	if out := buf.String(); !strings.Contains(out, `level=ERROR msg="http: panic serving @: boom"`) {
+		t.Errorf("got %q, want it at error level", out)
+	}
 }

@@ -53,8 +53,8 @@ func serve(ctx context.Context, s *Server, publicLn, ingestLn net.Listener, tail
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	public := newHTTPServer(s.PublicHandler())
-	ingest := newHTTPServer(s.IngestHandler())
+	public := newHTTPServer(s.PublicHandler(), slog.Default())
+	ingest := newHTTPServer(s.IngestHandler(), slog.Default())
 
 	errc := make(chan error, 3)
 	run := func(srv *http.Server, ln net.Listener) {
@@ -102,7 +102,11 @@ func serve(ctx context.Context, s *Server, publicLn, ingestLn net.Listener, tail
 // newHTTPServer bounds every phase of a request. The public side is reached
 // from the internet through Caddy, and the ingest side by anything on the
 // tailnet, so neither may let a slow client hold a connection open.
-func newHTTPServer(h http.Handler) *http.Server {
+//
+// net/http's own errors go to log at error level. Both sides are plain HTTP
+// on a bound address, so there is no TLS handshake noise to flood it: what
+// arrives is a bug of ours, such as a handler panic, or a failing accept.
+func newHTTPServer(h http.Handler, log *slog.Logger) *http.Server {
 	return &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -110,6 +114,7 @@ func newHTTPServer(h http.Handler) *http.Server {
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    8 << 10,
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelError),
 	}
 }
 
