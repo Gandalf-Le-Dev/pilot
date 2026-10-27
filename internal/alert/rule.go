@@ -111,6 +111,40 @@ const (
 
 var ops = []Op{OpGTE, OpLTE, OpNEQ, OpEQ, OpGT, OpLT} // longest first, so >= beats >
 
+// KnownOps lists every comparison the parser accepts, sorted. It reads the
+// table split uses, so the two cannot disagree.
+func KnownOps() []string {
+	out := make([]string, 0, len(ops))
+	for _, op := range ops {
+		out = append(out, string(op))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// valueForms names each shape of threshold the parser accepts, which is
+// whatever strconv.ParseFloat takes. The examples are tested to parse.
+var valueForms = []struct{ name, example string }{
+	{"integer", "10"},
+	{"decimal", "15.5"},
+	{"signed", "-1"},
+	{"exponent", "1e3"},
+	{"digit-separated", "1_000"},
+	{"hex-float", "0x1p4"},
+	{"infinity", "Inf"},
+	{"nan", "NaN"},
+}
+
+// ValueForms lists the names of the threshold forms the parser accepts, sorted.
+func ValueForms() []string {
+	out := make([]string, 0, len(valueForms))
+	for _, f := range valueForms {
+		out = append(out, f.name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Condition is a parsed rule expression.
 type Condition struct {
 	Metric Metric

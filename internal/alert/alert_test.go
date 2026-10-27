@@ -3,6 +3,7 @@ package alert
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -94,6 +95,71 @@ func TestParseErrors(t *testing.T) {
 				t.Errorf("error %q should mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// KnownOps feeds the schema digest, so an operator the parser takes but the
+// list omits would reach an old agent unannounced. Trying every short run of
+// operator-like characters catches a parse path that bypasses the table.
+func TestKnownOpsAreExactlyWhatParseAccepts(t *testing.T) {
+	const chars = "<>=!~&|^%*/+-:"
+	var candidates []string
+	for _, a := range chars {
+		candidates = append(candidates, string(a))
+		for _, b := range chars {
+			candidates = append(candidates, string(a)+string(b))
+			for _, c := range chars {
+				candidates = append(candidates, string(a)+string(b)+string(c))
+			}
+		}
+	}
+	known := KnownOps()
+	for _, tok := range candidates {
+		c, err := Parse("service.restarts " + tok + " 3")
+		accepted := err == nil && string(c.Op) == tok
+		if listed := slices.Contains(known, tok); accepted != listed {
+			t.Errorf("Parse accepts %q: %v, KnownOps lists it: %v", tok, accepted, listed)
+		}
+	}
+}
+
+// An operator the parser takes but compare does not handle would be a rule
+// that validates and never fires.
+func TestEveryKnownOpCompares(t *testing.T) {
+	for _, op := range KnownOps() {
+		var sawTrue, sawFalse bool
+		for _, got := range []float64{1, 2, 3} {
+			if compare(got, Op(op), 2) {
+				sawTrue = true
+			} else {
+				sawFalse = true
+			}
+		}
+		if !sawTrue || !sawFalse {
+			t.Errorf("compare treats %q as a constant", op)
+		}
+	}
+}
+
+func TestEveryValueFormParses(t *testing.T) {
+	if len(ValueForms()) != len(valueForms) {
+		t.Fatalf("ValueForms lists %d forms, valueForms has %d", len(ValueForms()), len(valueForms))
+	}
+	for _, f := range valueForms {
+		if _, err := Parse("service.restarts > " + f.example); err != nil {
+			t.Errorf("value form %s (%q) does not parse: %v", f.name, f.example, err)
+		}
+	}
+}
+
+// Value forms cannot be enumerated from the parser, so this pins the boundary
+// instead: if one of these starts parsing, it is a new form an old agent would
+// reject, and it belongs in valueForms so the schema digest moves.
+func TestUnacceptedValueFormsAreRejected(t *testing.T) {
+	for _, v := range []string{"14d", "1h", "10%", "10GB", "ten"} {
+		if _, err := Parse("service.restarts > " + v); err == nil {
+			t.Errorf("Parse accepts %q; name its form in valueForms", v)
+		}
 	}
 }
 
