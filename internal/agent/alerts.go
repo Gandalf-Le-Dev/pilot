@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/alert"
@@ -195,7 +196,7 @@ func (a *Agent) warnSkipped(bad []unparsed) {
 
 	now := make(map[string]bool, len(bad))
 	for _, u := range bad {
-		key := u.subject + "\x00" + u.when
+		key := u.subject + "\x00" + strings.TrimSpace(u.when)
 		now[key] = true
 		if !a.skipped[key] {
 			a.log().Warn("skipping alert", "service", u.subject, "when", u.when, "err", u.err)

@@ -301,15 +301,16 @@ func TestUnparseableRuleIsLogged(t *testing.T) {
 
 // Rules runs every evaluation, so a bad rule left in the config must not warn
 // every fifteen seconds. Once it leaves the config it is forgotten, and warns
-// again if it comes back.
+// again if it comes back. Like alert.Rule.Key, the key ignores outer spaces.
 func TestUnparseableRuleIsLoggedOncePerAppearance(t *testing.T) {
 	var buf bytes.Buffer
 	a := newAgent(t)
 	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
 	bad := &FleetConfig{Alerts: []config.Alert{{When: "no.such.metric > 1"}}}
+	padded := &FleetConfig{Alerts: []config.Alert{{When: " no.such.metric > 1 "}}}
 	good := &FleetConfig{Alerts: []config.Alert{{When: "host.disk.used_pct > 90"}}}
 
-	for _, fc := range []*FleetConfig{bad, bad, bad, good, bad, bad} {
+	for _, fc := range []*FleetConfig{bad, padded, bad, good, bad, padded} {
 		a.fleet = fc
 		a.Rules()
 	}
