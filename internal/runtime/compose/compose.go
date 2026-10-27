@@ -6,11 +6,13 @@
 package compose
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -151,13 +153,13 @@ func (r *Runtime) Observe(ctx context.Context, t *runtime.Target) (runtime.Obser
 		return obs, nil
 	}
 
-	instances, err := ParsePS([]byte(res.Stdout))
+	instances, err := containers(ctx, t, res.Stdout)
 	if err != nil {
 		return obs, fmt.Errorf("reading container status for %s: %w", t.Label(), err)
 	}
 	obs.Instances = instances
 	obs.State, obs.Detail = summarise(instances, current)
-	obs.Since = earliestStart(instances)
+	obs.Since = serviceSince(instances)
 	return obs, nil
 }
 
@@ -199,10 +201,16 @@ func summarise(instances []runtime.Instance, current string) (runtime.State, str
 	return runtime.StateRunning, ""
 }
 
-func earliestStart(instances []runtime.Instance) time.Time {
+// serviceSince is the earliest start among running containers, so an old
+// one-shot that exited long ago does not age a stack started today. Only when
+// nothing runs does it fall back to the earliest stop.
+func serviceSince(instances []runtime.Instance) time.Time {
+	anyRunning := slices.ContainsFunc(instances, func(in runtime.Instance) bool {
+		return strings.EqualFold(in.State, "running")
+	})
 	var out time.Time
 	for _, in := range instances {
-		if in.Since.IsZero() {
+		if in.Since.IsZero() || anyRunning && !strings.EqualFold(in.State, "running") {
 			continue
 		}
 		if out.IsZero() || in.Since.Before(out) {
@@ -216,6 +224,7 @@ func earliestStart(instances []runtime.Instance) time.Time {
 // uses. Compose has changed this shape between minor versions, so unknown
 // fields are ignored and every field is treated as optional.
 type psEntry struct {
+	ID         string `json:"ID"`
 	Name       string `json:"Name"`
 	Service    string `json:"Service"`
 	Image      string `json:"Image"`
@@ -223,7 +232,6 @@ type psEntry struct {
 	Health     string `json:"Health"`
 	Status     string `json:"Status"`
 	ExitCode   int    `json:"ExitCode"`
-	CreatedAt  string `json:"CreatedAt"`
 	RunningFor string `json:"RunningFor"`
 }
 
@@ -231,15 +239,22 @@ type psEntry struct {
 // array or one object per line depending on the compose version. Both are
 // accepted rather than pinning users to a particular Docker release.
 func ParsePS(raw []byte) ([]runtime.Instance, error) {
+	instances, _, err := parsePS(raw)
+	return instances, err
+}
+
+// parsePS also returns, for each instance, the ID or name docker inspect knows
+// the container by.
+func parsePS(raw []byte) ([]runtime.Instance, []string, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	var entries []psEntry
 	if strings.HasPrefix(trimmed, "[") {
 		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	} else {
 		for line := range strings.SplitSeq(trimmed, "\n") {
@@ -249,13 +264,14 @@ func ParsePS(raw []byte) ([]runtime.Instance, error) {
 			}
 			var e psEntry
 			if err := json.Unmarshal([]byte(line), &e); err != nil {
-				return nil, fmt.Errorf("unparseable container status %q: %w", line, err)
+				return nil, nil, fmt.Errorf("unparseable container status %q: %w", line, err)
 			}
 			entries = append(entries, e)
 		}
 	}
 
 	out := make([]runtime.Instance, 0, len(entries))
+	refs := make([]string, 0, len(entries))
 	for _, e := range entries {
 		name := e.Name
 		if name == "" {
@@ -274,10 +290,90 @@ func ParsePS(raw []byte) ([]runtime.Instance, error) {
 		if e.ExitCode != 0 && !strings.EqualFold(in.State, "running") {
 			in.Detail = strings.TrimSpace(fmt.Sprintf("%s (exit %d)", e.Status, e.ExitCode))
 		}
-		if ts, err := time.Parse(time.RFC3339Nano, e.CreatedAt); err == nil {
-			in.Since = ts
-		}
 		out = append(out, in)
+		refs = append(refs, cmp.Or(e.ID, e.Name))
+	}
+	return out, refs, nil
+}
+
+// containers parses `docker compose ps` output and dates each container. ps
+// only has CreatedAt, which survives restarts and reboots, so the last start or
+// stop comes from one docker inspect over the whole project.
+func containers(ctx context.Context, t *runtime.Target, psOut string) ([]runtime.Instance, error) {
+	instances, refs, err := parsePS([]byte(psOut))
+	if err != nil {
+		return nil, err
+	}
+	setSince(ctx, t, instances, refs)
+	return instances, nil
+}
+
+// setSince leaves Since zero when inspect fails: an age is cosmetic, and a
+// failed observation is not. A non-zero exit is not a failure on its own:
+// inspect still prints every container it found, so one removed since ps
+// should not blank the others.
+func setSince(ctx context.Context, t *runtime.Target, instances []runtime.Instance, refs []string) {
+	named := slices.DeleteFunc(slices.Clone(refs), func(ref string) bool { return ref == "" })
+	if len(named) == 0 {
+		return
+	}
+	args := append([]string{"docker", "inspect", "--type", "container", "--format", inspectFormat}, named...)
+	res, err := t.Client.Run(ctx, transport.Join(args...))
+	if err != nil {
+		return
+	}
+	entries, err := parseInspect([]byte(res.Stdout))
+	if err != nil {
+		return
+	}
+	for i, ref := range refs {
+		if j := slices.IndexFunc(entries, func(e inspectEntry) bool { return e.is(ref) }); j >= 0 {
+			instances[i].Since = entries[j].since()
+		}
+	}
+}
+
+// inspectFormat prints one JSON object per container, so names and times never
+// have to be split on spaces.
+const inspectFormat = `{"id":{{json .Id}},"name":{{json .Name}},"running":{{json .State.Running}},` +
+	`"started":{{json .State.StartedAt}},"finished":{{json .State.FinishedAt}}}`
+
+type inspectEntry struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	Running  bool      `json:"running"`
+	Started  time.Time `json:"started"`
+	Finished time.Time `json:"finished"`
+}
+
+// is reports whether ref, a possibly short ID or a bare container name, names
+// this container. Docker prefixes names with a slash.
+func (e inspectEntry) is(ref string) bool {
+	return ref != "" && (strings.HasPrefix(e.ID, ref) || strings.TrimPrefix(e.Name, "/") == ref)
+}
+
+// since mirrors the systemd runtime: a running container dates from its last
+// start, a stopped one from its last stop. Docker's never-set time,
+// 0001-01-01T00:00:00Z, parses as the zero time.
+func (e inspectEntry) since() time.Time {
+	if e.Running {
+		return e.Started
+	}
+	return e.Finished
+}
+
+func parseInspect(raw []byte) ([]inspectEntry, error) {
+	var out []inspectEntry
+	for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var e inspectEntry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			return nil, fmt.Errorf("unparseable container inspect %q: %w", line, err)
+		}
+		out = append(out, e)
 	}
 	return out, nil
 }

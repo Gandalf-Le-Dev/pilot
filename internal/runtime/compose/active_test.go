@@ -18,9 +18,11 @@ import (
 // recorder captures the commands a runtime would run, and serves a state.json
 // so colour resolution has something to read.
 type recorder struct {
-	cmds  []string
-	files map[string]string
-	psOut string
+	cmds        []string
+	files       map[string]string
+	psOut       string
+	inspectOut  string
+	inspectFail bool
 }
 
 func (r *recorder) Run(ctx context.Context, cmd string) (transport.Result, error) {
@@ -28,6 +30,11 @@ func (r *recorder) Run(ctx context.Context, cmd string) (transport.Result, error
 	switch {
 	case strings.Contains(cmd, "ps --all"):
 		return transport.Result{Stdout: r.psOut}, nil
+	case strings.HasPrefix(cmd, "docker inspect"):
+		if r.inspectFail {
+			return transport.Result{ExitCode: 1, Stdout: r.inspectOut, Stderr: "Error: No such object"}, nil
+		}
+		return transport.Result{Stdout: r.inspectOut}, nil
 	case strings.HasPrefix(cmd, "readlink"):
 		return transport.Result{Stdout: "releases/0001-aaaaaaa\n"}, nil
 	case strings.HasPrefix(cmd, "cat "):

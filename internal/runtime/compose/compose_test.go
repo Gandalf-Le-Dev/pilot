@@ -1,8 +1,13 @@
 package compose
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"text/template"
+	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/release"
@@ -192,5 +197,269 @@ func TestProjectDefaultsToServiceName(t *testing.T) {
 func TestKind(t *testing.T) {
 	if New().Kind() != config.RuntimeCompose {
 		t.Error("wrong runtime kind")
+	}
+}
+
+// Docker writes `0001-01-01T00:00:00Z` for a time that never happened; it must
+// read as no time at all, not as an age of two thousand years.
+func TestParseInspectSince(t *testing.T) {
+	started := time.Date(2026, 10, 7, 18, 0, 40, 748848514, time.UTC)
+	finished := time.Date(2026, 10, 7, 18, 0, 37, 723703083, time.UTC)
+
+	tests := []struct {
+		name string
+		line string
+		want time.Time
+	}{
+		{
+			"running uses its last start",
+			`{"id":"a2c2","name":"/wakapi","running":true,"started":"2026-10-07T18:00:40.748848514Z","finished":"2026-10-07T18:00:37.723703083Z"}`,
+			started,
+		},
+		{
+			"stopped uses its last stop",
+			`{"id":"a2c2","name":"/wakapi","running":false,"started":"2026-10-07T18:00:30Z","finished":"2026-10-07T18:00:37.723703083Z"}`,
+			finished,
+		},
+		{
+			"never started is zero",
+			`{"id":"a2c2","name":"/wakapi","running":false,"started":"0001-01-01T00:00:00Z","finished":"0001-01-01T00:00:00Z"}`,
+			time.Time{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseInspect([]byte(tc.line + "\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d entries, want 1", len(got))
+			}
+			if since := got[0].since(); !since.Equal(tc.want) {
+				t.Errorf("since = %v, want %v", since, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseInspectRejectsGarbage(t *testing.T) {
+	if _, err := parseInspect([]byte("Template parsing error")); err == nil {
+		t.Error("want an error")
+	}
+}
+
+// ps only reports CreatedAt, which survives restarts and reboots: a container
+// created in August and restarted today would show months of age.
+func TestObserveDatesContainersFromLastStart(t *testing.T) {
+	tg, rec := bgTarget(t, "green")
+	rec.psOut = `{"ID":"aaa111","Name":"web-green-web-1","State":"running","CreatedAt":"2026-08-12 10:00:00 +0000 UTC"}
+{"ID":"bbb222","Name":"web-green-worker-1","State":"running","CreatedAt":"2026-08-12 10:00:00 +0000 UTC"}`
+	rec.inspectOut = `{"id":"aaa111ffff","name":"/web-green-web-1","running":true,"started":"2026-10-07T18:00:40Z","finished":"0001-01-01T00:00:00Z"}
+{"id":"bbb222ffff","name":"/web-green-worker-1","running":true,"started":"2026-10-07T18:00:45Z","finished":"0001-01-01T00:00:00Z"}
+`
+
+	obs, err := New().Observe(context.Background(), tg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	web := time.Date(2026, 10, 7, 18, 0, 40, 0, time.UTC)
+	worker := time.Date(2026, 10, 7, 18, 0, 45, 0, time.UTC)
+	if len(obs.Instances) != 2 {
+		t.Fatalf("got %d instances, want 2", len(obs.Instances))
+	}
+	if !obs.Instances[0].Since.Equal(web) || !obs.Instances[1].Since.Equal(worker) {
+		t.Errorf("since = %v, %v; want %v, %v", obs.Instances[0].Since, obs.Instances[1].Since, web, worker)
+	}
+	if !obs.Since.Equal(web) {
+		t.Errorf("observation since = %v, want the earliest start %v", obs.Since, web)
+	}
+
+	var inspects int
+	for _, c := range rec.cmds {
+		if strings.HasPrefix(c, "docker inspect") {
+			inspects++
+			if !strings.Contains(c, "aaa111") || !strings.Contains(c, "bbb222") {
+				t.Errorf("inspect should name every container by ID: %s", c)
+			}
+		}
+	}
+	if inspects != 1 {
+		t.Errorf("ran %d inspects, want one per observation", inspects)
+	}
+}
+
+// Older compose has no ID in ps; the container name still finds it, despite
+// inspect reporting it with a leading slash.
+func TestObserveDatesContainersByNameWithoutID(t *testing.T) {
+	tg, rec := bgTarget(t, "green")
+	rec.inspectOut = `{"id":"ccc333","name":"/web-green-web-1","running":true,"started":"2026-10-07T18:00:40Z","finished":"0001-01-01T00:00:00Z"}`
+
+	obs, err := New().Observe(context.Background(), tg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 10, 7, 18, 0, 40, 0, time.UTC); !obs.Instances[0].Since.Equal(want) {
+		t.Errorf("since = %v, want %v", obs.Instances[0].Since, want)
+	}
+}
+
+// An age is cosmetic; losing it must not turn a running service into a failed
+// observation.
+func TestObserveSurvivesFailedInspect(t *testing.T) {
+	for name, set := range map[string]func(*recorder){
+		"exit code":   func(r *recorder) { r.inspectFail = true },
+		"unparseable": func(r *recorder) { r.inspectOut = "Template parsing error" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			tg, rec := bgTarget(t, "green")
+			set(rec)
+
+			obs, err := New().Observe(context.Background(), tg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if obs.State != runtime.StateRunning {
+				t.Errorf("state = %q, want running", obs.State)
+			}
+			if !obs.Since.IsZero() || !obs.Instances[0].Since.IsZero() {
+				t.Errorf("since should stay blank, got %v", obs.Since)
+			}
+		})
+	}
+}
+
+func TestObserveColorDatesContainersFromLastStop(t *testing.T) {
+	tg, rec := bgTarget(t, "green")
+	rec.psOut = `[{"ID":"ddd444","Name":"web-blue-web-1","State":"exited","Status":"Exited (0)"}]`
+	rec.inspectOut = `{"id":"ddd444ffff","name":"/web-blue-web-1","running":false,"started":"2026-10-01T09:00:00Z","finished":"2026-10-07T18:00:37Z"}`
+
+	obs, err := ObserveColor(context.Background(), tg, config.ColorBlue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 10, 7, 18, 0, 37, 0, time.UTC); !obs.Instances[0].Since.Equal(want) {
+		t.Errorf("since = %v, want the last stop %v", obs.Instances[0].Since, want)
+	}
+}
+
+// A one-shot migrate container that exited weeks ago must not age a stack whose
+// web container started today.
+func TestServiceSince(t *testing.T) {
+	today := time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)
+	later := today.Add(time.Hour)
+	weeksAgo := today.AddDate(0, 0, -21)
+	inst := func(state string, since time.Time) runtime.Instance {
+		return runtime.Instance{Name: "c", State: state, Since: since}
+	}
+
+	tests := []struct {
+		name      string
+		instances []runtime.Instance
+		want      time.Time
+	}{
+		{"none", nil, time.Time{}},
+		{"earliest running start", []runtime.Instance{inst("running", later), inst("running", today)}, today},
+		{"ignores stopped when any run", []runtime.Instance{inst("running", today), inst("exited", weeksAgo)}, today},
+		{"skips running without a start", []runtime.Instance{inst("running", time.Time{}), inst("running", today)}, today},
+		{"earliest stop when none run", []runtime.Instance{inst("exited", today), inst("exited", weeksAgo)}, weeksAgo},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := serviceSince(tc.instances); !got.Equal(tc.want) {
+				t.Errorf("serviceSince = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// docker inspect prints what it found and exits 1 for the rest, so a container
+// removed between ps and inspect must not blank every other age.
+func TestObserveKeepsAgesWhenAContainerVanished(t *testing.T) {
+	tg, rec := bgTarget(t, "green")
+	rec.psOut = `{"ID":"aaa111","Name":"web-green-web-1","State":"running"}
+{"ID":"bbb222","Name":"web-green-worker-1","State":"running"}`
+	rec.inspectOut = `{"id":"aaa111ffff","name":"/web-green-web-1","running":true,"started":"2026-10-07T18:00:40Z","finished":"0001-01-01T00:00:00Z"}`
+	rec.inspectFail = true
+
+	obs, err := New().Observe(context.Background(), tg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 10, 7, 18, 0, 40, 0, time.UTC); !obs.Instances[0].Since.Equal(want) {
+		t.Errorf("since = %v, want %v", obs.Instances[0].Since, want)
+	}
+	if !obs.Instances[1].Since.IsZero() {
+		t.Errorf("vanished container since = %v, want zero", obs.Instances[1].Since)
+	}
+}
+
+// Ties inspectFormat to the keys inspectEntry decodes: executing it the way
+// docker does must produce lines parseInspect reads back intact.
+func TestInspectFormatRoundTrips(t *testing.T) {
+	type dockerState struct {
+		Running               bool
+		StartedAt, FinishedAt string
+	}
+	type dockerContainer struct {
+		Id    string
+		Name  string
+		State dockerState
+	}
+	tmpl := template.Must(template.New("").Funcs(template.FuncMap{
+		"json": func(v any) (string, error) {
+			var b bytes.Buffer
+			enc := json.NewEncoder(&b)
+			enc.SetEscapeHTML(false)
+			if err := enc.Encode(v); err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(b.String()), nil
+		},
+	}).Parse(inspectFormat))
+
+	var out bytes.Buffer
+	for _, c := range []dockerContainer{
+		{"aaa111", "/web", dockerState{true, "2026-10-07T18:00:40.748848514Z", "2026-10-07T18:00:37.723703083Z"}},
+		{"bbb222", "/migrate", dockerState{false, "2026-10-01T09:00:00Z", "2026-10-01T09:00:05Z"}},
+	} {
+		if err := tmpl.Execute(&out, c); err != nil {
+			t.Fatal(err)
+		}
+		out.WriteByte('\n')
+	}
+
+	got, err := parseInspect(out.Bytes())
+	if err != nil {
+		t.Fatalf("parseInspect(%s): %v", out.String(), err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2", len(got))
+	}
+	if !got[0].is("aaa111") || !got[0].is("web") || !got[1].is("migrate") {
+		t.Errorf("id or name lost: %+v", got)
+	}
+	if want := time.Date(2026, 10, 7, 18, 0, 40, 748848514, time.UTC); !got[0].since().Equal(want) {
+		t.Errorf("running since = %v, want %v", got[0].since(), want)
+	}
+	if want := time.Date(2026, 10, 1, 9, 0, 5, 0, time.UTC); !got[1].since().Equal(want) {
+		t.Errorf("stopped since = %v, want %v", got[1].since(), want)
+	}
+}
+
+func TestObserveSkipsInspectWithoutContainers(t *testing.T) {
+	for name, ps := range map[string]string{"no output": "", "empty array": "[]"} {
+		t.Run(name, func(t *testing.T) {
+			tg, rec := bgTarget(t, "green")
+			rec.psOut = ps
+
+			if _, err := New().Observe(context.Background(), tg); err != nil {
+				t.Fatal(err)
+			}
+			if rec.ran("docker inspect") {
+				t.Errorf("inspect should not run with no containers:\n%v", rec.cmds)
+			}
+		})
 	}
 }
