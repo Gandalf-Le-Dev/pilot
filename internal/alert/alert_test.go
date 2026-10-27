@@ -434,6 +434,38 @@ func TestUnreadMemoryDoesNotResolve(t *testing.T) {
 	}
 }
 
+// An unread round neither advances nor resets a pending `for:` timer: the rule
+// fires at the deadline set by the first reading, not earlier and not later.
+func TestUnreadMemoryKeepsPendingTimer(t *testing.T) {
+	e, cap, clk := newEngine(t)
+	r := rule(t, "", "host.mem.used_pct > 90", 10*time.Minute)
+	high := map[string]Reading{"": {MemUsedPct: new(95)}}
+	ctx := context.Background()
+	start := clk.now()
+
+	e.Evaluate(ctx, []Rule{r}, high)
+	clk.add(9 * time.Minute)
+	e.Evaluate(ctx, []Rule{r}, high)
+	clk.add(30 * time.Second)
+	e.Evaluate(ctx, []Rule{r}, map[string]Reading{"": {}})
+	e.Flush()
+	if n := len(cap.all()); n != 0 {
+		t.Fatalf("fired before the deadline (%d sent)", n)
+	}
+
+	clk.add(30 * time.Second)
+	e.Evaluate(ctx, []Rule{r}, high)
+	e.Flush()
+
+	sent := cap.all()
+	if len(sent) != 1 || sent[0].Severity != SevFiring {
+		t.Fatalf("got %+v, want one firing at the original deadline", sent)
+	}
+	if !sent[0].Since.Equal(start) {
+		t.Errorf("since = %v, want %v: the unread round reset the timer", sent[0].Since, start)
+	}
+}
+
 // Reordering the config must not reset what is currently firing.
 func TestStateSurvivesRuleReordering(t *testing.T) {
 	e, cap, clk := newEngine(t)
