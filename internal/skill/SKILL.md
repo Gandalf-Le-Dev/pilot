@@ -176,6 +176,12 @@ the human sets `acme_dns` in the Caddyfile's global options. `pilot routes
 --prune` also repairs a shared site block left with no routes, or routes left
 with no site block.
 
+A blue-green service whose site answers 502 while both colours are healthy may
+still have a route at `expose.upstream`, the container port, which nothing on
+the host listens on. Its route must point at the serving colour's port from
+`rollout.ports`. Pilot installed such routes before it kept a route per colour,
+and `pilot deploy` replaces one.
+
 ## Diagnosing, in order
 
 Every command takes `--json`. Use it — the human tables are for humans and are
