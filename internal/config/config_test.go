@@ -278,6 +278,46 @@ func TestValidateExpose(t *testing.T) {
 			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"v1/*\", upstream: 8080}\n",
 			"expose.path", "must start with /",
 		},
+		{
+			"path wildcard mid-path",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1/*/x\", upstream: 8080}\n",
+			"expose.path", "wildcard other than a trailing /*",
+		},
+		{
+			"path wildcard without slash",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1*\", upstream: 8080}\n",
+			"expose.path", "wildcard other than a trailing /*",
+		},
+		{
+			"path with a newline",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1\\n}\", upstream: 8080}\n",
+			"expose.path", "cannot sit in a Caddy site address",
+		},
+		{
+			"path with a quote",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1\\\"x\", upstream: 8080}\n",
+			"expose.path", "cannot sit in a Caddy site address",
+		},
+		{
+			"path with a backtick",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1`x\", upstream: 8080}\n",
+			"expose.path", "cannot sit in a Caddy site address",
+		},
+		{
+			"path with a control character",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1\\tx\", upstream: 8080}\n",
+			"expose.path", "cannot sit in a Caddy site address",
+		},
+		{
+			"path with a query",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1?a=b\", upstream: 8080}\n",
+			"expose.path", "cannot sit in a Caddy site address",
+		},
+		{
+			"path with a space",
+			"name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nexpose: {domains: [a.com], path: \"/v1 /v2\", upstream: 8080}\n",
+			"expose.path", "cannot sit in a Caddy site address",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -285,6 +325,34 @@ func TestValidateExpose(t *testing.T) {
 			if findDiag(ds, tc.field, tc.want) == nil {
 				t.Errorf("want %s: %q; got:\n%v", tc.field, tc.want, ds.Sorted())
 			}
+		})
+	}
+}
+
+// A raw non-ASCII path passed before the allowlist, so the hint must say how
+// to spell it now.
+func TestValidateExposePathHintsPercentEncoding(t *testing.T) {
+	_, ds := load(t, baseFleet, map[string]string{
+		"x.yaml": "name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\n" +
+			"expose: {domains: [a.com], path: \"/café\", upstream: 8080}\n",
+	})
+	d := findDiag(ds, "expose.path", "cannot sit in a Caddy site address")
+	if d == nil {
+		t.Fatalf("want an expose.path error; got:\n%v", ds.Sorted())
+	}
+	if !strings.Contains(d.Hint, "/caf%C3%A9") {
+		t.Errorf("hint %q should show the percent-encoded spelling", d.Hint)
+	}
+}
+
+func TestValidateExposeAcceptsPathSpellings(t *testing.T) {
+	for _, path := range []string{"/", "/*", "/v1", "/v1/", "/v1/*", "/v1/admin/*", "/@user/a-b_c.d~e/%20/*", "/caf%C3%A9"} {
+		t.Run(path, func(t *testing.T) {
+			_, ds := load(t, baseFleet, map[string]string{
+				"x.yaml": "name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nhealth: {docker: true}\n" +
+					"expose: {domains: [a.com], path: \"" + path + "\", upstream: 8080}\n",
+			})
+			assertNoErrors(t, ds)
 		})
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -331,6 +332,10 @@ func validateBuild(s *Service, ds *Diagnostics) {
 	}
 }
 
+// exposePath admits RFC 3986 path characters, minus `*` except as a trailing
+// /*. Anything else could split or corrupt the rendered site address line.
+var exposePath = regexp.MustCompile(`^(/[A-Za-z0-9._~!$&'()+;=:@%-]*)*(/\*)?$`)
+
 func validateExpose(s *Service, ds *Diagnostics) {
 	e := s.Expose
 	if e == nil {
@@ -354,8 +359,16 @@ func validateExpose(s *Service, ds *Diagnostics) {
 		}
 	}
 
-	if e.Path != "" && !strings.HasPrefix(e.Path, "/") {
-		ds.ErrorHint(file, "expose.path", fmt.Sprintf("%q must start with /", e.Path), "e.g. /v1/*")
+	switch p := e.Path; {
+	case p == "":
+	case !strings.HasPrefix(p, "/"):
+		ds.ErrorHint(file, "expose.path", fmt.Sprintf("%q must start with /", p), "e.g. /v1/*")
+	case strings.Contains(strings.TrimSuffix(p, "/*"), "*"):
+		ds.ErrorHint(file, "expose.path", fmt.Sprintf("%q has a wildcard other than a trailing /*", p),
+			"a path is a prefix: /v1 and /v1/* both serve /v1 and everything under it")
+	case !exposePath.MatchString(p):
+		ds.ErrorHint(file, "expose.path", fmt.Sprintf("%q cannot sit in a Caddy site address", p),
+			"use URL path characters only, such as /v1/*: no spaces, commas, braces, quotes, query or fragment; percent-encode other characters, e.g. /caf%C3%A9")
 	}
 
 	proxied := e.Upstream != 0
