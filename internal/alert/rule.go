@@ -191,12 +191,13 @@ type Reading struct {
 	Restarts        int
 	DeployFailed    bool
 	DriftDetected   bool
-	DiskUsedPct     int
 	HostSilent      bool
 
-	// MemUsedPct is nil when the host's memory could not be read, so a failed
-	// read cannot pass for an idle host and resolve an alert that still holds.
-	MemUsedPct *int
+	// DiskUsedPct and MemUsedPct are nil when the figure could not be read, so
+	// a failed read cannot pass for an idle host or an empty disk and resolve
+	// an alert that still holds.
+	DiskUsedPct *int
+	MemUsedPct  *int
 
 	// Detail is the runtime's own one-line explanation of the state, e.g.
 	// "last succeeded 60d ago, past the 48h freshness bound".
@@ -233,11 +234,7 @@ func (c Condition) Eval(r Reading) bool {
 		return r.HostSilent
 	case ServiceRestarts:
 		return compare(float64(r.Restarts), c.Op, c.Value)
-	case DiskUsedPct:
-		return compare(float64(r.DiskUsedPct), c.Op, c.Value)
-	case DiskFreePct:
-		return compare(float64(100-r.DiskUsedPct), c.Op, c.Value)
-	case MemUsedPct, MemFreePct:
+	case DiskUsedPct, DiskFreePct, MemUsedPct, MemFreePct:
 		v, ok := c.Value_(r)
 		return ok && compare(v, c.Op, c.Value)
 	}
@@ -249,6 +246,8 @@ func (c Condition) Eval(r Reading) bool {
 // for a subject with no reading at all.
 func (c Condition) Observed(r Reading) bool {
 	switch c.Metric {
+	case DiskUsedPct, DiskFreePct:
+		return r.DiskUsedPct != nil
 	case MemUsedPct, MemFreePct:
 		return r.MemUsedPct != nil
 	}
@@ -262,9 +261,13 @@ func (c Condition) Value_(r Reading) (float64, bool) {
 	case ServiceRestarts:
 		return float64(r.Restarts), true
 	case DiskUsedPct:
-		return float64(r.DiskUsedPct), true
+		if r.DiskUsedPct != nil {
+			return float64(*r.DiskUsedPct), true
+		}
 	case DiskFreePct:
-		return float64(100 - r.DiskUsedPct), true
+		if r.DiskUsedPct != nil {
+			return float64(100 - *r.DiskUsedPct), true
+		}
 	case MemUsedPct:
 		if r.MemUsedPct != nil {
 			return float64(*r.MemUsedPct), true

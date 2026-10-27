@@ -313,6 +313,9 @@ func (a *Agent) diskUsage() (*proto.DiskUsage, error) {
 			if err != nil {
 				continue
 			}
+			if n < 0 || n > 100 {
+				return nil, fmt.Errorf("df reported %d%% used", n)
+			}
 			return &proto.DiskUsage{Path: a.Layout.Root, UsedPercent: n}, nil
 		}
 	}

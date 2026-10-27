@@ -213,7 +213,7 @@ func (a *Agent) readings(ctx context.Context) map[string]alert.Reading {
 
 	host := alert.Reading{}
 	if d, err := a.diskUsage(); err == nil {
-		host.DiskUsedPct = d.UsedPercent
+		host.DiskUsedPct = &d.UsedPercent
 	}
 	if pct, ok := a.memUsedPct(); ok {
 		host.MemUsedPct = &pct

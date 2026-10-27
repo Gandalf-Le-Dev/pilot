@@ -2,10 +2,13 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/Gandalf-Le-Dev/pilot/internal/transport"
 )
 
 func TestHostReadingCarriesMemory(t *testing.T) {
@@ -50,6 +53,51 @@ func TestHostReadingExhaustedMemory(t *testing.T) {
 	}
 	if got := a.readings(t.Context())[""].MemUsedPct; got == nil || *got != 100 {
 		t.Errorf("MemUsedPct = %v, want 100", got)
+	}
+}
+
+// dfFake answers every Run with the same result; the embedded nil Executor
+// makes any other call fail the test loudly.
+type dfFake struct {
+	transport.Executor
+	res transport.Result
+	err error
+}
+
+func (f dfFake) Run(context.Context, string) (transport.Result, error) { return f.res, f.err }
+
+func TestHostReadingCarriesDisk(t *testing.T) {
+	a := newAgent(t)
+	a.Exec = dfFake{res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n" +
+		"/dev/sda1 100 86 14 86% /\n"}}
+
+	r := a.readings(t.Context())[""]
+	if r.DiskUsedPct == nil || *r.DiskUsedPct != 86 {
+		t.Errorf("DiskUsedPct = %v, want 86", r.DiskUsedPct)
+	}
+}
+
+// A disk figure df could not give must stay unset rather than pass for 0% in
+// use, which would resolve a full-disk alert that is still true.
+func TestHostReadingLeavesUnreadDiskUnset(t *testing.T) {
+	tests := map[string]dfFake{
+		"exec error":   {err: errors.New("fork failed")},
+		"df failed":    {res: transport.Result{ExitCode: 1, Stderr: "df: /opt/pilot: No such file"}},
+		"no output":    {},
+		"garbage":      {res: transport.Result{Stdout: "not\ndf output"}},
+		"header only":  {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n"}},
+		"dash percent": {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\nnone 0 0 0 -% /\n"}},
+		"negative":     {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 86 14 -5% /\n"}},
+		"over 100":     {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 86 14 105% /\n"}},
+	}
+	for name, fake := range tests {
+		t.Run(name, func(t *testing.T) {
+			a := newAgent(t)
+			a.Exec = fake
+			if got := a.readings(t.Context())[""].DiskUsedPct; got != nil {
+				t.Errorf("DiskUsedPct = %d, want unset", *got)
+			}
+		})
 	}
 }
 
