@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Gandalf-Le-Dev/pilot/internal/agent/remote"
 	"github.com/Gandalf-Le-Dev/pilot/internal/build"
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
 	"github.com/Gandalf-Le-Dev/pilot/internal/edge/caddy"
@@ -44,6 +45,10 @@ type Plan struct {
 
 	Hosts []HostPlan `json:"hosts"`
 
+	// NoHealthGate is set when nothing will verify the result: the service has
+	// no health check, or verification was turned off.
+	NoHealthGate bool `json:"no_health_gate,omitempty"`
+
 	// LocalDir holds the built contents to ship; empty for image-only releases.
 	LocalDir string `json:"-"`
 }
@@ -58,8 +63,20 @@ type HostPlan struct {
 	// Changes lists what differs from the release currently live there.
 	Changes []Change `json:"changes,omitempty"`
 
-	// NoOp is set when the host already runs exactly this release.
+	// NoOp is set when the host already runs exactly this release and the
+	// deploy leaves it alone.
 	NoOp bool `json:"noop,omitempty"`
+
+	// Start is set when the host already runs exactly this release but the
+	// service is stopped. The deploy starts it again behind the health gate,
+	// and a failure is reported without a rollback.
+	Start bool `json:"start,omitempty"`
+
+	// Observed is what the host reported for a stopped service.
+	Observed string `json:"observed,omitempty"`
+
+	// NotStarted says why a stopped service is left stopped.
+	NotStarted string `json:"not_started,omitempty"`
 }
 
 // Change is one field-level difference between two releases.
@@ -82,6 +99,20 @@ type Input struct {
 
 	// Targets provides a connection per host.
 	Targets map[string]*runtime.Target
+
+	// Runtime observes a host that already runs the release, to tell a service
+	// that is up from one that is stopped. Nil skips the check.
+	Runtime runtime.Runtime
+
+	// SkipVerify records that the deploy will run without a health gate.
+	SkipVerify bool
+
+	// Agents holds the agent client for each host that has one.
+	Agents map[string]*remote.Client
+
+	// Skewed names hosts whose agent is present but too old to use, so a
+	// message can name the upgrade rather than an install.
+	Skewed map[string]bool
 }
 
 // Compute builds the plan without changing anything on any host.
@@ -106,6 +137,8 @@ func Compute(ctx context.Context, in Input) (*Plan, error) {
 		LocalDir:  in.Build.Dir,
 		EnvKeys:   sortedKeys(in.Env),
 		EnvHash:   release.HashMap(in.Env),
+
+		NoHealthGate: in.SkipVerify || s.Health == nil || s.Health.Probes() == 0,
 	}
 	if snippet != "" {
 		p.RouteHash = release.HashBytes([]byte(snippet))
@@ -186,8 +219,67 @@ func planHost(ctx context.Context, in Input, p *Plan, host string) (HostPlan, er
 	}
 
 	hp.Changes = diff(prev, p)
-	hp.NoOp = len(hp.Changes) == 0 && hp.Route == RouteNone
+	if len(hp.Changes) == 0 && hp.Route == RouteNone {
+		// Nothing new ships, so the release that stays live is the current
+		// one, not the sequence number this plan would have used.
+		hp.To = current
+		hp.Observed = stopped(ctx, in, t)
+		switch {
+		case hp.Observed == "":
+			hp.NoOp = true
+		case in.Service.Rollout.IsBlueGreen() && in.Agents[host] == nil:
+			// Only the agent starts a colour, so a start over SSH could only fail.
+			hp.NoOp = true
+			hp.NotStarted = fmt.Sprintf("blue-green is started by the agent, and %s has none (`pilot bootstrap %s`)", host, host)
+			if in.Skewed[host] {
+				hp.NotStarted = fmt.Sprintf("blue-green is started by the agent, and the one on %s is too old (`pilot agent upgrade %s`)", host, host)
+			}
+		default:
+			hp.Start = true
+		}
+	}
 	return hp, nil
+}
+
+// stopped describes the service's state on a host that already runs the
+// release, or returns "" when the deploy has nothing to start there.
+//
+// A failed observation is not evidence that the service is down, so it leaves
+// the deploy a no-op, as it was before Pilot looked.
+func stopped(ctx context.Context, in Input, t *runtime.Target) string {
+	if in.Runtime == nil || !startable(in.Service) {
+		return ""
+	}
+	obs, err := in.Runtime.Observe(ctx, t)
+	if err != nil {
+		return ""
+	}
+	if obs.State != runtime.StateStopped && obs.State != runtime.StateFailed {
+		return ""
+	}
+	// Stopped with nothing behind it means nothing exists to start. Under a
+	// changed `rollout`, the plan looks for a project the live stack is not
+	// in, and starting that would raise a second, unrouted stack.
+	if len(obs.Instances) == 0 {
+		return ""
+	}
+	if obs.Detail == "" {
+		return string(obs.State)
+	}
+	return fmt.Sprintf("%s (%s)", obs.State, obs.Detail)
+}
+
+// startable reports whether activating the live release again can bring a
+// stopped service back. A static site has no process to start, and a oneshot
+// is inactive between its timer's runs by design.
+func startable(s *config.Service) bool {
+	switch s.Runtime {
+	case config.RuntimeStatic:
+		return false
+	case config.RuntimeSystemd:
+		return s.Unit == nil || !s.Unit.IsOneshot()
+	}
+	return true
 }
 
 // planRoute compares the rendered snippet against what is installed.
@@ -301,7 +393,8 @@ func (p *Plan) Manifest(host string) *release.Manifest {
 	return m
 }
 
-// NoOp reports whether every host already runs exactly this release.
+// NoOp reports whether every host already runs exactly this release, and none
+// has it stopped.
 func (p *Plan) NoOp() bool {
 	for _, h := range p.Hosts {
 		if !h.NoOp {

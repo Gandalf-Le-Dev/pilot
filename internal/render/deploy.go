@@ -17,6 +17,14 @@ func Plan(w io.Writer, p *deploy.Plan) {
 
 		if hp.NoOp {
 			fmt.Fprintf(w, "    unchanged  already running %s\n", hp.To)
+			if hp.NotStarted != "" {
+				fmt.Fprintf(w, "    stopped    %s; not started: %s\n", hp.Observed, hp.NotStarted)
+			}
+			continue
+		}
+		if hp.Start {
+			fmt.Fprintf(w, "    start      %s is %s; start it again\n", hp.To, hp.Observed)
+			fmt.Fprintf(w, "    verify     %s\n", startGateText(p))
 			continue
 		}
 
@@ -45,6 +53,33 @@ func Plan(w io.Writer, p *deploy.Plan) {
 	if p.Commit != "" {
 		fmt.Fprintf(w, "\n  commit     %s\n", short(p.Commit, 12))
 	}
+}
+
+// NothingToDo explains a deploy that changes nothing. "Every host already runs
+// this release" is also true of a host where it is stopped, and must not read
+// as all clear when the deploy left one that way.
+func NothingToDo(w io.Writer, p *deploy.Plan) {
+	var stopped bool
+	for _, hp := range p.Hosts {
+		if hp.NotStarted == "" {
+			continue
+		}
+		fmt.Fprintf(w, "  ! %s on %s is %s and was not started: %s\n",
+			p.Service.Name, hp.Host, hp.Observed, hp.NotStarted)
+		stopped = true
+	}
+	if !stopped {
+		fmt.Fprintln(w, "  nothing to do — every host already runs this release")
+	}
+}
+
+// startGateText says what stands behind a start, since unlike a deploy it has
+// no earlier release to fall back to.
+func startGateText(p *deploy.Plan) string {
+	if p.NoHealthGate {
+		return "none — no health check, so nothing confirms it came up"
+	}
+	return "health check; a failure is reported, not rolled back"
 }
 
 func changeText(c deploy.Change) string {
@@ -101,6 +136,9 @@ func Outcomes(w io.Writer, outcomes []deploy.Outcome) {
 		switch {
 		case o.Succeeded && o.Message == "unchanged":
 			fmt.Fprintf(w, "  %s\n", st.muted(fmt.Sprintf("✔ %s  unchanged", who)))
+		case o.Succeeded && o.Message == "started":
+			fmt.Fprintf(w, "  %s  started %s again\n",
+				st.ok_("✔ "+who), st.ok_(o.Release))
 		case o.Succeeded:
 			fmt.Fprintf(w, "  %s  now running %s\n",
 				st.ok_("✔ "+who), st.ok_(o.Release))
