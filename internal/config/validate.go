@@ -822,10 +822,9 @@ func validateNotifiers(f *Fleet, ds *Diagnostics) {
 	}
 }
 
-// validateRouteCollisions catches two services claiming the same Caddy site
-// address on the same host, which Caddy would reject at reload time. Keying by
-// host matters: the same domain on two hosts is a normal load-balanced setup,
-// not a conflict.
+// validateRouteCollisions catches two services claiming the same route on the
+// same host, which Caddy would reject at reload time. Keying by host matters:
+// the same domain on two hosts is a normal load-balanced setup, not a conflict.
 //
 // The status page claims its domain on its host like any service would, so a
 // service already serving that domain there is caught here rather than by
@@ -840,8 +839,8 @@ func validateRouteCollisions(f *Fleet, ds *Diagnostics) {
 			continue
 		}
 		for _, host := range s.Hosts {
-			for _, addr := range s.Expose.SiteAddresses() {
-				key := host + "\x00" + addr
+			for _, route := range s.Expose.Routes() {
+				key := host + "\x00" + route
 				claims[key] = append(claims[key], claim{s.Name, s.File, "expose.domains"})
 			}
 		}
@@ -862,7 +861,7 @@ func validateRouteCollisions(f *Fleet, ds *Diagnostics) {
 		if len(cs) < 2 {
 			continue
 		}
-		host, addr, _ := strings.Cut(k, "\x00")
+		host, route, _ := strings.Cut(k, "\x00")
 		names := make([]string, 0, len(cs))
 		for _, c := range cs {
 			names = append(names, c.service)
@@ -877,8 +876,8 @@ func validateRouteCollisions(f *Fleet, ds *Diagnostics) {
 				}
 			}
 			ds.ErrorHint(c.file, c.field,
-				fmt.Sprintf("site address %q on host %q is also claimed by: %s",
-					addr, host, strings.Join(others, ", ")),
+				fmt.Sprintf("route %q on host %q is also claimed by: %s",
+					route, host, strings.Join(others, ", ")),
 				"give each service a distinct domain or `expose.path`")
 		}
 	}

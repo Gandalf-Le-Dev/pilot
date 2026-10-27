@@ -361,6 +361,16 @@ func TestRouteCollisions(t *testing.T) {
 		})
 		assertNoErrors(t, ds)
 	})
+
+	t.Run("both spellings of one prefix collide", func(t *testing.T) {
+		_, ds := load(t, baseFleet, map[string]string{
+			"a.yaml": svc("a", "web-1", "shared.example.com", "/api/*"),
+			"b.yaml": svc("b", "web-1", "shared.example.com", "/api"),
+		})
+		if findDiag(ds, "expose.domains", "also claimed by") == nil {
+			t.Fatalf("expected a collision; got:\n%v", ds.Sorted())
+		}
+	})
 }
 
 func TestValidateHealth(t *testing.T) {
@@ -522,19 +532,23 @@ func TestDurationUnmarshal(t *testing.T) {
 	}
 }
 
-func TestSiteAddresses(t *testing.T) {
+func TestRoutes(t *testing.T) {
 	tests := []struct {
 		name string
 		e    Expose
 		want []string
 	}{
 		{"bare domain", Expose{Domains: []string{"a.com"}}, []string{"a.com"}},
-		{"with path", Expose{Domains: []string{"a.com"}, Path: "/api/*"}, []string{"a.com/api"}},
+		{"wildcard path", Expose{Domains: []string{"a.com"}, Path: "/api/*"}, []string{"a.com/api"}},
+		{"bare path", Expose{Domains: []string{"a.com"}, Path: "/api"}, []string{"a.com/api"}},
+		{"trailing slash", Expose{Domains: []string{"a.com"}, Path: "/api/"}, []string{"a.com/api"}},
+		{"root wildcard", Expose{Domains: []string{"a.com"}, Path: "/*"}, []string{"a.com"}},
+		{"root", Expose{Domains: []string{"a.com"}, Path: "/"}, []string{"a.com"}},
 		{"multi domain", Expose{Domains: []string{"a.com", "b.com"}}, []string{"a.com", "b.com"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.e.SiteAddresses()
+			got := tc.e.Routes()
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
