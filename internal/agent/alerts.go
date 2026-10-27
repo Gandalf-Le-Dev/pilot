@@ -6,7 +6,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/alert"
@@ -202,20 +204,24 @@ func (a *Agent) evaluateAlerts(ctx context.Context) {
 	if len(rules) == 0 {
 		return
 	}
-	a.alerts.Evaluate(ctx, rules, a.readings(ctx))
+	a.alerts.Evaluate(ctx, rules, a.readings(ctx, rules))
 }
 
 // readings gathers the current value of every metric, keyed by subject. The
-// host-wide reading is keyed by the empty string.
-func (a *Agent) readings(ctx context.Context) map[string]alert.Reading {
+// host-wide reading is keyed by the empty string. Memory is read only when a
+// rule asks for it, so a host where it cannot be read warns only when that
+// costs an alert.
+func (a *Agent) readings(ctx context.Context, rules []alert.Rule) map[string]alert.Reading {
 	out := map[string]alert.Reading{}
 
 	host := alert.Reading{}
 	if d, err := a.diskUsage(); err == nil {
 		host.DiskUsedPct = &d.UsedPercent
 	}
-	if pct, ok := a.memUsedPct(); ok {
-		host.MemUsedPct = &pct
+	if readsMemory(rules) {
+		if pct, ok := a.memUsedPct(); ok {
+			host.MemUsedPct = &pct
+		}
 	}
 	out[""] = host
 
@@ -257,6 +263,12 @@ func (a *Agent) readings(ctx context.Context) map[string]alert.Reading {
 		out[name] = r
 	}
 	return out
+}
+
+func readsMemory(rules []alert.Rule) bool {
+	return slices.ContainsFunc(rules, func(r alert.Rule) bool {
+		return strings.HasPrefix(string(r.Cond.Metric), "host.mem.")
+	})
 }
 
 // memUsedPct is the share of the host's memory in use, counting reclaimable
