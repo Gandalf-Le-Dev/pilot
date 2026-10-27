@@ -1,9 +1,12 @@
 package compose
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"text/template"
 	"time"
 
 	"github.com/Gandalf-Le-Dev/pilot/internal/config"
@@ -389,5 +392,74 @@ func TestObserveKeepsAgesWhenAContainerVanished(t *testing.T) {
 	}
 	if !obs.Instances[1].Since.IsZero() {
 		t.Errorf("vanished container since = %v, want zero", obs.Instances[1].Since)
+	}
+}
+
+// Ties inspectFormat to the keys inspectEntry decodes: executing it the way
+// docker does must produce lines parseInspect reads back intact.
+func TestInspectFormatRoundTrips(t *testing.T) {
+	type dockerState struct {
+		Running               bool
+		StartedAt, FinishedAt string
+	}
+	type dockerContainer struct {
+		Id    string
+		Name  string
+		State dockerState
+	}
+	tmpl := template.Must(template.New("").Funcs(template.FuncMap{
+		"json": func(v any) (string, error) {
+			var b bytes.Buffer
+			enc := json.NewEncoder(&b)
+			enc.SetEscapeHTML(false)
+			if err := enc.Encode(v); err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(b.String()), nil
+		},
+	}).Parse(inspectFormat))
+
+	var out bytes.Buffer
+	for _, c := range []dockerContainer{
+		{"aaa111", "/web", dockerState{true, "2026-10-07T18:00:40.748848514Z", "2026-10-07T18:00:37.723703083Z"}},
+		{"bbb222", "/migrate", dockerState{false, "2026-10-01T09:00:00Z", "2026-10-01T09:00:05Z"}},
+	} {
+		if err := tmpl.Execute(&out, c); err != nil {
+			t.Fatal(err)
+		}
+		out.WriteByte('\n')
+	}
+
+	got, err := parseInspect(out.Bytes())
+	if err != nil {
+		t.Fatalf("parseInspect(%s): %v", out.String(), err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2", len(got))
+	}
+	if !got[0].is("aaa111") || !got[0].is("web") || !got[1].is("migrate") {
+		t.Errorf("id or name lost: %+v", got)
+	}
+	if want := time.Date(2026, 10, 7, 18, 0, 40, 748848514, time.UTC); !got[0].since().Equal(want) {
+		t.Errorf("running since = %v, want %v", got[0].since(), want)
+	}
+	if want := time.Date(2026, 10, 1, 9, 0, 5, 0, time.UTC); !got[1].since().Equal(want) {
+		t.Errorf("stopped since = %v, want %v", got[1].since(), want)
+	}
+}
+
+func TestObserveSkipsInspectWithoutContainers(t *testing.T) {
+	for name, ps := range map[string]string{"no output": "", "empty array": "[]"} {
+		t.Run(name, func(t *testing.T) {
+			tg, rec := bgTarget(t, "green")
+			rec.psOut = ps
+
+			if _, err := New().Observe(context.Background(), tg); err != nil {
+				t.Fatal(err)
+			}
+			if rec.ran("docker inspect") {
+				t.Errorf("inspect should not run with no containers:\n%v", rec.cmds)
+			}
+		})
 	}
 }
