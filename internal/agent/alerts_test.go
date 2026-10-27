@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -231,5 +233,26 @@ func TestUnreadMemoryWarningCarriesTheCause(t *testing.T) {
 				t.Errorf("figures that were never read should not be logged:\n%s", out)
 			}
 		})
+	}
+}
+
+// An unreadable fleet config leaves the host with no host rules and no
+// notifiers, so it is an error, not a warning.
+func TestUnreadableFleetConfigIsAnError(t *testing.T) {
+	var buf bytes.Buffer
+	a := newAgent(t)
+	a.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	if err := os.MkdirAll(a.cacheDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(a.cacheDir(), FleetConfigFile), []byte("no_such_field: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.loadFleetConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); !strings.Contains(out, `level=ERROR msg="ignoring unreadable fleet config" file=_fleet.yaml err=`) {
+		t.Errorf("got %q, want an error naming the file", out)
 	}
 }

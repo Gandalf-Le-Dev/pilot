@@ -78,7 +78,7 @@ func (a *Agent) loadFleetConfig() error {
 	}
 	var fc FleetConfig
 	if err := config.UnmarshalStrict(raw, &fc); err != nil {
-		a.log().Warn("ignoring unreadable fleet config", "file", FleetConfigFile, "err", err)
+		a.log().Error("ignoring unreadable fleet config", "file", FleetConfigFile, "err", err)
 		return nil
 	}
 	a.fleet = &fc
