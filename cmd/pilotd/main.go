@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -49,6 +50,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if err := newRoot(os.Geteuid, slog.SetDefault).ExecuteContext(ctx); err != nil {
+		report(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+// newRoot takes slog.SetDefault as a function so a test can see which
+// commands install the daemon log without changing logging for the whole
+// test binary.
+func newRoot(euid func() int, setLog func(*slog.Logger)) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "pilotd",
 		Short:         "Pilot's per-host agent",
@@ -56,15 +67,21 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newServeCmd(), newCtlCmd(), newServerCmd(os.Geteuid))
-
-	if err := root.ExecuteContext(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "pilotd: %v\n", err)
-		os.Exit(1)
-	}
+	root.AddCommand(newServeCmd(setLog), newCtlCmd(), newServerCmd(euid, setLog))
+	return root
 }
 
-func newServeCmd() *cobra.Command {
+// loggedError is a daemon's fatal error, already in its log at error level.
+type loggedError struct{ error }
+
+func report(w io.Writer, err error) {
+	if _, ok := errors.AsType[loggedError](err); ok {
+		return
+	}
+	fmt.Fprintf(w, "pilotd: %v\n", err)
+}
+
+func newServeCmd(setLog func(*slog.Logger)) *cobra.Command {
 	var socket, root, host, caddyfile, snippets, admin string
 
 	cmd := &cobra.Command{
@@ -72,19 +89,19 @@ func newServeCmd() *cobra.Command {
 		Short: "Run the agent daemon",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			logTo("pilotd")
+			log := daemonLog(cmd, "pilotd", setLog)
 			a, err := agent.New(agent.Options{
 				Root: root, Host: host, Build: version,
 				Caddyfile: caddyfile, Snippets: snippets, Admin: admin,
 			})
 			if err != nil {
-				return err
+				return logExit(log, err)
 			}
 
 			// Background loops start before the socket does, so the first
 			// status query already has something to report.
 			a.StartLoops(cmd.Context())
-			return a.Serve(cmd.Context(), socket)
+			return logExit(log, a.Serve(cmd.Context(), socket))
 		},
 	}
 
@@ -98,17 +115,27 @@ func newServeCmd() *cobra.Command {
 	return cmd
 }
 
-// logTo sends this process's log, the log package's included, to stderr as
-// lines attributed to name. Only the daemons call it: ctl's stderr goes back to
-// the CLI over SSH, not the journal.
-func logTo(name string) {
-	slog.SetDefault(slog.New(journal.NewHandler(os.Stderr, name, journal.OnStderr())))
+// daemonLog sends this process's log, the log package's included, to stderr
+// as lines attributed to name. Only the daemons call it: ctl's stderr goes
+// back to the CLI over SSH, not the journal.
+func daemonLog(cmd *cobra.Command, name string, setLog func(*slog.Logger)) *slog.Logger {
+	log := slog.New(journal.NewHandler(cmd.ErrOrStderr(), name, journal.OnStderr()))
+	setLog(log)
+	return log
+}
+
+func logExit(log *slog.Logger, err error) error {
+	if err == nil {
+		return nil
+	}
+	log.Error("exiting", "err", err)
+	return loggedError{err}
 }
 
 // newServerCmd takes the euid as a function so a test can show the root
 // check runs before anything is read: the configuration holds notifier
 // credentials, and root should be turned away before it touches them.
-func newServerCmd(euid func() int) *cobra.Command {
+func newServerCmd(euid func() int, setLog func(*slog.Logger)) *cobra.Command {
 	var configPath string
 
 	cmd := &cobra.Command{
@@ -116,27 +143,31 @@ func newServerCmd(euid func() int) *cobra.Command {
 		Short: "Serve the public status page and take reports from agents",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			logTo("pilotd server")
-			if err := server.RefuseRoot(euid()); err != nil {
-				return err
-			}
-			if configPath == "" {
-				dir := os.Getenv("CREDENTIALS_DIRECTORY")
-				if dir == "" {
-					return fmt.Errorf("no --config, and no $CREDENTIALS_DIRECTORY from systemd's LoadCredential=")
-				}
-				configPath = filepath.Join(dir, server.CredentialName)
-			}
-			cfg, err := server.LoadConfig(configPath)
-			if err != nil {
-				return fmt.Errorf("%s: %w", configPath, err)
-			}
-			return server.Run(cmd.Context(), cfg)
+			log := daemonLog(cmd, "pilotd server", setLog)
+			return logExit(log, runServer(cmd.Context(), euid, configPath))
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "",
 		"configuration file (default: "+server.CredentialName+" in $CREDENTIALS_DIRECTORY)")
 	return cmd
+}
+
+func runServer(ctx context.Context, euid func() int, configPath string) error {
+	if err := server.RefuseRoot(euid()); err != nil {
+		return err
+	}
+	if configPath == "" {
+		dir := os.Getenv("CREDENTIALS_DIRECTORY")
+		if dir == "" {
+			return fmt.Errorf("no --config, and no $CREDENTIALS_DIRECTORY from systemd's LoadCredential=")
+		}
+		configPath = filepath.Join(dir, server.CredentialName)
+	}
+	cfg, err := server.LoadConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("%s: %w", configPath, err)
+	}
+	return server.Run(ctx, cfg)
 }
 
 // newCtlCmd is the client the CLI invokes over SSH. Every verb prints JSON on
