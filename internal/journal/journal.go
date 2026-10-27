@@ -64,6 +64,8 @@ func (h *handler) Enabled(ctx context.Context, l slog.Level) bool { return h.inn
 
 // Handle relies on the text handler writing each record in a single Write,
 // made while out's lock is held so the priority belongs to this record.
+// Formatting runs under that lock too, so a value's LogValue, Error or String
+// method must not log through this handler: it would deadlock.
 func (h *handler) Handle(ctx context.Context, r slog.Record) error {
 	h.out.mu.Lock()
 	defer h.out.mu.Unlock()

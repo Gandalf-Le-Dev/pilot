@@ -70,6 +70,30 @@ func TestHandlerKeepsMultilineValuesOnOneLine(t *testing.T) {
 	}
 }
 
+// Anything a record carries can come from outside, a service name or a
+// remote error, so none of it may forge an entry at another priority.
+func TestHandlerResistsLineInjection(t *testing.T) {
+	const forged = "\n<0>pilotd: forged"
+	tests := map[string]func(*slog.Logger){
+		"message":    func(l *slog.Logger) { l.Warn("start" + forged) },
+		"value":      func(l *slog.Logger) { l.Warn("start", "k", "v"+forged) },
+		"key":        func(l *slog.Logger) { l.Warn("start", "k"+forged, "v") },
+		"group":      func(l *slog.Logger) { l.WithGroup("g"+forged).Warn("start", "k", "v") },
+		"attr group": func(l *slog.Logger) { l.Warn("start", slog.Group("g"+forged, "k", "v")) },
+	}
+	for name, log := range tests {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			log(slog.New(NewHandler(&buf, "pilotd", true)))
+
+			out := buf.String()
+			if strings.Count(out, "\n") != 1 || !strings.HasPrefix(out, "<4>pilotd: ") {
+				t.Errorf("want one line led by <4>pilotd: , got %q", out)
+			}
+		})
+	}
+}
+
 func TestHandlerKeepsAttrsAndGroups(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(NewHandler(&buf, "pilotd", true)).With("service", "web").WithGroup("probe")
