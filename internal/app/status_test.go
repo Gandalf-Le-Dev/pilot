@@ -230,3 +230,39 @@ func TestFleetConfigDigestNeedsNoSecrets(t *testing.T) {
 		t.Error("hiding a service changes what web-1 reports, but not its digest")
 	}
 }
+
+// On the status host the digest covers the server's configuration too, so an
+// edit only the server sees still reads as stale there, and only there.
+func TestStatusHostDigestCoversTheServer(t *testing.T) {
+	a := statusApp(t)
+	spec, err := a.FleetConfigSpec("box-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PILOT_TEST_STATUS_SECRET", "")
+	t.Setenv("PILOT_TEST_HOOK", "")
+	fresh := &App{Root: a.Root, Fleet: a.Fleet}
+	want, err := fresh.FleetConfigDigest("box-1")
+	if err != nil {
+		t.Fatalf("the digest needed a secret: %v", err)
+	}
+	if got := config.StampedDigest(spec); got != want {
+		t.Errorf("pushed spec carries %q, doctor computes %q", got, want)
+	}
+	web, _ := fresh.FleetConfigDigest("web-1")
+
+	a.Fleet.Status.Labels = map[string]string{"site": "Site"}
+	if changed, _ := fresh.FleetConfigDigest("box-1"); changed == want {
+		t.Error("a label changed the server's configuration, but not the status host's digest")
+	}
+	if changed, _ := fresh.FleetConfigDigest("web-1"); changed != web {
+		t.Error("a label moved the digest of a host that does not run the server")
+	}
+
+	before, _ := fresh.FleetConfigDigest("box-1")
+	a.Fleet.Status.Notify = nil
+	if changed, _ := fresh.FleetConfigDigest("box-1"); changed == before {
+		t.Error("dropping a status notifier did not move the status host's digest")
+	}
+}

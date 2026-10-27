@@ -1262,7 +1262,12 @@ that host from outside.
   left on any other host. The server is not a Pilot-managed service, because it must
   not depend on the deploy machinery it watches.
 - Each agent reports a digest of its cached fleet config, so `pilot doctor` finds a host
-  whose config is older than `fleet.yaml`, and `--fix` pushes it without an upgrade.
+  whose config is older than `fleet.yaml`, and `--fix` pushes it without an upgrade. On
+  `status.host` the digest also covers the server's configuration, with secrets
+  unresolved, so an edit only the server sees reads as stale there. The fix rewrites
+  the server's configuration if it changed, then pushes. If the server fails to
+  start, the agent still gets its config, stamped with the agent's half of the
+  digest only, so the host stays stale and the next `--fix` retries the server.
 
 *From tokens to mTLS.* Slice 1 authenticates with a bearer token per host:
 HMAC-SHA256 of `status.secret` and the host name. The server stores only the token

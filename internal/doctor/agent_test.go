@@ -148,7 +148,7 @@ func TestFixFailurePropagates(t *testing.T) {
 }
 
 // A config older than the fleet's is reported against the agent that holds
-// it, and repaired by a push alone: nothing is reinstalled or restarted.
+// it, and repaired by a push alone: the agent is not reinstalled.
 func TestStaleFleetConfigIsPushedNotUpgraded(t *testing.T) {
 	fake := &fakeAgents{rep: AgentReport{Installed: true, Build: "v1", Protocol: 11,
 		ConfigDigest: "aaaa", WantDigest: "bbbb"}}
@@ -185,5 +185,23 @@ func TestStaleFleetConfigIsPushedNotUpgraded(t *testing.T) {
 	found = checkAgents(context.Background(), agentEnv(fake))
 	if len(found) != 2 || !strings.Contains(found[1].Detail, "holds none") {
 		t.Errorf("an unstamped config should read as stale: %+v", found)
+	}
+}
+
+// On the status host the digest covers the server's configuration, so the
+// finding says the server is behind too, and that the fix rewrites it.
+func TestStaleConfigOnTheStatusHostNamesTheServer(t *testing.T) {
+	fake := &fakeAgents{rep: AgentReport{Installed: true, Build: "v1", Protocol: 11,
+		ConfigDigest: "aaaa", WantDigest: "bbbb"}}
+	env := agentEnv(fake)
+	env.Fleet.Status = &config.Status{Host: "web"}
+
+	f := staleConfig(env, "web", fake.rep)
+	if f == nil || !strings.Contains(f.Detail, "status server") || !strings.Contains(f.FixDesc, "status server") {
+		t.Errorf("finding = %+v, want the status server named", f)
+	}
+	env.Fleet.Status.Host = "elsewhere"
+	if f := staleConfig(env, "web", fake.rep); f == nil || strings.Contains(f.Detail+f.FixDesc, "status server") {
+		t.Errorf("finding = %+v, want no status server on a host that does not run one", f)
 	}
 }

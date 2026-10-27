@@ -300,15 +300,18 @@ the new build.
 
 A host that already runs this build gets no new agent, but the upgrade still
 tidies the status server there. It removes a server that the host must not run,
-and it starts the server on `status.host` if the server is not running.
+and it starts the server on `status.host` if the server is not running. It
+also pushes the fleet config to the host if that config is older than
+`fleet.yaml`.
 
 After you edit the `status:` block (labels, notifiers, `show`, `hide`), run
-`pilot agent upgrade --force <status host>`. The `--force` is needed because an
-upgrade skips a host that already runs this build. Until you do, the server
-keeps its old configuration: a service you just hid stays on the page as
-"awaiting report", and a new label does not appear. `pilot doctor --fix`
-pushes the new list to each agent, but it does not rewrite the server's
-configuration.
+`pilot doctor --fix` or `pilot agent upgrade`. Until you do, the server keeps
+its old configuration: a service you just hid stays on the page as "awaiting
+report", and a new label does not appear. `pilot doctor` reports the status
+host's fleet config as stale, because that host's config digest covers the
+server's configuration. The fix pushes the new list to each agent. It also
+rewrites the server's configuration if that configuration changed, which
+restarts the server.
 
 `pilot doctor` also checks the server, its route, its domain, which hosts have
 gone quiet, and any host still running a server it should not.

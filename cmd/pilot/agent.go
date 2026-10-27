@@ -101,7 +101,7 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string, force boo
 		if rc, state, _ := a.InspectAgent(ctx, host); state == app.AgentReady && !force {
 			if info, err := rc.Check(ctx); err == nil && info.Build == version {
 				fmt.Printf("  ✔ %s already runs %s\n", host, version)
-				if err := a.TidyStatusServer(ctx, host, logf); err != nil {
+				if err := tidyCurrentHost(ctx, a, host, info, logf); err != nil {
 					failed++
 					fmt.Fprintf(os.Stderr, "    ✖ %v\n", err)
 				}
@@ -130,6 +130,24 @@ func runAgentUpgrade(ctx context.Context, g *globals, selector string, force boo
 		fmt.Printf("  every agent already runs pilot %s\n\n", version)
 	}
 	return nil
+}
+
+// tidyCurrentHost does for a host already on this build what an upgrade
+// would beyond the binary: push a fleet config older than fleet.yaml, which
+// on the status host carries the server's configuration, and put the status
+// server where status.host says.
+func tidyCurrentHost(ctx context.Context, a *app.App, host string, info *proto.Info, logf func(string, ...any)) error {
+	want, err := a.FleetConfigDigest(host)
+	if err != nil {
+		return err
+	}
+	if info.ConfigDigest != want {
+		if err := a.PushFleetConfig(ctx, host); err != nil {
+			return err
+		}
+		logf("pushed the fleet config, which was older than fleet.yaml")
+	}
+	return a.TidyStatusServer(ctx, host, logf)
 }
 
 // agentAdapter lets `pilot doctor` inspect and repair agents without the doctor

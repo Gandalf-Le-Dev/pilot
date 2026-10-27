@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -111,20 +113,24 @@ func (a *App) SyncAgent(ctx context.Context, host string, s AgentSync) (*AgentSy
 	res.Info = info
 	logf("agent running (build %s, protocol %d)", info.Build, info.Protocol)
 
-	// Push the host-wide half of the configuration. Without it the agent can
-	// evaluate rules but has nowhere to send them, and alerting silently does
-	// nothing — which is the worst possible failure mode for alerting.
-	if err := a.pushFleetConfig(ctx, rc, host); err != nil {
-		return nil, err
+	// The status host's config digest vouches for its server's configuration
+	// too, so the server goes first and the push knows whether it may.
+	serverErr := a.syncStatusServer(ctx, client, host, logf)
+
+	// Push the host-wide half of the configuration whatever became of the
+	// server. Without it the agent can evaluate rules but has nowhere to send
+	// them, and alerting silently does nothing — which is the worst possible
+	// failure mode for alerting.
+	if err := a.pushFleetConfig(ctx, rc, host, serverErr == nil); err != nil {
+		return nil, errors.Join(serverErr, err)
 	}
 	res.Notifiers = len(a.Fleet.Notifiers)
 	res.Rules = len(a.Fleet.Alerts)
 	if res.Notifiers > 0 {
 		logf("%d notifier(s) and %d host rule(s) installed", res.Notifiers, res.Rules)
 	}
-
-	if err := a.syncStatusServer(ctx, client, host, logf); err != nil {
-		return nil, err
+	if serverErr != nil {
+		return nil, serverErr
 	}
 	return res, nil
 }
@@ -217,6 +223,10 @@ func (a *App) installStatusServer(ctx context.Context, client transport.Executor
 	if err != nil {
 		return err
 	}
+	return a.installStatusServerConfig(ctx, client, cfg)
+}
+
+func (a *App) installStatusServerConfig(ctx context.Context, client transport.Executor, cfg []byte) error {
 	if err := install.InstallServer(ctx, client, a.Layout.Agent(), cfg); err != nil {
 		return err
 	}
@@ -234,22 +244,30 @@ func (a *App) installStatusServer(ctx context.Context, client transport.Executor
 // status.notify names, resolved: the server can then check a report and send
 // an alert without the fleet secret or the operator's keychain.
 func (a *App) StatusServerConfig() ([]byte, error) {
+	return a.renderStatusServerConfig(true)
+}
+
+func (a *App) renderStatusServerConfig(resolve bool) ([]byte, error) {
 	st := a.Fleet.Status
 	if st == nil {
 		return nil, fmt.Errorf("the fleet has no status block")
-	}
-	secret, err := a.statusSecret()
-	if err != nil {
-		return nil, err
 	}
 
 	named := map[string]config.Notifier{}
 	for _, n := range st.Notify {
 		named[n] = a.Fleet.Notifiers[n]
 	}
-	notifiers, err := resolveNotifiers(named)
-	if err != nil {
-		return nil, err
+	notifiers := named
+	tokenHash := func(string) string { return "<token>" }
+	if resolve {
+		secret, err := a.statusSecret()
+		if err != nil {
+			return nil, err
+		}
+		if notifiers, err = resolveNotifiers(named); err != nil {
+			return nil, err
+		}
+		tokenHash = func(host string) string { return statuspage.TokenHash(statuspage.Token(secret, host)) }
 	}
 
 	cfg := server.Config{
@@ -268,7 +286,7 @@ func (a *App) StatusServerConfig() ([]byte, error) {
 			labels[name] = st.Label(name)
 		}
 		cfg.Hosts[host] = server.HostConfig{
-			TokenSHA256: statuspage.TokenHash(statuspage.Token(secret, host)),
+			TokenSHA256: tokenHash(host),
 			Services:    labels,
 		}
 	}
@@ -318,22 +336,73 @@ func (a *App) statusSecret() (string, error) {
 	return a.secret, a.secretErr
 }
 
-// PushFleetConfig sends a host the fleet's current host-wide config through
-// the agent's config endpoint. It reinstalls nothing, so it is safe to run
-// against a host serving traffic.
+// PushFleetConfig brings a host up to the digest FleetConfigDigest wants
+// without reinstalling the agent, so it is safe to run against a host serving
+// traffic: the host-wide config through the agent's config endpoint, and on
+// the status host the status server's configuration when it differs from the
+// installed one. That install restarts the server, which costs the page a few
+// seconds and restarts its silence clock.
 func (a *App) PushFleetConfig(ctx context.Context, host string) error {
-	rc, err := a.Agent(host)
+	client, err := a.Client(host)
 	if err != nil {
 		return err
 	}
+	rc := remote.New(client, host, a.Layout)
 	if _, err := rc.Check(ctx); err != nil {
 		return err
 	}
-	return a.pushFleetConfig(ctx, rc, host)
+	return a.pushHostConfig(ctx, client, rc, host)
 }
 
-func (a *App) pushFleetConfig(ctx context.Context, rc *remote.Client, host string) error {
-	spec, err := a.FleetConfigSpec(host)
+// pushHostConfig pushes the agent's config even when the status server
+// fails, so the host keeps alerting; that push then claims only the agent's
+// half, which leaves the host stale for doctor to find and retry.
+func (a *App) pushHostConfig(ctx context.Context, ex transport.Executor, rc *remote.Client, host string) error {
+	var serverErr error
+	if st := a.Fleet.Status; st != nil && st.Host == host {
+		if err := a.refreshStatusServer(ctx, ex); err != nil {
+			serverErr = fmt.Errorf("installing the status server: %w", err)
+		}
+	}
+	if err := a.pushFleetConfig(ctx, rc, host, serverErr == nil); err != nil {
+		return errors.Join(serverErr, err)
+	}
+	return serverErr
+}
+
+// refreshStatusServer installs the status server's configuration unless the
+// running server already has it. An agent rule changes the status host's
+// digest too, and restarting the server for it would drop every host's report.
+//
+// The installed file is compared by its hash on the host, so its resolved
+// notifier webhooks never travel back over SSH.
+func (a *App) refreshStatusServer(ctx context.Context, ex transport.Executor) error {
+	cfg, err := a.StatusServerConfig()
+	if err != nil {
+		return err
+	}
+	if serverConfigInstalled(ctx, ex, cfg) {
+		if r, err := ex.Run(ctx, "systemctl is-active pilot-server.service"); err == nil && strings.TrimSpace(r.Stdout) == "active" {
+			return nil
+		}
+	}
+	return a.installStatusServerConfig(ctx, ex, cfg)
+}
+
+func serverConfigInstalled(ctx context.Context, ex transport.Executor, cfg []byte) bool {
+	r, err := ex.Run(ctx, transport.Join("sha256sum", install.ServerConfigPath))
+	if err != nil || !r.OK() {
+		return false
+	}
+	have, _, _ := strings.Cut(strings.TrimSpace(r.Stdout), " ")
+	sum := sha256.Sum256(cfg)
+	return have == hex.EncodeToString(sum[:])
+}
+
+// pushFleetConfig stamps the full digest only when serverCurrent: on the
+// status host a push after a failed server install must still read as stale.
+func (a *App) pushFleetConfig(ctx context.Context, rc *remote.Client, host string, serverCurrent bool) error {
+	spec, err := a.fleetConfigSpec(host, serverCurrent)
 	if err != nil {
 		return err
 	}
@@ -354,11 +423,15 @@ func (a *App) pushFleetConfig(ctx context.Context, rc *remote.Client, host strin
 // tell a host still running on an old config without resolving a single
 // secret: a check that prompted for the keychain would not be run.
 func (a *App) FleetConfigSpec(host string) (string, error) {
+	return a.fleetConfigSpec(host, true)
+}
+
+func (a *App) fleetConfigSpec(host string, withServer bool) (string, error) {
 	resolved, err := a.renderFleetConfig(host, true)
 	if err != nil {
 		return "", err
 	}
-	digest, err := a.FleetConfigDigest(host)
+	digest, err := a.fleetConfigDigest(host, withServer)
 	if err != nil {
 		return "", err
 	}
@@ -366,10 +439,26 @@ func (a *App) FleetConfigSpec(host string) (string, error) {
 }
 
 // FleetConfigDigest is the digest a host's cached config should report.
+//
+// On the status host it covers the status server's configuration as well. An
+// edit to a label or status.notify changes nothing an agent holds, and the
+// server's file holds resolved secrets a comparison would need, so this is
+// where such an edit shows up as stale.
 func (a *App) FleetConfigDigest(host string) (string, error) {
+	return a.fleetConfigDigest(host, true)
+}
+
+func (a *App) fleetConfigDigest(host string, withServer bool) (string, error) {
 	unresolved, err := a.renderFleetConfig(host, false)
 	if err != nil {
 		return "", err
+	}
+	if st := a.Fleet.Status; withServer && st != nil && st.Host == host {
+		srv, err := a.renderStatusServerConfig(false)
+		if err != nil {
+			return "", err
+		}
+		unresolved += "---\n" + string(srv)
 	}
 	return config.SpecDigest(unresolved), nil
 }

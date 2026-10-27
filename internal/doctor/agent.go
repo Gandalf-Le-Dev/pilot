@@ -39,7 +39,9 @@ type Agents interface {
 	Upgrade(ctx context.Context, host string) error
 
 	// PushConfig sends the host-wide config through the agent's existing
-	// config endpoint, without reinstalling anything.
+	// config endpoint, without reinstalling the agent. On the status host it
+	// also reinstalls the status server's configuration when it changed,
+	// since the digest there covers it.
 	PushConfig(ctx context.Context, host string) error
 }
 
@@ -113,13 +115,21 @@ func staleConfig(env *Env, host string, rep AgentReport) *Finding {
 	if have == "" {
 		have = "none"
 	}
+	detail := fmt.Sprintf("the agent holds %s, the fleet would push %s. Until it is pushed, this host "+
+		"alerts with its old notifiers and rules and reports its old list to the status page.", have, rep.WantDigest)
+	fixDesc := "push the fleet config to the agent"
+	if st := env.Fleet.Status; st != nil && st.Host == host {
+		detail = fmt.Sprintf("the agent holds %s, the fleet would push %s. The agent or the status server "+
+			"on this host holds an older configuration than fleet.yaml: its notifiers and rules, or the "+
+			"page's labels, notifiers and list of services.", have, rep.WantDigest)
+		fixDesc = "push the fleet config to the agent, and reinstall the status server's configuration if it changed, which restarts the server"
+	}
 	return &Finding{
 		Status: StatusWarn, Scope: ScopeHost, Host: host,
-		Title: "fleet config on the agent is stale",
-		Detail: fmt.Sprintf("the agent holds %s, the fleet would push %s. Until it is pushed, this host "+
-			"alerts with its old notifiers and rules and reports its old list to the status page.", have, rep.WantDigest),
+		Title:   "fleet config on the agent is stale",
+		Detail:  detail,
 		Hint:    "pilot doctor --fix, or pilot agent upgrade " + host,
 		Fix:     func(ctx context.Context) error { return env.Agents.PushConfig(ctx, host) },
-		FixDesc: "push the fleet config to the agent",
+		FixDesc: fixDesc,
 	}
 }
