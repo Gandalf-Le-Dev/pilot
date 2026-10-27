@@ -238,6 +238,7 @@ func TestScanReadsQuotedValuesWhole(t *testing.T) {
 		`{"log":"{\"password\":\"hunter22\"}"}`,
 		`{"a":"{\"b\":\"{\\\"password\\\":\\\"hunter22\\\"}\"}"}`,
 		`password=\'hunter22\'`,
+		"password=\"ab\rcdefgh\"",
 	} {
 		got := Scan(line, nil)
 		if len(got) != 1 || got[0].Kind != KindLabelled || got[0].Label != "password" {

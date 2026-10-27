@@ -249,6 +249,8 @@ func TestTextReadsAnUnclosedSingleQuoteAsUnquoted(t *testing.T) {
 		`{"msg":"token: \'abcdef ghi","user":"root"}`: `{"msg":"token: \'` + Placeholder + ` ghi","user":"root"}`,
 		"password=\"hunter 22, x":                     "password=\"" + Placeholder,
 		"password=\"hunter 22, x\r\nnext":             "password=\"" + Placeholder + "\r\nnext",
+		"password=\"hunter 22, x\r":                   "password=\"" + Placeholder + "\r",
+		"password=\"hunter\r22\" next":                "password=\"" + Placeholder + "\" next",
 	}
 	for line, want := range cases {
 		if got := Text(line, nil); got != want {

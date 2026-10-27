@@ -214,10 +214,11 @@ const (
 
 // read returns the character at i as seen depth layers of escapes down, where
 // a backslash and the character after it read as that character, and the
-// index after it. It stops at the end of the line, or at a bare quote q in a
-// shallower layer, where an enclosing string ends.
+// index after it. It stops at the end of the line, LF or CRLF, or at a bare
+// quote q in a shallower layer, where an enclosing string ends. A lone CR is
+// part of the value: stopping there would leave the rest of it in the line.
 func read(s string, i, depth int, q byte) (c byte, next int, end readEnd) {
-	if i >= len(s) || s[i] == '\n' || s[i] == '\r' {
+	if i >= len(s) || s[i] == '\n' || s[i] == '\r' && (i+1 == len(s) || s[i+1] == '\n') {
 		return 0, i, lineEnd
 	}
 	if depth == 0 {
