@@ -222,6 +222,23 @@ func TestTextRedactsJSONInsideAJSONString(t *testing.T) {
 	}
 }
 
+// A string inside a string inside a string is escaped twice over, and a
+// quoted value can be opened by an escaped single quote, as in a Python repr.
+// Each is read at its own depth and ends at its own quote.
+func TestTextRedactsQuotedValuesAtAnyDepth(t *testing.T) {
+	cases := map[string]string{
+		`password=\'hunter22\' user=root`:                                     `password=\'` + Placeholder + `\' user=root`,
+		`'password=\'hunter 22\'', 'x'`:                                       `'password=\'` + Placeholder + `\'', 'x'`,
+		`{"a":"{\"b\":\"{\\\"password\\\":\\\"hunter22\\\",\\\"u\\\":1}\"}"}`: `{"a":"{\"b\":\"{\\\"password\\\":\\\"` + Placeholder + `\\\",\\\"u\\\":1}\"}"}`,
+		`{"a":"{\"b\":\"{\\\"password\\\":\\\"hunter22\"}"}`:                  `{"a":"{\"b\":\"{\\\"password\\\":\\\"` + Placeholder + `\"}"}`,
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
 // Without a quote there is nothing to say where a value ends, so the usual
 // delimiters still do.
 func TestTextStopsUnquotedValuesAtDelimiters(t *testing.T) {

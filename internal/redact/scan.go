@@ -68,7 +68,7 @@ type Match struct {
 var labelHead = regexp.MustCompile(`(?i)\b(api[_-]?keys?|apikey|access[_-]?token|refresh[_-]?token|` +
 	`id[_-]?token|auth[_-]?token|bearer|token|passwords?|passwd|pwd|secrets?|client[_-]?secret|` +
 	`private[_-]?key|secret[_-]?key|signature|sessionid|session[_-]?token|credentials?)` +
-	`((?:\\?["'])?\s*[=:]\s*(?:\\"|["'])?)`)
+	`((?:\\*["'])?\s*[=:]\s*(?:\\*["'])?)`)
 
 // minLabelledLength is the shortest value a labelled match reports.
 const minLabelledLength = 4
@@ -106,10 +106,11 @@ func findLabelled(text string) []labelledValue {
 // it is left behind; one never closed runs to the end of the line. An
 // unquoted value stops at the first character that cannot be part of one.
 //
-// A value opened by `\"` sits in JSON logged inside another JSON string, such
-// as a request body, where every character arrives escaped once more. It is
-// read one layer of escapes down, and ends where the enclosing string does if
-// its own quote never comes.
+// A quote opened as `\"` sits in a string logged inside another string, such
+// as a JSON request body, where every character arrives escaped once more;
+// `\\\"` is one string further in. The value is read that many layers of
+// escapes down, and ends where an enclosing string does if its own quote
+// never comes.
 func valueEnd(s string, i int, sep string) int {
 	q := sep[len(sep)-1]
 	if q != '"' && q != '\'' {
@@ -118,17 +119,15 @@ func valueEnd(s string, i int, sep string) int {
 		}
 		return i
 	}
-	nested := strings.HasSuffix(sep, `\"`)
+	depth, ok := escapeDepth(len(sep) - 1 - len(strings.TrimRight(sep[:len(sep)-1], `\`)))
+	if !ok {
+		return i
+	}
 	escaped := false
-	for i < len(s) && s[i] != '\n' {
-		c, width := s[i], 1
-		if nested {
-			if c == '"' {
-				return i
-			}
-			if c == '\\' && i+1 < len(s) && s[i+1] != '\n' {
-				c, width = s[i+1], 2
-			}
+	for {
+		c, next, stop := read(s, i, depth, q)
+		if stop {
+			return i
 		}
 		switch {
 		case escaped:
@@ -138,9 +137,47 @@ func valueEnd(s string, i int, sep string) int {
 		case c == q:
 			return i
 		}
-		i += width
+		i = next
 	}
-	return i
+}
+
+// escapeDepth is how many strings deep a quote preceded by n backslashes
+// sits: each layer escapes the backslashes of the one inside it too, so n is
+// 0, 1, 3, 7 and so on. Any other n is not a quote that opens a value.
+func escapeDepth(n int) (int, bool) {
+	depth := 0
+	for ; n > 0; n = (n - 1) / 2 {
+		if n%2 == 0 {
+			return 0, false
+		}
+		depth++
+	}
+	return depth, true
+}
+
+// read returns the character at i as seen depth layers of escapes down, where
+// a backslash and the character after it read as that character, and the
+// index after it. It stops at the end of the line, or at a bare quote q in a
+// shallower layer, where an enclosing string ends.
+func read(s string, i, depth int, q byte) (c byte, next int, stop bool) {
+	if i >= len(s) || s[i] == '\n' {
+		return 0, i, true
+	}
+	if depth == 0 {
+		return s[i], i + 1, false
+	}
+	c, next, stop = read(s, i, depth-1, q)
+	if stop || c == q {
+		return 0, i, true
+	}
+	if c != '\\' {
+		return c, next, false
+	}
+	c, next, stop = read(s, next, depth-1, q)
+	if stop {
+		return 0, i, true
+	}
+	return c, next, false
 }
 
 // formats are values that cannot plausibly be anything but a credential.
