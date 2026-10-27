@@ -771,8 +771,12 @@ alerts:
   - when: deploy.failed
   - when: drift.detected
     for: 30m
-  - when: tls.expiring_in < 14d      # Caddy-managed certs
+  - when: host.mem.used_pct > 90
+    for: 5m
 ```
+
+There is no certificate-expiry metric yet. `pilot doctor` reports the days left on
+each certificate instead (see the known gaps in §14).
 
 Notifiers are deliberately dumb — one HTTP POST each (webhook, ntfy, Slack, Discord,
 email). Dedup and per-rule cooldown live in the agent so a flapping service doesn't
