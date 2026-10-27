@@ -194,8 +194,8 @@ type Reading struct {
 	HostSilent      bool
 
 	// DiskUsedPct and MemUsedPct are nil when the figure could not be read, so
-	// a failed read cannot pass for an idle host and resolve an alert that
-	// still holds.
+	// a failed read cannot pass for an idle host or an empty disk and resolve
+	// an alert that still holds.
 	DiskUsedPct *int
 	MemUsedPct  *int
 

@@ -56,8 +56,8 @@ func TestHostReadingExhaustedMemory(t *testing.T) {
 	}
 }
 
-// dfFake answers `df` and nothing else; the embedded nil Executor makes any
-// other call fail the test loudly.
+// dfFake answers every Run with the same result; the embedded nil Executor
+// makes any other call fail the test loudly.
 type dfFake struct {
 	transport.Executor
 	res transport.Result
@@ -87,6 +87,8 @@ func TestHostReadingLeavesUnreadDiskUnset(t *testing.T) {
 		"garbage":      {res: transport.Result{Stdout: "not\ndf output"}},
 		"header only":  {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n"}},
 		"dash percent": {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\nnone 0 0 0 -% /\n"}},
+		"negative":     {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 86 14 -5% /\n"}},
+		"over 100":     {res: transport.Result{Stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 86 14 105% /\n"}},
 	}
 	for name, fake := range tests {
 		t.Run(name, func(t *testing.T) {
