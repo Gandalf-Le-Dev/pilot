@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -52,8 +53,8 @@ func serve(ctx context.Context, s *Server, publicLn, ingestLn net.Listener, tail
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	public := newHTTPServer(s.PublicHandler())
-	ingest := newHTTPServer(s.IngestHandler())
+	public := newHTTPServer(s.PublicHandler(), slog.Default())
+	ingest := newHTTPServer(s.IngestHandler(), slog.Default())
 
 	errc := make(chan error, 3)
 	run := func(srv *http.Server, ln net.Listener) {
@@ -77,7 +78,7 @@ func serve(ctx context.Context, s *Server, publicLn, ingestLn net.Listener, tail
 		defer close(watching)
 		s.WatchSilence(ctx)
 	}()
-	logf("serving the page on %s and reports on %s (%d hosts)", publicLn.Addr(), ingestLn.Addr(), len(s.hosts))
+	slog.Info("serving", "page", publicLn.Addr(), "reports", ingestLn.Addr(), "hosts", len(s.hosts))
 
 	var err error
 	select {
@@ -101,7 +102,11 @@ func serve(ctx context.Context, s *Server, publicLn, ingestLn net.Listener, tail
 // newHTTPServer bounds every phase of a request. The public side is reached
 // from the internet through Caddy, and the ingest side by anything on the
 // tailnet, so neither may let a slow client hold a connection open.
-func newHTTPServer(h http.Handler) *http.Server {
+//
+// net/http's own errors go to log at error level. Both sides are plain HTTP
+// on a bound address, so there is no TLS handshake noise to flood it: what
+// arrives is a bug of ours, such as a handler panic, or a failing accept.
+func newHTTPServer(h http.Handler, log *slog.Logger) *http.Server {
 	return &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -109,6 +114,7 @@ func newHTTPServer(h http.Handler) *http.Server {
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    8 << 10,
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelError),
 	}
 }
 
@@ -123,12 +129,12 @@ func listenRetry(ctx context.Context, addr string, every time.Duration, listen f
 		ln, err := listen(addr)
 		if err == nil {
 			if failing {
-				logf("bound %s; reports from other hosts can arrive", addr)
+				slog.Info("bound; reports from other hosts can arrive", "addr", addr)
 			}
 			return ln, nil
 		}
 		if !failing {
-			logf("cannot bind %s, retrying every %s: %v", addr, every, err)
+			slog.Warn("cannot bind, retrying", "addr", addr, "every", every, "err", err)
 			failing = true
 		}
 		select {

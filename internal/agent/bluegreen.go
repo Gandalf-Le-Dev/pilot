@@ -242,6 +242,6 @@ func (a *Agent) setActiveColor(service string, c config.Color) {
 	}
 	st.ActiveColor = string(c)
 	if err := release.WriteState(dir, st); err != nil {
-		logf("could not record active color for %s: %v", service, err)
+		a.log().Error("could not record active color", "service", service, "err", err)
 	}
 }

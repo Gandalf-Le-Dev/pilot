@@ -1,11 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,5 +99,17 @@ func TestServeReturnsAListenerFailure(t *testing.T) {
 	case <-tailnetStopped:
 	case <-time.After(time.Second):
 		t.Error("the tailnet retry outlived the failure")
+	}
+}
+
+// net/http reports a recovered handler panic through ErrorLog, which would
+// otherwise reach the journal at info.
+func TestHTTPServerErrorsLogAtError(t *testing.T) {
+	var buf bytes.Buffer
+	srv := newHTTPServer(http.NotFoundHandler(), slog.New(slog.NewTextHandler(&buf, nil)))
+	srv.ErrorLog.Print("http: panic serving 127.0.0.1:1: boom")
+
+	if out := buf.String(); !strings.Contains(out, `level=ERROR msg="http: panic serving 127.0.0.1:1: boom"`) {
+		t.Errorf("got %q, want it at error level", out)
 	}
 }

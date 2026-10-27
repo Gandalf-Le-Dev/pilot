@@ -3,10 +3,10 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 
@@ -78,7 +78,7 @@ func (a *Agent) loadFleetConfig() error {
 	}
 	var fc FleetConfig
 	if err := config.UnmarshalStrict(raw, &fc); err != nil {
-		logf("ignoring unreadable %s: %v", FleetConfigFile, err)
+		a.log().Error("ignoring unreadable fleet config", "file", FleetConfigFile, "err", err)
 		return nil
 	}
 	a.fleet = &fc
@@ -148,7 +148,7 @@ func (a *Agent) Rules() []alert.Rule {
 
 	if fc != nil {
 		for _, r := range fc.Alerts {
-			if rule, ok := toRule("", r); ok {
+			if rule, ok := a.toRule("", r); ok {
 				out = append(out, rule)
 			}
 		}
@@ -159,7 +159,7 @@ func (a *Agent) Rules() []alert.Rule {
 			continue
 		}
 		for _, r := range s.Alerts {
-			if rule, ok := toRule(name, r); ok {
+			if rule, ok := a.toRule(name, r); ok {
 				out = append(out, rule)
 			}
 		}
@@ -167,18 +167,18 @@ func (a *Agent) Rules() []alert.Rule {
 	return out
 }
 
-func toRule(subject string, a config.Alert) (alert.Rule, bool) {
-	cond, err := alert.Parse(a.When)
+func (a *Agent) toRule(subject string, c config.Alert) (alert.Rule, bool) {
+	cond, err := alert.Parse(c.When)
 	if err != nil {
-		logf("skipping alert %q: %v", a.When, err)
+		a.log().Warn("skipping alert", "when", c.When, "err", err)
 		return alert.Rule{}, false
 	}
 	return alert.Rule{
 		Subject:  subject,
 		Cond:     cond,
-		For:      a.For.Duration(),
-		Cooldown: a.Cooldown.Duration(),
-		Notify:   a.Notify,
+		For:      c.For.Duration(),
+		Cooldown: c.Cooldown.Duration(),
+		Notify:   c.Notify,
 	}, true
 }
 
@@ -203,20 +203,24 @@ func (a *Agent) evaluateAlerts(ctx context.Context) {
 	if len(rules) == 0 {
 		return
 	}
-	a.alerts.Evaluate(ctx, rules, a.readings(ctx))
+	a.alerts.Evaluate(ctx, rules, a.readings(ctx, rules))
 }
 
 // readings gathers the current value of every metric, keyed by subject. The
-// host-wide reading is keyed by the empty string.
-func (a *Agent) readings(ctx context.Context) map[string]alert.Reading {
+// host-wide reading is keyed by the empty string. Memory is read only when a
+// rule asks for it, so a host where it cannot be read warns only when that
+// costs an alert.
+func (a *Agent) readings(ctx context.Context, rules []alert.Rule) map[string]alert.Reading {
 	out := map[string]alert.Reading{}
 
 	host := alert.Reading{}
 	if d, err := a.diskUsage(); err == nil {
 		host.DiskUsedPct = &d.UsedPercent
 	}
-	if pct, ok := a.memUsedPct(); ok {
-		host.MemUsedPct = &pct
+	if readsMemory(rules) {
+		if pct, ok := a.memUsedPct(); ok {
+			host.MemUsedPct = &pct
+		}
 	}
 	out[""] = host
 
@@ -260,18 +264,30 @@ func (a *Agent) readings(ctx context.Context) map[string]alert.Reading {
 	return out
 }
 
+func readsMemory(rules []alert.Rule) bool {
+	return slices.ContainsFunc(rules, func(r alert.Rule) bool {
+		return r.Cond.Metric == alert.MemUsedPct || r.Cond.Metric == alert.MemFreePct
+	})
+}
+
 // memUsedPct is the share of the host's memory in use, counting reclaimable
 // page cache as free. ok is false when it could not be read.
 func (a *Agent) memUsedPct() (pct int, ok bool) {
-	total, avail, ok := a.readMeminfo()
-	if !ok || total == 0 || avail > total {
-		a.memWarnOnce.Do(func() {
-			slog.Warn("host memory unreadable, host.mem alert rules will not evaluate",
-				"source", "/proc/meminfo", "mem_total", total, "mem_available", avail)
-		})
-		return 0, false
+	total, avail, err := a.readMeminfo()
+	var cause []any
+	switch {
+	case err != nil:
+		cause = []any{"err", err}
+	case total == 0 || avail > total:
+		cause = []any{"mem_total", total, "mem_available", avail}
+	default:
+		return int(math.Round(float64(total-avail) * 100 / float64(total))), true
 	}
-	return int(math.Round(float64(total-avail) * 100 / float64(total))), true
+	a.memWarnOnce.Do(func() {
+		a.log().Warn("host memory unreadable, host.mem alert rules will not evaluate",
+			append([]any{"source", "/proc/meminfo"}, cause...)...)
+	})
+	return 0, false
 }
 
 // FiringAlerts reports which rules are currently firing.

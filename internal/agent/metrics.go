@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -420,19 +421,23 @@ func (a *Agent) memUsed() uint64 {
 }
 
 // readMeminfo is the one place host memory is read, for the dashboard and for
-// alerting alike.
-func (a *Agent) readMeminfo() (total, available uint64, ok bool) {
+// alerting alike. When a figure is missing it still returns what it parsed, for
+// the dashboard, alongside the error.
+func (a *Agent) readMeminfo() (total, available uint64, err error) {
 	var b []byte
-	var err error
 	if a.meminfo != nil {
 		b, err = a.meminfo()
 	} else {
 		b, err = os.ReadFile("/proc/meminfo")
 	}
 	if err != nil {
-		return 0, 0, false
+		return 0, 0, err
 	}
-	return parseMeminfo(string(b))
+	total, available, ok := parseMeminfo(string(b))
+	if !ok {
+		return total, available, errors.New("MemTotal or MemAvailable missing from /proc/meminfo")
+	}
+	return total, available, nil
 }
 
 // parseMeminfo reads MemTotal and MemAvailable, which /proc reports in kB. ok is
