@@ -62,6 +62,9 @@ type Agent struct {
 	// now is overridable in tests; nil means the wall clock.
 	now func() time.Time
 
+	// meminfo is overridable in tests; nil reads /proc/meminfo.
+	meminfo func() ([]byte, error)
+
 	jobs   *JobStore
 	alerts *alert.Engine
 }

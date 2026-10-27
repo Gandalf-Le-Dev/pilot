@@ -923,3 +923,24 @@ func TestDigestStamp(t *testing.T) {
 		t.Errorf("an unstamped spec reports %q, want none", got)
 	}
 }
+
+// Host-wide metrics validate in fleet.yaml and are rejected on a service, where
+// they would parse and never fire.
+func TestHostMetricsScoped(t *testing.T) {
+	for _, expr := range []string{"host.disk.used_pct > 85", "host.mem.used_pct > 90", "host.mem.free_pct < 10"} {
+		t.Run(expr, func(t *testing.T) {
+			fleet := statusFleet + "alerts:\n  - when: " + expr + "\n    notify: [discord]\n"
+			_, ds := load(t, fleet, nil)
+			assertNoErrors(t, ds)
+
+			svcs := map[string]string{
+				"x.yaml": "name: x\nruntime: compose\nhosts: [web-1]\ncompose: {file: c.yaml}\nhealth: {docker: true}\n" +
+					"alerts:\n  - when: " + expr + "\n    notify: [discord]\n",
+			}
+			_, ds = load(t, statusFleet, svcs)
+			if findDiag(ds, "alerts[0].when", "host-wide metric") == nil {
+				t.Errorf("want %q rejected on a service:\n%v", expr, ds.Sorted())
+			}
+		})
+	}
+}

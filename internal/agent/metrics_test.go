@@ -92,9 +92,12 @@ func TestParseProcStat(t *testing.T) {
 }
 
 func TestParseMeminfo(t *testing.T) {
-	total, avail := parseMeminfo("MemTotal:        8000000 kB\nMemFree:         100 kB\nMemAvailable:    6000000 kB\n")
-	if total != 8000000*1024 || avail != 6000000*1024 {
-		t.Errorf("total=%d avail=%d", total, avail)
+	total, avail, ok := parseMeminfo("MemTotal:        8000000 kB\nMemFree:         100 kB\nMemAvailable:    6000000 kB\n")
+	if total != 8000000*1024 || avail != 6000000*1024 || !ok {
+		t.Errorf("total=%d avail=%d ok=%v", total, avail, ok)
+	}
+	if _, _, ok := parseMeminfo("MemTotal:        8000000 kB\nMemFree:         100 kB\n"); ok {
+		t.Error("a kernel without MemAvailable should not report it as 0")
 	}
 }
 

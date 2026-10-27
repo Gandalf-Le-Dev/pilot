@@ -92,6 +92,8 @@ func (f fake) Dashboard(ctx context.Context, since time.Time) (*proto.DashboardR
 		HostSamples: samples(300, 28, 9, 5<<30),
 		AlertEvents: []proto.AlertEvent{
 			{Rule: "service.degraded", Subject: "backup", FiredAt: time.Now().Add(-40 * time.Minute)},
+			{Rule: "host.mem.used_pct > 90", FiredAt: time.Now().Add(-6 * time.Hour),
+				ResolvedAt: time.Now().Add(-5*time.Hour - 40*time.Minute)},
 			{Rule: "host.disk.used_pct > 85", FiredAt: time.Now().Add(-26 * time.Hour),
 				ResolvedAt: time.Now().Add(-25 * time.Hour), DeliveryFailed: true},
 		},

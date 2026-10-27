@@ -424,11 +424,14 @@ func readMeminfo() (total, available uint64) {
 	if err != nil {
 		return 0, 0
 	}
-	return parseMeminfo(string(b))
+	total, available, _ = parseMeminfo(string(b))
+	return total, available
 }
 
-// parseMeminfo reads MemTotal and MemAvailable, which /proc reports in kB.
-func parseMeminfo(s string) (total, available uint64) {
+// parseMeminfo reads MemTotal and MemAvailable, which /proc reports in kB. ok is
+// false unless both were present, since a missing MemAvailable is not 0.
+func parseMeminfo(s string) (total, available uint64, ok bool) {
+	var haveTotal, haveAvail bool
 	for line := range strings.SplitSeq(s, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
@@ -440,10 +443,10 @@ func parseMeminfo(s string) (total, available uint64) {
 		}
 		switch fields[0] {
 		case "MemTotal:":
-			total = v * 1024
+			total, haveTotal = v*1024, true
 		case "MemAvailable:":
-			available = v * 1024
+			available, haveAvail = v*1024, true
 		}
 	}
-	return total, available
+	return total, available, haveTotal && haveAvail
 }
