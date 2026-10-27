@@ -154,7 +154,7 @@ func TestSyncRemovesStatusServersOffTheStatusHost(t *testing.T) {
 
 	web := newHostFake()
 	web.files[route] = []byte("old")
-	if err := a.syncStatusServer(context.Background(), web, "web-1", logf); err != nil {
+	if _, err := a.syncStatusServer(context.Background(), web, "web-1", logf); err != nil {
 		t.Fatal(err)
 	}
 	if !web.did("systemctl disable --now pilot-server.service") || !web.did("rm -f "+route) {
@@ -168,7 +168,7 @@ func TestSyncRemovesStatusServersOffTheStatusHost(t *testing.T) {
 	}
 
 	box := newHostFake()
-	if err := a.syncStatusServer(context.Background(), box, "box-1", logf); err != nil {
+	if _, err := a.syncStatusServer(context.Background(), box, "box-1", logf); err != nil {
 		t.Fatal(err)
 	}
 	if !box.did("systemctl restart pilot-server.service") || box.did("disable --now pilot-server") {
@@ -177,7 +177,7 @@ func TestSyncRemovesStatusServersOffTheStatusHost(t *testing.T) {
 
 	a.Fleet.Status = nil
 	box = newHostFake()
-	if err := a.syncStatusServer(context.Background(), box, "box-1", logf); err != nil {
+	if _, err := a.syncStatusServer(context.Background(), box, "box-1", logf); err != nil {
 		t.Fatal(err)
 	}
 	if !box.did("disable --now pilot-server") {
@@ -202,25 +202,27 @@ func TestTidyStatusServer(t *testing.T) {
 	logf := func(string, ...any) {}
 
 	web := newHostFake()
-	if err := a.tidyStatusServer(context.Background(), web, "web-1", logf); err != nil {
+	web.files[install.ServerConfigPath] = []byte("old")
+	did, err := a.tidyStatusServer(context.Background(), web, "web-1", logf)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !web.did("systemctl disable --now pilot-server.service") {
-		t.Error("a current host off status.host kept its status server")
+	if !did || !web.did("systemctl disable --now pilot-server.service") {
+		t.Errorf("a current host off status.host kept its status server (changed = %v)", did)
 	}
 
 	box := newHostFake()
 	box.serverUp = true
-	if err := a.tidyStatusServer(context.Background(), box, "box-1", logf); err != nil {
-		t.Fatal(err)
+	if did, err := a.tidyStatusServer(context.Background(), box, "box-1", logf); err != nil || did {
+		t.Fatalf("changed = %v, err = %v; want nothing done", did, err)
 	}
 	if box.did("systemctl restart pilot-server.service") || box.did("disable --now pilot-server") {
 		t.Errorf("a running status server was touched:\n%s", strings.Join(append(box.cmds, box.scripts...), "\n"))
 	}
 
 	box = newHostFake()
-	if err := a.tidyStatusServer(context.Background(), box, "box-1", logf); err != nil {
-		t.Fatal(err)
+	if did, err := a.tidyStatusServer(context.Background(), box, "box-1", logf); err != nil || !did {
+		t.Fatalf("changed = %v, err = %v; want the server installed", did, err)
 	}
 	if !box.did("systemctl restart pilot-server.service") {
 		t.Error("status.host moved to a current host, and it got no server")

@@ -115,7 +115,7 @@ func (a *App) SyncAgent(ctx context.Context, host string, s AgentSync) (*AgentSy
 
 	// The status host's config digest vouches for its server's configuration
 	// too, so the server goes first and the push knows whether it may.
-	serverErr := a.syncStatusServer(ctx, client, host, logf)
+	_, serverErr := a.syncStatusServer(ctx, client, host, logf)
 
 	// Push the host-wide half of the configuration whatever became of the
 	// server. Without it the agent can evaluate rules but has nowhere to send
@@ -145,26 +145,29 @@ func (a *App) SyncAgent(ctx context.Context, host string, s AgentSync) (*AgentSy
 // Anywhere else a status server is a leftover from a status.host that moved
 // or a status block that went. It would keep its old configuration and page
 // about every host forever, so it goes, with its route.
-func (a *App) syncStatusServer(ctx context.Context, ex transport.Executor, host string, logf func(string, ...any)) error {
+//
+// It reports whether it changed anything on the host.
+func (a *App) syncStatusServer(ctx context.Context, ex transport.Executor, host string, logf func(string, ...any)) (bool, error) {
 	if st := a.Fleet.Status; st != nil && st.Host == host {
 		if err := a.installStatusServer(ctx, ex); err != nil {
-			return fmt.Errorf("installing the status server: %w", err)
+			return false, fmt.Errorf("installing the status server: %w", err)
 		}
 		logf("status server running; %s routed to it", st.Domain)
-		return nil
+		return true, nil
 	}
 
 	removed, err := install.RemoveServer(ctx, ex)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if _, err := caddy.RemoveSnippet(ctx, ex, a.CaddyPaths(), server.SnippetName); err != nil {
-		return fmt.Errorf("removing the old status page route: %w", err)
+	action, err := caddy.RemoveSnippet(ctx, ex, a.CaddyPaths(), server.SnippetName)
+	if err != nil {
+		return removed, fmt.Errorf("removing the old status page route: %w", err)
 	}
 	if removed {
 		logf("removed a status server this host no longer runs")
 	}
-	return nil
+	return removed || action == caddy.ActionRemoved, nil
 }
 
 // TidyStatusServer is syncStatusServer for a host whose agent already runs
@@ -173,22 +176,23 @@ func (a *App) syncStatusServer(ctx context.Context, ex transport.Executor, host 
 //
 // It restarts nothing that is running: the status host's server is only
 // installed when its unit is not active, and removal is a no-op elsewhere.
-func (a *App) TidyStatusServer(ctx context.Context, host string, logf func(string, ...any)) error {
+// It reports whether it changed anything on the host.
+func (a *App) TidyStatusServer(ctx context.Context, host string, logf func(string, ...any)) (bool, error) {
 	client, err := a.Client(host)
 	if err != nil {
-		return err
+		return false, err
 	}
 	return a.tidyStatusServer(ctx, client, host, logf)
 }
 
-func (a *App) tidyStatusServer(ctx context.Context, ex transport.Executor, host string, logf func(string, ...any)) error {
+func (a *App) tidyStatusServer(ctx context.Context, ex transport.Executor, host string, logf func(string, ...any)) (bool, error) {
 	if st := a.Fleet.Status; st != nil && st.Host == host {
 		r, err := ex.Run(ctx, "systemctl is-active pilot-server.service")
 		if err != nil {
-			return err
+			return false, err
 		}
 		if strings.TrimSpace(r.Stdout) == "active" {
-			return nil
+			return false, nil
 		}
 	}
 	return a.syncStatusServer(ctx, ex, host, logf)
