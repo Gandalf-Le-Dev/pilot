@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -239,6 +240,24 @@ func TestScanReadsQuotedValuesWhole(t *testing.T) {
 		got := Scan(line, nil)
 		if len(got) != 1 || got[0].Kind != KindLabelled || got[0].Label != "password" {
 			t.Errorf("Scan(%q) = %+v, want one labelled password match", line, got)
+		}
+	}
+}
+
+// A name inside the value before it still counts when its own value starts
+// after that one ends.
+func TestScanCountsAValueThatStartsAfterTheOneBefore(t *testing.T) {
+	cases := map[string][]string{
+		"password=\"abc token:\nhunter22":      {"password", "token"},
+		"credentials=/etc/app/token: 4f9a8b7c": {"credentials", "token"},
+	}
+	for line, want := range cases {
+		var got []string
+		for _, m := range Scan(line, nil) {
+			got = append(got, m.Label)
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("Scan(%q) labels = %v, want %v", line, got, want)
 		}
 	}
 }

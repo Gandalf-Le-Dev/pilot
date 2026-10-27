@@ -80,12 +80,14 @@ type labelledValue struct {
 }
 
 // findLabelled returns each labelled value in text, in order and without
-// overlap: a name inside a value already taken is part of that value.
+// overlap. A name inside a value already taken is skipped only when its own
+// value starts inside that one too: in `password="abc token:` followed by a
+// line holding the token, the token is a value of its own.
 func findLabelled(text string) []labelledValue {
 	var out []labelledValue
 	taken := 0
 	for _, loc := range labelHead.FindAllStringSubmatchIndex(text, -1) {
-		if loc[0] < taken {
+		if loc[1] < taken {
 			continue
 		}
 		start := loc[1]

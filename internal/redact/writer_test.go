@@ -239,3 +239,20 @@ func TestTextStopsUnquotedValuesAtDelimiters(t *testing.T) {
 		}
 	}
 }
+
+// A name can sit inside the value before it while its own value starts after
+// that one ends. Skipping it as part of the first value left its secret in the
+// line.
+func TestTextRedactsAValueThatStartsAfterTheOneBefore(t *testing.T) {
+	cases := map[string]string{
+		"password=\"abc token:\nhunter22":                 "password=\"" + Placeholder + "\n" + Placeholder,
+		"credentials=/etc/app/token: 4f9a8b7c":            "credentials=" + Placeholder + " " + Placeholder,
+		`Secret\':?api_key` + "\r" + `:password`:          `Secret\':` + Placeholder + "\r:" + Placeholder,
+		`api_key\":\/secret_key` + "\t\r" + `:api_key_\'`: `api_key\":` + Placeholder + "\t\r:" + Placeholder + "'",
+	}
+	for line, want := range cases {
+		if got := Text(line, nil); got != want {
+			t.Errorf("Text(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
